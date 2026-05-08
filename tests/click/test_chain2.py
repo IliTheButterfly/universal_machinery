@@ -1,6 +1,6 @@
 """Chain a second rung onto the working X05_Y05 file."""
 import shutil, struct, sys
-from ckp_decoder import decode_ckp, compute_magic
+from click_plc import decode_ckp, compute_magic
 
 SRC = "demo/click_tests/TestProject.x05_y05.ckp"
 DST = "demo/click_tests/TestProject.x05_y05_plus.ckp"
