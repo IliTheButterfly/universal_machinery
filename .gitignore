@@ -1,0 +1,9 @@
+__pycache__
+venv
+build
+out
+demo
+bin
+experiments
+*.egg-info
+.pytest_cache
