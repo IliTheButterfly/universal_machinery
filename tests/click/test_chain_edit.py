@@ -7,7 +7,7 @@ file, and reports back with a verification dump.
 import shutil
 import struct
 import sys
-from ckp_decoder import decode_ckp, compute_magic
+from click_plc import decode_ckp, compute_magic
 
 
 SRC = "demo/click_tests/TestProject.edited.ckp"

@@ -1,0 +1,8 @@
+[submodule "backends/click"]
+	path = backends/click
+	url = ../universal_machinery_click_plc.git
+	branch = main
+[submodule "backends/openplc"]
+	path = backends/openplc
+	url = ../universal_machinery_openplc.git
+	branch = main

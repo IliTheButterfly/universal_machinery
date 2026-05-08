@@ -7,7 +7,7 @@ only orchestrates calls.
 
 import shutil
 import sys
-from ckp_decoder import decode_ckp
+from click_plc import decode_ckp
 
 
 SRC = "demo/click_tests/TestProject.ckp"

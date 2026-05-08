@@ -1,6 +1,6 @@
 """Add a new subroutine 'Sub3' (cloned from Sub1) and call it from Main."""
 import shutil, struct, sys
-from ckp_decoder import decode_ckp, compute_magic
+from click_plc import decode_ckp, compute_magic
 
 SRC = "demo/click_tests/TestProject.ckp"
 DST = "demo/click_tests/TestProject.with_sub3.ckp"

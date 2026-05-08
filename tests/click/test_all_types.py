@@ -1,7 +1,7 @@
 """Add a variety of rung types to TestProject.ckp using the new Rung API,
 demonstrating that the tool can read AND write each instruction type."""
 import shutil, struct, sys
-from ckp_decoder import decode_ckp, compute_magic, Rung
+from click_plc import decode_ckp, compute_magic, Rung
 
 SRC = "demo/click_tests/TestProject.ckp"
 DST = "demo/click_tests/TestProject.all_types.ckp"

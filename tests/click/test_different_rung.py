@@ -2,7 +2,7 @@
    X05 -> COIL(Y05)  (a physical input switching a physical output).
 """
 import shutil, struct, sys
-from ckp_decoder import decode_ckp, compute_magic
+from click_plc import decode_ckp, compute_magic
 
 SRC = "demo/click_tests/TestProject.ckp"
 DST = "demo/click_tests/TestProject.x05_y05.ckp"

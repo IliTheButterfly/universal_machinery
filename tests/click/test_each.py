@@ -1,6 +1,6 @@
 """Test each rung type individually starting from TestProject.ckp."""
 import shutil, struct, os
-from ckp_decoder import decode_ckp, compute_magic, Rung
+from click_plc import decode_ckp, compute_magic, Rung
 
 SRC = "demo/click_tests/TestProject.ckp"
 TESTS = [

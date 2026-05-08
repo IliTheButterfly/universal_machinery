@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "universal_machinery"
+version = "0.1.0"
+description = "Open-source toolkit for programming PLCs across vendors via a vendor-neutral intermediate language"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.10"
+authors = [
+    { name = "iliana" },
+]
+keywords = [
+    "plc", "ladder-logic", "iec-61131-3",
+    "automationdirect", "click", "openplc",
+    "industrial-automation", "scada",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Manufacturing",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Compilers",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage = "https://github.com/iliana/universal_machinery"
+Repository = "https://github.com/iliana/universal_machinery"
+
+[project.scripts]
+um = "universal_machinery.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["universal_machinery*"]
+exclude = ["tests*", "examples*", "demo*", "experiments*", "venv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
