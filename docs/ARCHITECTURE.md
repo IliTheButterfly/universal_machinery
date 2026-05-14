@@ -45,12 +45,18 @@ ST / FBD / SFC).  Modeling the IL on it means:
 
 ```
 Program
-├── subroutines: list[Subroutine]
+├── subroutines: list[Subroutine]              (POUs)
 │   ├── name: str
 │   ├── main: bool             (entry-point flag)
-│   └── rungs: list[Rung]
-│        ├── ops: list[Op]
-│        └── comment: str
+│   ├── kind: PouKind          (PROGRAM | FUNCTION | FUNCTION_BLOCK | SUBROUTINE)
+│   ├── inputs / outputs / in_outs / local_vars: list[Var]
+│   ├── return_type: TagType?  (for FUNCTION)
+│   ├── rungs: list[Rung]      (LD/IL body) ── OR ──
+│   └── sfc:   SfcNetwork?     (grafcet body)
+│        ├── steps:       list[Step] (+ actions)
+│        └── transitions: list[Transition]
+├── data_blocks: list[DataBlock]               (typed memory aggregates)
+│   └── members: list[Var]     (+ fb_template for instance DBs)
 ├── tags: dict[Address → Tag]   (symbol table)
 └── metadata: cpu_model, project_name, comment
 ```
@@ -59,6 +65,28 @@ A ``Rung``'s ``ops`` list is read left-to-right.  Contacts in series
 form an AND; ``ParallelGroup`` represents an OR (multiple branches in
 LD).  The right-most op is the rung's output (typically a coil, a
 function-block call, or a flow-control op).
+
+### POU kinds, DataBlocks, and SFC
+
+POUs follow IEC 61131-3 §2.2:
+
+  - **PROGRAM**         top-level executable with parameters but no return
+  - **FUNCTION**        stateless; one return value (`return_type`)
+  - **FUNCTION_BLOCK**  stateful; state lives in an instance DataBlock
+  - **SUBROUTINE**      vendor-native unparameterized routine (CLICK)
+
+A **DataBlock** is a named, typed collection of memory locations
+(Siemens-style global DB or instance DB).  When `fb_template` is set,
+it is the per-instance state container for a FUNCTION_BLOCK; the call
+site supplies the DB to `Call.instance`.
+
+**SFC** (grafcet) is an alternative POU body composed of `Step`s with
+`Action`s, joined by guarded `Transition`s -- see
+[`il/sfc.py`](../universal_machinery/il/sfc.py).
+
+For how all of this lowers onto a vendor target that has neither
+parameters nor nested calls, see
+[click_calling_convention.md](click_calling_convention.md).
 
 ### Op categories
 
@@ -157,10 +185,14 @@ diagnostics on lossy ops.
   read CLICK → IL → CLICK we may not preserve the original grid
   positions of cells across rungs that have been edited.
 
-- **Function blocks vs. subroutines**: IEC distinguishes PROGRAM /
+- ~~**Function blocks vs. subroutines**: IEC distinguishes PROGRAM /
   FUNCTION / FUNCTION_BLOCK.  We currently collapse all into
   `Subroutine`.  When we add a backend that needs the distinction,
-  promote.
+  promote.~~ *Resolved:* `Subroutine.kind` discriminates among the four
+  POU kinds (PROGRAM / FUNCTION / FUNCTION_BLOCK / SUBROUTINE).  The
+  CLICK lowering of FUNCTION / FUNCTION_BLOCK / DataBlock / nested
+  calls is specified in
+  [click_calling_convention.md](click_calling_convention.md).
 
 - **Comments**: CLICK stores rung comments separately from the SC-SCR
   section; we don't yet read them.  Add a "comments" sidecar to

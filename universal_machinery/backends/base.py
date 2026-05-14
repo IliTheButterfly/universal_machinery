@@ -33,15 +33,20 @@ A backend declares which IL features it can faithfully round-trip.  The
 caller can check ``b.supports(op)`` before lowering to avoid surprises.
 The standard capability strings are:
 
-  ``"ld"``           Ladder Diagram (any LD op)
-  ``"st"``           Structured Text output
-  ``"timers"``       TON/TOF/TP
-  ``"counters"``     CTU/CTD/CTUD
-  ``"compare"``      Eq/Ne/Lt/Le/Gt/Ge
-  ``"math"``         Move/BinaryMath
-  ``"call"``         Subroutine calls
-  ``"jump"``         Intra-rung Jump/Label
-  ``"parallel"``     ParallelGroup (OR branches in LD)
+  ``"ld"``                Ladder Diagram (any LD op)
+  ``"st"``                Structured Text output
+  ``"timers"``            TON/TOF/TP
+  ``"counters"``          CTU/CTD/CTUD
+  ``"compare"``           Eq/Ne/Lt/Le/Gt/Ge
+  ``"math"``              Move/BinaryMath
+  ``"call"``              Bare subroutine calls (no params)
+  ``"functions"``         FUNCTION POUs with VAR_INPUT/OUTPUT + return
+  ``"function_blocks"``   FUNCTION_BLOCK POUs with per-instance state
+  ``"data_blocks"``       Standalone DataBlock declarations
+  ``"sfc"``               Sequential Function Chart (grafcet) bodies
+  ``"nested_calls"``      Calls inside a callee body (CLICK lacks this)
+  ``"jump"``              Intra-rung Jump/Label
+  ``"parallel"``          ParallelGroup (OR branches in LD)
 
 Backends not yet declaring a capability should raise
 ``UnsupportedOpError`` rather than silently emit broken output.

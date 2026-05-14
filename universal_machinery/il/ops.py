@@ -12,18 +12,19 @@ Categories:
   - Counters: CTU, CTD, CTUD
   - Compare: Eq, Ne, Lt, Le, Gt, Ge
   - Math: Move (Copy), Add, Sub, Mul, Div, Mod
-  - Control: Call, Return, End, Jump, Label
+  - Control: Call (POU invocation with optional arg/return/instance
+    bindings; covers both FUNCTION and FUNCTION_BLOCK calls), Return,
+    End, Jump, Label
   - Topology: ParallelGroup -- represents OR'd branches in LD
 
 Future:
-  - PID, FunctionBlockCall (for user-defined function blocks),
-    Shift/Rotate, Logical AND/OR/XOR, BCD/Hex conversion ops
+  - PID, Shift/Rotate, Logical AND/OR/XOR, BCD/Hex conversion ops
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Union
+from dataclasses import dataclass, field
+from typing import Optional, Union
 
 from .ast import Address
 
@@ -197,10 +198,51 @@ class BinaryMath:
 # -----------------------------------------------------------------------------
 
 
+#: Argument binding at a call site: ``(formal_name, source)``.
+#: ``source`` is the actual address (or literal, as a string) to feed
+#: into the callee's VAR_INPUT slot named ``formal_name``.
+ArgIn  = tuple[str, "Address | str"]
+
+#: Output binding at a call site: ``(formal_name, destination)``.
+#: After the callee returns, its VAR_OUTPUT slot ``formal_name`` is
+#: copied into ``destination``.
+ArgOut = tuple[str, "Address"]
+
+
 @dataclass(frozen=True)
 class Call:
-    """Call a subroutine by name."""
+    """Invoke a POU by name.
+
+    Three usage modes, all covered by the same op:
+
+      * **Subroutine** (CLICK-style, no interface)::
+
+            Call(target="Sub1")
+
+      * **Function** (stateless, returns one value)::
+
+            Call(target="Average",
+                 inputs=(("a", Address("DS10")), ("b", Address("DS11"))),
+                 return_to=Address("DS12"))
+
+      * **Function block** (stateful instance)::
+
+            Call(target="PID",
+                 instance=Address("DB7"),       # the instance DB's base
+                 inputs=(("SP", Address("DS20")), ("PV", Address("DS21"))),
+                 outputs=(("OUT", Address("DS22")),))
+
+    ``inputs`` / ``outputs`` use formal-parameter names so reordering
+    declarations in the callee doesn't break call sites.  Backends
+    lower these into their native calling convention -- for CLICK
+    that's Move ops against per-POU reserved DS slots; see
+    ``docs/click_calling_convention.md``.
+    """
     target: str
+    inputs:  tuple[ArgIn, ...]  = field(default_factory=tuple)
+    outputs: tuple[ArgOut, ...] = field(default_factory=tuple)
+    instance:  Optional[Address] = None
+    return_to: Optional[Address] = None
 
 
 @dataclass(frozen=True)
@@ -309,5 +351,15 @@ def addresses_of(op: object) -> set[Address]:
         for branch in op.branches:
             for inner in branch:
                 out.update(addresses_of(inner))
-    # Call / Return / End / Jump / Label have no addresses
+    elif isinstance(op, Call):
+        for _, src in op.inputs:
+            if isinstance(src, Address):
+                out.add(src)
+        for _, dst in op.outputs:
+            out.add(dst)
+        if op.instance is not None:
+            out.add(op.instance)
+        if op.return_to is not None:
+            out.add(op.return_to)
+    # Return / End / Jump / Label have no addresses
     return out

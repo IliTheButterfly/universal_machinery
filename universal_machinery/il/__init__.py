@@ -49,17 +49,38 @@ Example::
     from universal_machinery.backends.click import ClickBackend  # via submodule
     ClickBackend().write(prog, "out.ckp")
 """
-from .ast import Address, Program, Rung, Subroutine, Tag, TagType
-from . import ops
+from .ast import (
+    Address,
+    DataBlock,
+    PouKind,
+    Program,
+    Rung,
+    Subroutine,
+    Tag,
+    TagType,
+    Var,
+    VarDirection,
+)
+from . import ops, sfc
+from .sfc import Action, SfcNetwork, Step, Transition
 
 __all__ = [
+    "Action",
     "Address",
+    "DataBlock",
+    "PouKind",
     "Program",
     "Rung",
+    "SfcNetwork",
+    "Step",
     "Subroutine",
     "Tag",
     "TagType",
+    "Transition",
+    "Var",
+    "VarDirection",
     "ops",
+    "sfc",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
