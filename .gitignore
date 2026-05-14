@@ -7,3 +7,4 @@ bin
 experiments
 *.egg-info
 .pytest_cache
+.vscode
