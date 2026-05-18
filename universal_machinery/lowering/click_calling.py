@@ -1,36 +1,44 @@
-"""CLICK calling-convention lowering: slot allocator + caller marshalling.
+"""CLICK calling-convention lowering: slot allocator, caller-side
+marshalling, and callee-body symbolic-reference resolution.
 
-This is the first slice of the lowering described in
-``docs/click_calling_convention.md``.  It runs purely on the IL --
-no CKP bytes, no backend dependency -- and is independently testable
-against a ``Program`` AST.
+Implements the first three passes of the lowering described in
+``docs/click_calling_convention.md``.  All passes run purely on the
+IL -- no CKP bytes, no backend dependency.
 
 What's here
 -----------
 
   - ``LoweringConfig``: tunable region bases (DS9000 args, DS9100
     returns, DS9200 FB-instance pointers, etc.)
-  - ``allocate_slots(prog)``: bump-allocates a non-overlapping
-    ``slot_base`` per parameterized POU, an instance-pointer slot per
-    declared FUNCTION_BLOCK, and a numeric POU id for the scheduler
-    dispatcher (id 0 reserved for "idle").
+  - ``allocate_slots(prog)``: bump-allocates per-POU slot bases,
+    FB-instance pointer-table slots, and scheduler POU ids (0 reserved
+    for "idle").
   - ``marshal_call(call, alloc)``: expands one parameterized Call op
     into [Move..., bare Call, Move...] -- the explicit
     Move-Call-Move sequence the CLICK runtime executes.
   - ``lower_calls(prog)``: program-level pass that walks every rung
     and rewrites parameterized Calls in place, preserving each
     rung's contact-prefix guard.  Returns a *new* Program.
+  - ``rewrite_callee_body(sub, alloc)``: rewrites a parameterized
+    POU body's ``TagRef`` references to formal parameter names into
+    the slot ``Address``es allocated for them.  Direction-aware:
+    read positions (sources, contacts, compare operands) substitute
+    against ``arg_slot``; write positions (sinks, coils, math
+    destinations) substitute against ``ret_slot``.  IN_OUT
+    parameters resolve correctly because they appear in both maps.
+  - ``lower_pou_bodies(prog, alloc)``: program-level pass that
+    applies ``rewrite_callee_body`` to every parameterized POU.
 
 What's deferred (see ``docs/click_calling_convention.md`` §6)
 -----------------------------------------------------------
 
-  - Callee-body rewriting (the callee references the assigned slot
-    addresses by hand for now; a future pass can rewrite symbolic
-    VAR references)
   - Trampoline emission in Main + scheduler-state initialisation
   - Scheduled-call rewriter for subroutine-internal calls
   - DataBlock contiguous-layout pass
   - SFC lowering
+  - VAR_LOCAL allocation (locals don't yet get auto-assigned slots;
+    they're either explicitly addressed on the Var, or -- in
+    FUNCTION_BLOCKs -- live in the instance DataBlock)
 
 Design choices (locked):
   - **Same-rung packing.**  Marshalling Moves go into the same rung
@@ -43,6 +51,9 @@ Design choices (locked):
     raises ``LoweringError`` immediately -- catches typos.  Bare
     Calls pass through unchanged (they may target hand-authored
     CLICK subroutines that the allocator never saw).
+  - **TagRefs that don't name a formal parameter pass through
+    unchanged.**  They may be references to global ``Program.tags``;
+    a separate tag-resolver pass at the writer binds them later.
 """
 from __future__ import annotations
 
@@ -52,9 +63,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..il import (
-    Address, PouKind, Program, Rung, Subroutine, Var,
+    Address, PouKind, Program, Rung, Subroutine, TagRef, Var,
 )
-from ..il.ops import Call, Move
+from ..il.ops import (
+    BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
+    ContactRisingEdge, CTD, CTU, CTUD, Move, OutCoil, OutReset, OutSet,
+    ParallelGroup, TOF, TON, TP, VendorOp,
+)
 
 
 #: Reserved id meaning "no callee queued" in the scheduler trampoline.
@@ -409,4 +424,195 @@ def lower_calls(prog: Program,
             new_rungs.append(Rung(ops=new_ops, comment=rung.comment))
         new_subs.append(dataclasses.replace(sub, rungs=new_rungs))
 
+    return dataclasses.replace(prog, subroutines=new_subs), alloc
+
+
+# -----------------------------------------------------------------------------
+# Callee-body rewriter
+# -----------------------------------------------------------------------------
+
+
+def _bind(loc, table: dict[str, Address]):
+    """If ``loc`` is a TagRef whose name is in ``table``, return the
+    bound Address; otherwise pass through unchanged.  ``loc`` may be
+    None, an Address, a TagRef, or a string literal -- only TagRefs
+    matching a known name are rewritten."""
+    if isinstance(loc, TagRef) and loc.name in table:
+        return table[loc.name]
+    return loc
+
+
+def _rewrite_op_refs(op: object, reads: dict[str, Address],
+                     writes: dict[str, Address]) -> object:
+    """Return a copy of ``op`` with TagRef references resolved against
+    the per-direction substitution tables.
+
+    ``reads`` is the substitution table for *read* positions
+    (contact addresses, ``src``, ``lhs`` / ``rhs``, ``cu_input`` /
+    ``cd_input``, ``accumulator``, ``Call.instance``,
+    ``Call.inputs`` sources); ``writes`` is for *write* positions
+    (coil addresses, ``dst``, ``done_bit``, ``Call.outputs``
+    destinations, ``Call.return_to``).
+
+    For non-IN_OUT formal parameters this distinction is moot --
+    they appear in exactly one of the maps.  For IN_OUT parameters,
+    the same name has different bindings in each direction, which
+    is precisely what the CLICK calling convention requires: the
+    caller writes to the arg slot before CALL and reads from the
+    ret slot after.
+    """
+    R, W = reads, writes   # local aliases
+
+    if isinstance(op, (ContactNO, ContactNC, ContactRisingEdge,
+                       ContactFallingEdge)):
+        return dataclasses.replace(op, address=_bind(op.address, R))
+
+    if isinstance(op, (OutCoil, OutSet, OutReset)):
+        return dataclasses.replace(op, address=_bind(op.address, W))
+
+    if isinstance(op, (TON, TOF, TP)):
+        return dataclasses.replace(
+            op,
+            address=_bind(op.address, W),
+            accumulator=_bind(op.accumulator, R) if op.accumulator else None,
+            done_bit=_bind(op.done_bit, W) if op.done_bit else None,
+        )
+
+    if isinstance(op, (CTU, CTD)):
+        gate = op.reset if isinstance(op, CTU) else op.load
+        new_gate = _bind(gate, R) if gate is not None else None
+        rebuilt = dataclasses.replace(
+            op,
+            address=_bind(op.address, W),
+            accumulator=_bind(op.accumulator, R) if op.accumulator else None,
+            done_bit=_bind(op.done_bit, W) if op.done_bit else None,
+        )
+        if isinstance(rebuilt, CTU):
+            return dataclasses.replace(rebuilt, reset=new_gate)
+        return dataclasses.replace(rebuilt, load=new_gate)
+
+    if isinstance(op, CTUD):
+        return dataclasses.replace(
+            op,
+            address=_bind(op.address, W),
+            cu_input=_bind(op.cu_input, R),
+            cd_input=_bind(op.cd_input, R),
+            reset=_bind(op.reset, R) if op.reset else None,
+            load=_bind(op.load, R) if op.load else None,
+            accumulator=_bind(op.accumulator, R) if op.accumulator else None,
+            qu=_bind(op.qu, W) if op.qu else None,
+            qd=_bind(op.qd, W) if op.qd else None,
+        )
+
+    if isinstance(op, Compare):
+        return dataclasses.replace(op,
+                                   lhs=_bind(op.lhs, R),
+                                   rhs=_bind(op.rhs, R))
+
+    if isinstance(op, Move):
+        return dataclasses.replace(op,
+                                   src=_bind(op.src, R),
+                                   dst=_bind(op.dst, W))
+
+    if isinstance(op, BinaryMath):
+        return dataclasses.replace(op,
+                                   lhs=_bind(op.lhs, R),
+                                   rhs=_bind(op.rhs, R),
+                                   dst=_bind(op.dst, W))
+
+    if isinstance(op, Call):
+        # A Call inside a parameterized POU body is a NESTED call.  We
+        # rewrite its argument bindings against the *current* POU's
+        # slot maps (the nested call's source/destination operands may
+        # refer to the current POU's formal parameters), but we leave
+        # the Call op intact -- the scheduled-call rewriter (separate
+        # pass, still TODO) is what transforms it into a yield/resume
+        # form.  Caller-side marshalling for *that* call resolves its
+        # own formal-parameter bindings against the *callee's* slot
+        # maps, not the current POU's.
+        return dataclasses.replace(
+            op,
+            inputs=tuple((name, _bind(src, R)) for name, src in op.inputs),
+            outputs=tuple((name, _bind(dst, W)) for name, dst in op.outputs),
+            instance=_bind(op.instance, R) if op.instance else None,
+            return_to=_bind(op.return_to, W) if op.return_to else None,
+        )
+
+    if isinstance(op, ParallelGroup):
+        return dataclasses.replace(
+            op,
+            branches=tuple(
+                tuple(_rewrite_op_refs(inner, R, W) for inner in branch)
+                for branch in op.branches
+            ),
+        )
+
+    if isinstance(op, VendorOp):
+        # VendorOp.addresses doesn't carry per-address direction info.
+        # We rewrite each entry against the read table first, then the
+        # write table -- which is correct for non-IN_OUT parameters
+        # (the name appears in exactly one map) and a best-effort
+        # fallback for IN_OUT (defaults to the read binding, which is
+        # the more common case for a vendor block reading state).
+        new_addrs = tuple(_bind(_bind(a, R), W) for a in op.addresses)
+        return dataclasses.replace(op, addresses=new_addrs)
+
+    # Return / End / Jump / Label have no Loc operands
+    return op
+
+
+def rewrite_callee_body(sub: Subroutine,
+                        alloc: SlotAllocation) -> Subroutine:
+    """Rewrite a POU body's TagRef references to formal parameter
+    names into the slot Addresses allocated for them.
+
+    Direction-aware: a ``TagRef("v")`` in a *read* position
+    (contact, compare operand, ``Move.src``, ``BinaryMath.lhs`` /
+    ``rhs``, ``Call.inputs`` source, ``Call.instance``) substitutes
+    against the POU's ``arg_slot`` map; a ``TagRef("v")`` in a *write*
+    position (coil, ``Move.dst``, ``BinaryMath.dst``, ``Call.outputs``
+    destination, ``Call.return_to``) substitutes against
+    ``ret_slot``.  This gets IN_OUT parameters right -- the same name
+    binds to two different addresses depending on direction.
+
+    TagRefs that don't name a formal parameter pass through
+    unchanged -- they may be references to global ``Program.tags``,
+    resolved by a separate writer-side tag-resolver pass.
+
+    POUs without a slot allocation (kind == SUBROUTINE, or any POU
+    with no inputs/outputs/in_outs) are returned untouched.
+
+    Returns a new Subroutine; ``sub`` is not mutated.
+    """
+    pou_slots = alloc.per_pou.get(sub.name)
+    if pou_slots is None:
+        return sub
+
+    reads = pou_slots.arg_slot
+    writes = pou_slots.ret_slot
+
+    new_rungs: list[Rung] = []
+    for rung in sub.rungs:
+        new_ops = [_rewrite_op_refs(op, reads, writes) for op in rung.ops]
+        new_rungs.append(Rung(ops=new_ops, comment=rung.comment))
+
+    return dataclasses.replace(sub, rungs=new_rungs)
+
+
+def lower_pou_bodies(prog: Program,
+                     config: Optional[LoweringConfig] = None,
+                     alloc: Optional[SlotAllocation] = None,
+                     ) -> tuple[Program, SlotAllocation]:
+    """Apply ``rewrite_callee_body`` to every parameterized POU in
+    ``prog``.
+
+    Returns a new Program (input untouched) plus the
+    ``SlotAllocation`` used.  Idempotent under repeated application:
+    after one pass, no rung op holds a TagRef matching a formal
+    parameter name, so a second pass is a no-op on those refs.
+    """
+    if alloc is None:
+        alloc = allocate_slots(prog, config)
+
+    new_subs = [rewrite_callee_body(sub, alloc) for sub in prog.subroutines]
     return dataclasses.replace(prog, subroutines=new_subs), alloc
