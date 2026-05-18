@@ -14,6 +14,7 @@ The plan: a single intermediate language that captures Ladder Diagram and Struct
 | CLICK backend (`backends/click/`) | Read AND write `.ckp` files end-to-end; round-trips byte-identical for unedited projects; edited files load cleanly in CLICK Programming Software v3.43 |
 | OpenPLC backend (`backends/openplc/`) | Skeleton only — no emitter yet |
 | CLI | Not yet implemented |
+| GUI | Not yet implemented — see [`docs/ROADMAP.md`](docs/ROADMAP.md) |
 
 ## Layout
 
@@ -98,7 +99,9 @@ prog = Program(
 
 4. **No silent lossiness.**  When IL can express something a backend can't (or vice-versa), the backend raises `UnsupportedOpError` instead of producing a quietly wrong file.
 
-5. **Open-source-first.**  GPLv3 to align with [OpenPLC](https://openplcproject.com/) and ensure derivatives stay open.
+5. **Open-source-first.**  AGPL-3.0 to ensure derivatives stay open --
+   including SaaS / hosted IDEs built on top of this project (which a
+   plain GPL-3.0 would leave a loophole for).
 
 ## Adding a new backend
 
@@ -111,7 +114,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the [`Backend`](universal
 
 ## License
 
-GPL-3.0-or-later.  See `LICENSE`.
+AGPL-3.0-or-later.  See [`LICENSE`](LICENSE).
+
+Contributions require a `Signed-off-by` line per the
+[Developer Certificate of Origin](https://developercertificate.org/).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Status of the CLICK reverse engineering
 
