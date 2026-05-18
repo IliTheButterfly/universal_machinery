@@ -67,8 +67,8 @@ from ..il import (
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, CTD, CTU, CTUD, Move, OutCoil, OutReset, OutSet,
-    ParallelGroup, TOF, TON, TP, VendorOp,
+    ContactRisingEdge, CTD, CTU, CTUD, Jump, Label, Move, OutCoil, OutReset,
+    OutSet, ParallelGroup, TOF, TON, TP, VendorOp,
 )
 
 
@@ -97,12 +97,44 @@ class LoweringConfig:
 
     Defaults match ``docs/click_calling_convention.md`` and target
     a C2-01CPU.  Override when targeting a project that already
-    uses these ranges for user data.
+    uses these ranges for user data, or to size the scheduler stack
+    (``sched_stack_depth``) for the program's worst-case nesting.
+
+    Scheduler layout
+    ----------------
+    The scheduler state occupies a contiguous DS-register range
+    starting at ``sched_next_id``, sized by ``sched_stack_depth``::
+
+        sched_next_id        next POU id to dispatch (0 = idle)
+        sched_stack_base..   depth slots: caller-id stack
+        sched_sp             stack pointer (count, 0..depth)
+        sched_resume_base..  depth slots: resume-id stack
+        sched_resume_id      current resume id (written by trampoline,
+                             read by POU body's resume-dispatch header)
+
+    Plus one C-bit (``sched_yield_flag``) the POU's yield sequence
+    sets before Return, telling Main's pop logic "the POU yielded;
+    don't pop the frame I just pushed."
+
+    Default layout with stack_depth=8 occupies DS9800..DS9818 (19
+    registers) plus C1500 (1 bit).  Bumping stack_depth shifts the
+    layout but keeps all bases at their nominal positions; callers
+    overriding individual bases must keep them non-overlapping.
     """
     arg_base:          Address = Address("DS9000")   # VAR_INPUT / IN_OUT in
     ret_base:          Address = Address("DS9100")   # VAR_OUTPUT / IN_OUT out
     fb_instance_base:  Address = Address("DS9200")   # FB-instance pointer table
-    sched_base:        Address = Address("DS9800")   # scheduler work area
+
+    # --- Scheduler state ---
+    sched_next_id:     Address = Address("DS9800")   # next POU id to dispatch
+    sched_stack_base:  Address = Address("DS9801")   # caller-id stack (depth slots)
+    sched_sp:          Address = Address("DS9809")   # stack pointer
+    sched_resume_base: Address = Address("DS9810")   # resume-id stack (depth slots)
+    sched_resume_id:   Address = Address("DS9818")   # current resume id
+    sched_yield_flag:  Address = Address("C1500")    # set by yield; cleared each scan
+    sched_stack_depth: int     = 8                   # configurable per project
+
+    # --- Activity bits ---
     pou_active_base:   Address = Address("C2000")    # POU-active flag bits
     step_active_base:  Address = Address("C2256")    # SFC step-active bits
 
@@ -616,3 +648,235 @@ def lower_pou_bodies(prog: Program,
 
     new_subs = [rewrite_callee_body(sub, alloc) for sub in prog.subroutines]
     return dataclasses.replace(prog, subroutines=new_subs), alloc
+
+
+# -----------------------------------------------------------------------------
+# Trampoline + resume dispatch emitters
+# -----------------------------------------------------------------------------
+#
+# Commit A of the scheduler: emit the trampoline that lives at the top of
+# Main and the resume-dispatch header that each non-Main POU body needs.
+# Commit B will add the scheduled-call rewriter that produces yield
+# sequences inside non-Main POU bodies -- those sequences set
+# ``sched_next_id``, push a frame, set ``sched_yield_flag``, and Return,
+# at which point this trampoline takes over.
+#
+# Until commit B lands, no POU body yields, so the pop / resume paths
+# below are inert (correct-but-unused).  Commit A is shaped so that
+# arrives end-to-end ready: emit it now, exercise it later.
+
+
+def emit_dispatch_rungs(alloc: SlotAllocation,
+                        config: LoweringConfig) -> list[Rung]:
+    """Emit Main's dispatch table -- one rung per non-Main POU.
+
+    Each rung tests ``sched_next_id == k`` (the POU's id from
+    ``alloc.pou_id``) and, on match, issues a CLICK-native CALL to
+    that POU.  Within a single scan multiple dispatch rungs can fire
+    in cascade: POU A yields to B by setting sched_next_id=B.id and
+    returning; rung B then matches and dispatches B.
+
+    The Main routine itself is excluded -- Main is the dispatcher,
+    not a dispatched callee.  POUs are emitted in declaration order
+    (whichever the ``alloc.pou_id`` walk yields).
+    """
+    rungs: list[Rung] = []
+    for name, pou_id in alloc.pou_id.items():
+        # Skip Main; it's the host of this trampoline.
+        # ``alloc`` doesn't carry the main-flag, but the scheduler
+        # never re-enters Main, so we filter by checking the parent
+        # Program.  For now we leave the filter to the caller:
+        # ``emit_trampoline`` knows which POU is Main.
+        rungs.append(Rung(
+            ops=[
+                Compare(op="==", lhs=config.sched_next_id, rhs=str(pou_id)),
+                Call(target=name),
+            ],
+            comment=f"dispatch: {name} (id {pou_id})",
+        ))
+    return rungs
+
+
+def emit_pop_rungs(config: LoweringConfig) -> list[Rung]:
+    """Emit the pop sequence that runs after Main's dispatch table.
+
+    Pop only fires when the dispatched POU returned *normally* (i.e.
+    did not yield): the POU's yield sequence sets ``sched_yield_flag``
+    just before its Return, and the pop rungs are gated on
+    ``ContactNC(sched_yield_flag)`` -- "if no yield happened."
+
+    CLICK has no indirect-indexed register read, so the pop is
+    expressed as a switch over the current ``sched_sp`` value: one
+    rung per depth level, restoring caller id + resume id from the
+    fixed slot at that depth.  The ``sp == 0`` case (stack empty)
+    transitions ``sched_next_id`` to 0 (idle) and clears the resume
+    register.
+
+    The trailing rung resets ``sched_yield_flag`` so the next scan
+    starts clean.
+    """
+    rungs: list[Rung] = []
+    depth = config.sched_stack_depth
+
+    for sp_now in range(depth, 0, -1):
+        slot_index = sp_now - 1   # top-of-stack frame index
+        rungs.append(Rung(
+            ops=[
+                ContactNC(config.sched_yield_flag),
+                Compare(op="==", lhs=config.sched_sp, rhs=str(sp_now)),
+                Move(src=_offset(config.sched_stack_base, slot_index),
+                     dst=config.sched_next_id),
+                Move(src=_offset(config.sched_resume_base, slot_index),
+                     dst=config.sched_resume_id),
+                Move(src=str(slot_index), dst=config.sched_sp),
+            ],
+            comment=f"pop: sp={sp_now} -> {slot_index}",
+        ))
+
+    rungs.append(Rung(
+        ops=[
+            ContactNC(config.sched_yield_flag),
+            Compare(op="==", lhs=config.sched_sp, rhs="0"),
+            Move(src="0", dst=config.sched_next_id),
+            Move(src="0", dst=config.sched_resume_id),
+        ],
+        comment="pop: stack empty -> idle",
+    ))
+
+    rungs.append(Rung(
+        ops=[OutReset(config.sched_yield_flag)],
+        comment="clear yield flag for next scan",
+    ))
+    return rungs
+
+
+def emit_trampoline(prog: Program, alloc: SlotAllocation,
+                    config: Optional[LoweringConfig] = None) -> list[Rung]:
+    """Assemble Main's full trampoline: dispatch table + pop sequence.
+
+    The result is intended to be *prepended* to Main's existing rungs
+    (see ``prepend_trampoline_to_main``).  Each scan, the trampoline
+    runs first:
+
+      1. Each dispatch rung tests ``sched_next_id == its POU id``;
+         on match it issues the CLICK CALL.  POUs can cascade-yield
+         to other POUs within the same scan (each yield re-targets
+         ``sched_next_id`` and Returns; the next matching dispatch
+         rung picks it up).
+      2. The pop rungs run after the dispatch table.  If the most
+         recently-dispatched POU did NOT set ``sched_yield_flag``,
+         the pop restores the caller's id + resume id from the
+         stack (or zeroes ``sched_next_id`` if the stack is empty).
+      3. ``sched_yield_flag`` is reset for the next scan.
+
+    Skips POUs whose name matches ``prog.main_subroutine()`` -- Main
+    is the dispatcher and is never dispatched as a callee.
+    """
+    if config is None:
+        config = alloc.config
+
+    main = prog.main_subroutine()
+    main_name = main.name if main is not None else None
+
+    # Build dispatch rungs, filtering Main out.
+    dispatch_rungs: list[Rung] = []
+    for name, pou_id in alloc.pou_id.items():
+        if name == main_name:
+            continue
+        dispatch_rungs.append(Rung(
+            ops=[
+                Compare(op="==", lhs=config.sched_next_id, rhs=str(pou_id)),
+                Call(target=name),
+            ],
+            comment=f"dispatch: {name} (id {pou_id})",
+        ))
+
+    pop_rungs = emit_pop_rungs(config)
+    return dispatch_rungs + pop_rungs
+
+
+def prepend_trampoline_to_main(prog: Program, alloc: SlotAllocation,
+                               config: Optional[LoweringConfig] = None,
+                               ) -> Program:
+    """Return a new Program whose Main subroutine has the trampoline
+    rungs prepended to its existing body.
+
+    Raises ``LoweringError`` if the program has no Main subroutine.
+    The caller-side ``lower_calls`` pass and the callee-body
+    ``lower_pou_bodies`` pass should typically run *before* this --
+    the trampoline references concrete addresses, not symbolic
+    TagRefs, so it's the same shape pre- or post-resolution.
+    """
+    if config is None:
+        config = alloc.config
+
+    main = prog.main_subroutine()
+    if main is None:
+        raise LoweringError(
+            "Program has no main_subroutine; trampoline needs a Main "
+            "to host the dispatch table"
+        )
+
+    trampoline = emit_trampoline(prog, alloc, config)
+    new_main = dataclasses.replace(main, rungs=trampoline + main.rungs)
+
+    new_subs = [new_main if s is main else s for s in prog.subroutines]
+    return dataclasses.replace(prog, subroutines=new_subs)
+
+
+def emit_resume_dispatch(resume_count: int,
+                         config: LoweringConfig,
+                         entry_label: str = "entry",
+                         resume_label_prefix: str = "resume_",
+                         ) -> list[Rung]:
+    """Emit the resume-dispatch header for a non-Main POU body.
+
+    The header runs at the top of every dispatch into the POU and
+    decides whether this is a fresh entry (``sched_resume_id == 0``)
+    or a resume after a nested call returned (``sched_resume_id ==
+    N`` for the Nth resume site).
+
+    ``resume_count`` is the number of distinct resume sites in the
+    POU's body -- one per nested Call the scheduled-call rewriter
+    (commit B) found.  POUs with no nested calls (``resume_count ==
+    0``) need no resume header and this function returns an empty
+    list; the POU body runs from the top every dispatch.
+
+    Layout::
+
+      Rung([Compare(resume_id == 0) -> Jump(entry)])
+      Rung([Compare(resume_id == 1) -> Jump(resume_1)])
+      ...
+      Rung([Compare(resume_id == N) -> Jump(resume_N)])
+      Rung([Label(entry)])     <-- body proper begins here
+
+    The rewriter is responsible for emitting the matching
+    ``Label(resume_K)`` rungs inside the body at each Call's
+    continuation point.
+    """
+    if resume_count == 0:
+        return []
+
+    rungs: list[Rung] = [
+        Rung(
+            ops=[
+                Compare(op="==", lhs=config.sched_resume_id, rhs="0"),
+                Jump(label=entry_label),
+            ],
+            comment="resume dispatch: entry",
+        ),
+    ]
+    for resume_id in range(1, resume_count + 1):
+        rungs.append(Rung(
+            ops=[
+                Compare(op="==", lhs=config.sched_resume_id,
+                        rhs=str(resume_id)),
+                Jump(label=f"{resume_label_prefix}{resume_id}"),
+            ],
+            comment=f"resume dispatch: site {resume_id}",
+        ))
+    rungs.append(Rung(
+        ops=[Label(name=entry_label)],
+        comment="body entry",
+    ))
+    return rungs
