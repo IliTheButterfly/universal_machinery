@@ -26,7 +26,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
-from .ast import Address
+from .ast import Address, TagRef
+
+
+#: A location reference inside an op -- either a concrete vendor
+#: ``Address`` or a symbolic ``TagRef``.  A resolver pass swaps each
+#: ``TagRef`` for an ``Address`` once tag allocation has bound names
+#: to slots; backends should never see an unresolved ``TagRef`` at
+#: emit time.
+Loc = Union[Address, TagRef]
+
+#: A value carried by an op: a ``Loc`` (location to read from) OR a
+#: string literal (a vendor-formatted constant like ``"100"`` or
+#: ``"1.5"``).  Used wherever an op accepts either an address or an
+#: immediate.
+Value = Union[Address, TagRef, str]
 
 
 # -----------------------------------------------------------------------------
@@ -37,25 +51,25 @@ from .ast import Address
 @dataclass(frozen=True)
 class ContactNO:
     """Normally-open contact: passes power when its address is TRUE."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class ContactNC:
     """Normally-closed contact: passes power when its address is FALSE."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class ContactRisingEdge:
     """One-shot rising-edge contact (also called Positive Transition / |P|)."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class ContactFallingEdge:
     """One-shot falling-edge contact (Negative Transition / |N|)."""
-    address: Address
+    address: Loc
 
 
 # -----------------------------------------------------------------------------
@@ -66,19 +80,19 @@ class ContactFallingEdge:
 @dataclass(frozen=True)
 class OutCoil:
     """Standard output coil: writes the rung's logic state to its address."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class OutSet:
     """Latch coil (S): sets the address to TRUE when energised, holds it."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class OutReset:
     """Unlatch coil (R): clears the address to FALSE when energised, holds."""
-    address: Address
+    address: Loc
 
 
 # -----------------------------------------------------------------------------
@@ -89,28 +103,28 @@ class OutReset:
 @dataclass(frozen=True)
 class TON:
     """On-delay timer: output goes TRUE after `preset` time of input being TRUE."""
-    address: Address               # the timer's symbol (e.g. "T0")
+    address: Loc               # the timer's symbol (e.g. "T0")
     preset_ms: int                  # preset value in milliseconds
-    accumulator: Address | None = None
-    done_bit: Address | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None
 
 
 @dataclass(frozen=True)
 class TOF:
     """Off-delay timer: output goes FALSE after `preset` time of input being FALSE."""
-    address: Address
+    address: Loc
     preset_ms: int
-    accumulator: Address | None = None
-    done_bit: Address | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None
 
 
 @dataclass(frozen=True)
 class TP:
     """Pulse timer: output goes TRUE for exactly `preset` time on rising edge."""
-    address: Address
+    address: Loc
     preset_ms: int
-    accumulator: Address | None = None
-    done_bit: Address | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -121,35 +135,35 @@ class TP:
 @dataclass(frozen=True)
 class CTU:
     """Up-counter: increments accumulator on each rising edge of input."""
-    address: Address
+    address: Loc
     preset: int
-    reset: Address | None = None        # reset bit input
-    accumulator: Address | None = None  # current count storage
-    done_bit: Address | None = None     # done output (acc >= preset)
+    reset: Loc | None = None        # reset bit input
+    accumulator: Loc | None = None  # current count storage
+    done_bit: Loc | None = None     # done output (acc >= preset)
 
 
 @dataclass(frozen=True)
 class CTD:
     """Down-counter: decrements accumulator on each rising edge."""
-    address: Address
+    address: Loc
     preset: int
-    load: Address | None = None
-    accumulator: Address | None = None
-    done_bit: Address | None = None     # done output (acc <= 0)
+    load: Loc | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None     # done output (acc <= 0)
 
 
 @dataclass(frozen=True)
 class CTUD:
     """Up/down counter: separate up and down inputs."""
-    address: Address
+    address: Loc
     preset: int
-    cu_input: Address                   # count-up input
-    cd_input: Address                   # count-down input
-    reset: Address | None = None
-    load: Address | None = None
-    accumulator: Address | None = None
-    qu: Address | None = None           # up done (acc >= preset)
-    qd: Address | None = None           # down done (acc <= 0)
+    cu_input: Loc                       # count-up input
+    cd_input: Loc                       # count-down input
+    reset: Loc | None = None
+    load: Loc | None = None
+    accumulator: Loc | None = None
+    qu: Loc | None = None           # up done (acc >= preset)
+    qd: Loc | None = None           # down done (acc <= 0)
 
 
 # -----------------------------------------------------------------------------
@@ -165,8 +179,8 @@ class Compare:
     `lhs` and `rhs` are addresses or numeric literals (as strings).
     """
     op: str
-    lhs: Address | str
-    rhs: Address | str
+    lhs: Value
+    rhs: Value
 
 
 # -----------------------------------------------------------------------------
@@ -177,8 +191,8 @@ class Compare:
 @dataclass(frozen=True)
 class Move:
     """Move/Copy: write `src` into `dst`.  CLICK calls this `Copy`."""
-    src: Address | str             # source address or literal
-    dst: Address                   # destination address
+    src: Value             # source address or literal
+    dst: Loc                       # destination location
 
 
 @dataclass(frozen=True)
@@ -188,9 +202,9 @@ class BinaryMath:
     `op` is one of "+", "-", "*", "/", "%".
     """
     op: str
-    lhs: Address | str
-    rhs: Address | str
-    dst: Address
+    lhs: Value
+    rhs: Value
+    dst: Loc
 
 
 # -----------------------------------------------------------------------------
@@ -199,14 +213,14 @@ class BinaryMath:
 
 
 #: Argument binding at a call site: ``(formal_name, source)``.
-#: ``source`` is the actual address (or literal, as a string) to feed
-#: into the callee's VAR_INPUT slot named ``formal_name``.
-ArgIn  = tuple[str, "Address | str"]
+#: ``source`` is a ``Value`` (Address, TagRef, or string literal) to
+#: feed into the callee's VAR_INPUT slot named ``formal_name``.
+ArgIn  = tuple[str, "Value"]
 
 #: Output binding at a call site: ``(formal_name, destination)``.
 #: After the callee returns, its VAR_OUTPUT slot ``formal_name`` is
-#: copied into ``destination``.
-ArgOut = tuple[str, "Address"]
+#: copied into ``destination`` (a ``Loc``).
+ArgOut = tuple[str, "Loc"]
 
 
 @dataclass(frozen=True)
@@ -241,8 +255,8 @@ class Call:
     target: str
     inputs:  tuple[ArgIn, ...]  = field(default_factory=tuple)
     outputs: tuple[ArgOut, ...] = field(default_factory=tuple)
-    instance:  Optional[Address] = None
-    return_to: Optional[Address] = None
+    instance:  Optional[Loc] = None
+    return_to: Optional[Loc] = None
 
 
 @dataclass(frozen=True)
@@ -386,57 +400,82 @@ Op = Union[
 ]
 
 
-def addresses_of(op: object) -> set[Address]:
-    """Walk an op (recursively for ParallelGroup) and collect every Address it references."""
-    out: set[Address] = set()
+def _locs_of(op: object) -> list[Loc]:
+    """Internal: collect every ``Loc`` reference (Address or TagRef) an
+    op touches.  ``addresses_of`` and ``tags_of`` filter the result.
+
+    Recurses through ``ParallelGroup`` branches.  String literals
+    (``Move(src="5", ...)``) and POU/label names are not Locs and are
+    skipped.  ``Return`` / ``End`` / ``Jump`` / ``Label`` contribute none.
+    """
+    out: list[Loc] = []
     if isinstance(op, (ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
                        OutCoil, OutSet, OutReset)):
-        out.add(op.address)
+        out.append(op.address)
     elif isinstance(op, (TON, TOF, TP)):
-        out.add(op.address)
+        out.append(op.address)
         for a in (op.accumulator, op.done_bit):
             if a is not None:
-                out.add(a)
+                out.append(a)
     elif isinstance(op, (CTU, CTD)):
-        out.add(op.address)
+        out.append(op.address)
         for a in (op.reset if isinstance(op, CTU) else op.load,
                   op.accumulator, op.done_bit):
             if a is not None:
-                out.add(a)
+                out.append(a)
     elif isinstance(op, CTUD):
-        out.add(op.address)
+        out.append(op.address)
         for a in (op.cu_input, op.cd_input, op.reset, op.load,
                   op.accumulator, op.qu, op.qd):
             if a is not None:
-                out.add(a)
+                out.append(a)
     elif isinstance(op, Compare):
         for v in (op.lhs, op.rhs):
-            if isinstance(v, Address):
-                out.add(v)
+            if isinstance(v, (Address, TagRef)):
+                out.append(v)
     elif isinstance(op, Move):
-        if isinstance(op.src, Address):
-            out.add(op.src)
-        out.add(op.dst)
+        if isinstance(op.src, (Address, TagRef)):
+            out.append(op.src)
+        out.append(op.dst)
     elif isinstance(op, BinaryMath):
         for v in (op.lhs, op.rhs):
-            if isinstance(v, Address):
-                out.add(v)
-        out.add(op.dst)
+            if isinstance(v, (Address, TagRef)):
+                out.append(v)
+        out.append(op.dst)
     elif isinstance(op, ParallelGroup):
         for branch in op.branches:
             for inner in branch:
-                out.update(addresses_of(inner))
+                out.extend(_locs_of(inner))
     elif isinstance(op, Call):
         for _, src in op.inputs:
-            if isinstance(src, Address):
-                out.add(src)
+            if isinstance(src, (Address, TagRef)):
+                out.append(src)
         for _, dst in op.outputs:
-            out.add(dst)
+            out.append(dst)
         if op.instance is not None:
-            out.add(op.instance)
+            out.append(op.instance)
         if op.return_to is not None:
-            out.add(op.return_to)
+            out.append(op.return_to)
     elif isinstance(op, VendorOp):
-        out.update(op.addresses)
-    # Return / End / Jump / Label have no addresses
+        out.extend(op.addresses)
     return out
+
+
+def addresses_of(op: object) -> set[Address]:
+    """Walk an op and collect every concrete ``Address`` it references.
+
+    Symbolic ``TagRef`` references are skipped -- they're unresolved
+    until a tag-allocator pass binds them to addresses.  Use
+    ``tags_of`` for those.
+    """
+    return {loc for loc in _locs_of(op) if isinstance(loc, Address)}
+
+
+def tags_of(op: object) -> set[str]:
+    """Walk an op and collect every symbolic ``TagRef`` name it references.
+
+    Backends use this (via ``Program.referenced_tags``) to verify that
+    every symbolic reference has a corresponding ``Tag`` declaration
+    before running the TagRef → Address resolver.
+    """
+    return {loc.name for loc in _locs_of(op) if isinstance(loc, TagRef)}

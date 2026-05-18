@@ -84,17 +84,65 @@ class Address:
 
 @dataclass(frozen=True)
 class Tag:
-    """A named symbolic reference to a memory address with optional metadata.
+    """A named, typed symbol declaration -- vendor-neutral.
 
-    Mirrors what CLICK calls a "nickname entry" and what IEC calls a
-    declared variable.
+    A ``Tag`` declares an addressable symbol by ``name`` + ``data_type``;
+    the ``description`` is free-form documentation that backends export
+    alongside the symbol (CLICK's nickname comment, IEC variable
+    comment, etc.).
+
+    Static vs. dynamic
+    ------------------
+    Tags come in two flavours:
+
+      - **Static** (``address`` is set): the backend must honour the
+        declared address verbatim.  Use for:
+            * physical I/O points (X / Y / vendor-specific slot addrs)
+            * HMI-referenced tags (HMI projects pin specific addresses;
+              regenerating PLC code must not move them)
+            * tags exposed on Modbus / EtherNet-IP / OPC UA
+
+      - **Dynamic** (``address`` is ``None``): the backend's tag
+        allocator picks a free address.  Use for internal scratch
+        values whose location is irrelevant outside the program.
+
+    Rung ops reference a tag symbolically via ``TagRef("name")``; a
+    resolver pass run by the backend writer substitutes each TagRef
+    with its bound ``Address`` before emitting the file.
+
+    Multi-PLC scope
+    ---------------
+    The static/dynamic distinction is currently per-Program (one PLC).
+    In a future multi-PLC ``Project`` model, scope becomes per-PLC:
+    the same tag may be pinned on the device that owns it and dynamic
+    elsewhere.  Out of scope until we add a second PLC backend; see
+    the corresponding Open Question in ``ARCHITECTURE.md``.
     """
 
-    address: Address
-    nickname: str = ""             # human-readable name, may be empty
+    name: str
     data_type: TagType = TagType.BOOL
-    initial_value: str = ""        # textual default (e.g. "0", "1.5")
-    comment: str = ""              # free-form documentation
+    description: str = ""
+    address: Optional[Address] = None
+
+
+@dataclass(frozen=True)
+class TagRef:
+    """A symbolic reference to a ``Tag`` from inside a rung op.
+
+    A ``TagRef`` carries only the tag's ``name``; backends resolve it
+    to an ``Address`` at lower time by looking the name up in
+    ``Program.tags``.  Anywhere a rung op accepts ``Address``, it also
+    accepts ``TagRef`` -- the two are interchangeable at construction
+    time, and a resolver pass downstream rewrites ``TagRef``s into
+    ``Address``es once allocation has picked concrete slots.
+
+    Rationale: address-only programs continue to round-trip (the
+    backend never sees a ``TagRef``), while name-first programs
+    gain the ergonomics of symbolic references without forcing the
+    user to pick addresses up front.
+    """
+
+    name: str
 
 
 # -----------------------------------------------------------------------------
@@ -267,10 +315,12 @@ class Subroutine:
 class Program:
     """The full PLC program: POUs, data blocks, and the tag table.
 
-    ``tags`` is the symbol table: every memory address referenced by any
-    op should have a corresponding ``Tag`` here, even if the nickname is
-    empty.  Backends use this table to emit vendor symbol files (CLICK's
-    SC-NICK section, OpenPLC's variable declarations, etc.).
+    ``tags`` is the symbol table keyed by ``Tag.name``.  Tags may be
+    static (``Tag.address`` set, the backend honours it verbatim) or
+    dynamic (``Tag.address`` None, the backend's allocator picks).
+    Rung ops reference tags symbolically via ``TagRef("name")``; a
+    resolver pass run by the backend writer substitutes each TagRef
+    with its bound ``Address`` before emitting.
 
     ``data_blocks`` holds typed memory aggregates (Siemens-style DBs /
     IEC global VAR blocks).  Each FUNCTION_BLOCK instance lives in its
@@ -278,7 +328,7 @@ class Program:
     """
 
     subroutines: list[Subroutine] = field(default_factory=list)
-    tags: dict[Address, Tag] = field(default_factory=dict)
+    tags: dict[str, Tag] = field(default_factory=dict)
     data_blocks: list[DataBlock] = field(default_factory=list)
 
     # Optional metadata that some backends consume
@@ -306,15 +356,26 @@ class Program:
                 return db
         return None
 
+    def find_tag(self, name: str) -> Optional[Tag]:
+        return self.tags.get(name)
+
+    def static_tags(self) -> list[Tag]:
+        """Tags with a pinned address (must not move on regeneration)."""
+        return [t for t in self.tags.values() if t.address is not None]
+
+    def dynamic_tags(self) -> list[Tag]:
+        """Tags whose address the allocator may choose."""
+        return [t for t in self.tags.values() if t.address is None]
+
     def fb_instances_of(self, fb_name: str) -> list[DataBlock]:
         """All instance DBs that belong to the named FUNCTION_BLOCK."""
         return [db for db in self.data_blocks if db.fb_template == fb_name]
 
     def referenced_addresses(self) -> set[Address]:
-        """Walk every rung (or SFC transition) and collect addresses used.
+        """Walk every rung (or SFC transition) and collect Addresses used.
 
-        Backends use this to ensure the symbol table is complete before
-        emitting vendor symbol files.
+        ``TagRef``s are not included -- they're unresolved symbolic
+        references.  Use ``referenced_tags`` for those.
         """
         from . import ops as _ops
         out: set[Address] = set()
@@ -330,4 +391,27 @@ class Program:
                     for act in st.actions:
                         if isinstance(act.target, Address):
                             out.add(act.target)
+        return out
+
+    def referenced_tags(self) -> set[str]:
+        """Walk every rung (or SFC transition) and collect TagRef names.
+
+        Backends use this to verify that every symbolic reference has a
+        matching ``Tag`` declaration in ``self.tags`` before running the
+        TagRef → Address resolver.
+        """
+        from . import ops as _ops
+        out: set[str] = set()
+        for sub in self.subroutines:
+            for rung in sub.rungs:
+                for op in rung.ops:
+                    out.update(_ops.tags_of(op))
+            if sub.sfc is not None:
+                for tr in sub.sfc.transitions:
+                    for op in tr.condition:
+                        out.update(_ops.tags_of(op))
+                for st in sub.sfc.steps:
+                    for act in st.actions:
+                        if isinstance(act.target, TagRef):
+                            out.add(act.target.name)
         return out

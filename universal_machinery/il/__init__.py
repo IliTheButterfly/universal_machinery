@@ -57,18 +57,20 @@ from .ast import (
     Rung,
     Subroutine,
     Tag,
+    TagRef,
     TagType,
     Var,
     VarDirection,
 )
 from . import ops, sfc
-from .ops import VendorOp
+from .ops import Loc, Value, VendorOp
 from .sfc import Action, SfcNetwork, Step, Transition
 
 __all__ = [
     "Action",
     "Address",
     "DataBlock",
+    "Loc",
     "PouKind",
     "Program",
     "Rung",
@@ -76,8 +78,10 @@ __all__ = [
     "Step",
     "Subroutine",
     "Tag",
+    "TagRef",
     "TagType",
     "Transition",
+    "Value",
     "Var",
     "VarDirection",
     "VendorOp",
