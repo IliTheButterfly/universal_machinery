@@ -100,11 +100,58 @@ for the canonical list.  Categories:
   - **Counters**: `CTU`, `CTD`, `CTUD`
   - **Compare**: `Compare(op, lhs, rhs)` for ==, !=, <, <=, >, >=
   - **Math**: `Move`, `BinaryMath` for +, -, *, /, %
-  - **Control flow**: `Call`, `Return`, `End`, `Jump`, `Label`
+  - **Control flow**: `Call` (parameterized), `Return`, `End`, `Jump`, `Label`
   - **Topology**: `ParallelGroup`
+  - **Vendor extension**: `VendorOp` -- escape hatch for
+    vendor-specific instructions preserved through the IL verbatim
 
 Every op is a frozen dataclass — the AST is hashable, comparable, and
 trivially serialisable (via `dataclasses.asdict`).
+
+### Universal-compilation philosophy
+
+The IL is *not* a lowest-common-denominator of what every PLC
+supports.  It is the **union** of features found in real PLCs, and
+each backend is a compiler that lowers the IL onto its target's
+runtime -- synthesising whatever the target doesn't support natively.
+
+Example: CLICK has neither parameterized subroutines nor nested
+calls.  The CLICK backend implements both via a cooperative
+scheduler + reserved-region calling convention (see
+[`click_calling_convention.md`](click_calling_convention.md)).  The
+emitted ladder is ugly; the user never sees it.  This is the LLVM
+model applied to PLCs.
+
+Therefore:
+
+  - **Anything any PLC supports, the IL supports.**  When a feature
+    is added for one vendor, every backend gains a lowering pass for
+    it (possibly an expensive one).
+  - **Capabilities are a cost model, not a feasibility model.**
+    Instead of "this op is unsupported," a backend declares "this op
+    costs N bytes of memory and adds M scans of latency on this
+    target."  Users pick features knowing the trade-offs.
+  - **The diagnostic shifts from "we couldn't emit this" to "this
+    will burn X bytes / Y scans on your PLC."**  Refusal is
+    reserved for things genuinely impossible on the target (e.g.
+    floating-point math on a PLC that lacks the memory budget).
+
+### Vendor extensions via `VendorOp`
+
+`VendorOp` is the open-extension hatch for vendor-specific
+instructions whose *identity* should be preserved (a CLICK `DRUM`,
+a Siemens `SCL_S_LOOP`, an Allen-Bradley `PIDE`).  It is not a
+mechanism for "the IL can't express this"; the IL targets
+universal compilation.  It is specifically for:
+
+  - Round-trip preservation (decoded vendor instructions survive
+    re-emit unchanged)
+  - Performance hand-optimisation (use a vendor's native FB
+    instead of synthesising the equivalent)
+  - Hardware-tied operations (motion-control, drive parameters)
+
+Backends raise `UnsupportedOpError` for a `VendorOp` whose
+`vendor` doesn't match -- never silently drop, never substitute.
 
 ## Backends
 
@@ -122,30 +169,30 @@ submodules under `backends/<vendor>/`.
 
 ### Capability negotiation
 
-Not every backend can express every IL op.  CLICK has no native
-`TON` (it has its own timer block); OpenPLC has no `Copy` (use IEC's
-`MOVE`).  Backends declare which capabilities they support; callers
-check before lowering:
+Every IL op should be lowerable to every backend given enough memory
+(see "Universal-compilation philosophy" above).  Capabilities exist
+to declare **how** -- natively or via synthesis -- and at what cost.
 
-```python
-b = get_backend("click")
-if "timers" not in b.capabilities:
-    raise NotImplementedError("CLICK backend doesn't support timers yet")
-b.write(program, "out.ckp")
-```
+The standard capability strings on `Backend.capabilities` (see
+[`base.py`](../universal_machinery/backends/base.py)) cover op
+categories; per-op cost models are TBD as a future addition.
 
-When a backend encounters an op it can't lower, it raises
-``UnsupportedOpError`` rather than silently producing a broken file.
+When a backend genuinely cannot lower an op (e.g. a `VendorOp` from a
+different vendor, or a feature the target has insufficient memory to
+synthesise), it raises ``UnsupportedOpError`` -- not silent drop.
 
 ### Round-trip guarantee
 
 A backend's `read` + `write` should produce a file the vendor tool
-accepts.  Ideally for unedited input it's byte-identical (the CLICK
+accepts.  For unedited input it should be byte-identical (the CLICK
 backend achieves this).
 
 Cross-backend round-trips (read CLICK → IL → write OpenPLC) are
-expected to be lossy in the IL → vendor lowering only, with explicit
-diagnostics on lossy ops.
+*semantically* equivalent: the same logical program lowered to a
+different target.  Vendor-specific `VendorOp`s do not survive
+cross-vendor round-trips (they raise `UnsupportedOpError`); a user
+who needs cross-vendor portability avoids `VendorOp` and uses IL
+primitives whose lowering is universal.
 
 ## Adding a backend
 
@@ -202,3 +249,24 @@ diagnostics on lossy ops.
   config (CPU model, network setup, HMI bindings).  We surface a few
   fields on `Program` (`cpu_model`, `project_name`); the rest is
   passed through opaquely on read and re-emitted on write.
+
+- **Static vs. dynamic tag scope in multi-PLC systems**: A `Tag` is
+  *static* when its ``address`` is set (backend must honour it
+  verbatim) and *dynamic* when ``address=None`` (a tag allocator
+  picks a free slot).  Static is the right default for physical I/O,
+  HMI-referenced tags (regenerating PLC code must not move them),
+  and tags exposed on a fieldbus.  Today the IL models a single PLC,
+  so static/dynamic is a per-Program flag.  Once we add a second
+  backend, static/dynamic becomes *per-PLC*: the same logical tag
+  may be pinned on the device that owns it and dynamic on devices
+  that only consume it.  Representing that needs a higher-level
+  ``Project`` container holding multiple ``Program``s plus a
+  tag-scoping policy.  Out of scope until we ship a second backend.
+
+- **Cross-device tag sharing**: Tags exposed on Modbus, EtherNet/IP,
+  or vendor-specific shared-memory protocols cross PLC boundaries.
+  The IL today has no notion of "this tag is published or subscribed
+  to over the network."  When we add a second backend we'll need a
+  sharing manifest -- one ``SharedTagBinding`` table per Project
+  mapping ``(producer_plc, tag_name) -> (consumer_plc, tag_name)``
+  plus the transport.  Until then, every tag is PLC-local.

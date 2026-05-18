@@ -62,6 +62,7 @@ from .ast import (
     VarDirection,
 )
 from . import ops, sfc
+from .ops import VendorOp
 from .sfc import Action, SfcNetwork, Step, Transition
 
 __all__ = [
@@ -79,8 +80,9 @@ __all__ = [
     "Transition",
     "Var",
     "VarDirection",
+    "VendorOp",
     "ops",
     "sfc",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

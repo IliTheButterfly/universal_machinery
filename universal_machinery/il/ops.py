@@ -294,11 +294,85 @@ class ParallelGroup:
 
 
 # -----------------------------------------------------------------------------
+# Vendor extension protocol
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VendorOp:
+    """A vendor-specific operation preserved verbatim through the IL.
+
+    ``VendorOp`` is the escape hatch for instructions a vendor's
+    runtime provides natively but the IL does not model as primitives.
+    Three uses:
+
+      1. **Round-trip preservation.**  A CLICK ``DRUM`` instruction
+         read by the decoder is stored as ``VendorOp(vendor="click",
+         name="DRUM", ...)`` and re-emitted on write -- the original
+         instruction identity is preserved instead of being
+         decomposed into primitives.
+
+      2. **Performance hand-optimisation.**  A vendor-specific
+         function block (Siemens ``SCL_S_LOOP``, Allen-Bradley
+         ``PIDE``, etc.) is more efficient than the synthesised
+         equivalent.  Users can invoke it explicitly when targeting
+         that vendor.
+
+      3. **Hardware-tied operations.**  Motion-control axis
+         instructions, drive-parameter writes, vendor-proprietary
+         comm blocks that don't have a meaningful IL primitive
+         equivalent.
+
+    Important framing -- ``VendorOp`` is **not** for things the IL
+    can't express.  The IL targets the union of all PLC features
+    via compilation (see ``docs/click_calling_convention.md`` for
+    the model: any feature can be lowered onto any target with
+    enough memory).  ``VendorOp`` is specifically for preserving
+    vendor instruction *identity*, not for adding missing IL
+    features.
+
+    Behaviour
+    ---------
+    A backend lowering a Program raises ``UnsupportedOpError`` when
+    it encounters a ``VendorOp`` whose ``vendor`` doesn't match its
+    own name.  It must never silently drop or attempt to synthesise
+    -- if the user authored a CLICK ``DRUM`` explicitly, they meant
+    that instruction; refusing to emit it is more honest than
+    emitting an approximation.
+
+    Subclassing
+    -----------
+    Backends may subclass ``VendorOp`` to give their instructions
+    stronger types::
+
+        @dataclass(frozen=True)
+        class ClickDrum(VendorOp):
+            vendor: str = "click"
+            name:   str = "DRUM"
+            preset: int = 0
+            steps:  tuple[Address, ...] = ()
+
+    Subclasses must populate ``addresses`` (or override
+    ``addresses_of`` behaviour) so the symbol-table walker sees the
+    op's address references.
+    """
+
+    vendor: str                    # short vendor id matching Backend.name
+    name: str                      # vendor's instruction name (DRUM, PIDE, ...)
+    operands: tuple[object, ...] = ()
+    attributes: tuple[tuple[str, object], ...] = ()
+    addresses: tuple[Address, ...] = ()
+    comment: str = ""
+
+
+# -----------------------------------------------------------------------------
 # Type aliases + helpers
 # -----------------------------------------------------------------------------
 
 #: Union of every concrete op type.  Backends typically dispatch on
 #: ``isinstance(op, X)``; static-type checkers see ``Op`` as the union.
+#: ``VendorOp`` is the open-extension hatch -- backend-specific subclasses
+#: of ``VendorOp`` are still ``Op`` via inheritance.
 Op = Union[
     ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
     OutCoil, OutSet, OutReset,
@@ -308,6 +382,7 @@ Op = Union[
     Move, BinaryMath,
     Call, Return, End, Jump, Label,
     ParallelGroup,
+    VendorOp,
 ]
 
 
@@ -361,5 +436,7 @@ def addresses_of(op: object) -> set[Address]:
             out.add(op.instance)
         if op.return_to is not None:
             out.add(op.return_to)
+    elif isinstance(op, VendorOp):
+        out.update(op.addresses)
     # Return / End / Jump / Label have no addresses
     return out
