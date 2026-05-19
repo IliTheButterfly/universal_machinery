@@ -12,11 +12,11 @@ Modules
     parse pass.  Used standalone for code inspection and as the body
     payload for the PLCopen TC6 XML emitter.
 
-(future) ``plcopen_xml``
+``plcopen_xml``
     IEC 61131-3 / PLCopen TC6 XML interchange format.  Wraps the ST
     emitter's output inside the TC6 schema -- the deliverable for any
     PLCopen conformance claim.
 """
-from . import st
+from . import plcopen_xml, st
 
-__all__ = ["st"]
+__all__ = ["plcopen_xml", "st"]

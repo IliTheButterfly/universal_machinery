@@ -145,15 +145,21 @@ declaration form is missing.
 
 Concrete slices to close the larger conformance gaps, in priority order:
 
-1. **PLCopen TC6 XML backend**.  The actual certification deliverable.
-   Stand up the OpenPLC backend's `write()` path emitting PLCopen XML
-   per the TC6 schema.  Verify against PLCopen's published test
-   programs.  Without this, every other conformance bullet is
-   provisional.
+1. **PLCopen TC6 XML emitter**.  ⚠️ *Partial -- first cut landed.*
+   ``universal_machinery.emitters.plcopen_xml`` emits TC6 v2.01 XML
+   with POU declarations, variable interfaces, return types, and ST
+   bodies (built on the ST emitter).  Tags are exported as a
+   synthetic ``GlobalsHolder`` POU's ``<localVars>`` until
+   ``<configurations><globalVars>`` lands.  Verified against ET XML
+   parser; the next step is a round-trip against PLCopen's
+   reference tools and the official XSD.
 
 2. **ST AST**.  Add an alternative body type to `Subroutine` (next to
    `rungs` and `sfc`): an ordered list of ST statements.  Needed for
    any IEC FUNCTION/FB that's authored in ST rather than LD.
+   *Note*: the ST emitter (``universal_machinery.emitters.st``)
+   already translates rung bodies to ST text; a follow-up makes ST
+   first-class so users can author in ST directly.
 
 3. **Direct representation parser**.  Accept `%I0.0`, `%Q0.0`, `%MX5`,
    etc. as input to `loc(...)` alongside vendor-style addresses.
