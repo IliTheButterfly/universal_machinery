@@ -134,12 +134,15 @@ def test_configuration_global_vars_distinct_from_resource_global_vars():
 
 
 def test_configuration_access_vars():
+    from universal_machinery.builders import access_var
     cfg = configuration(
         "Default",
-        access_vars=[var("hmi_tag", TagType.INT)],
+        access_vars=[access_var("hmi_tag",
+                                 "Resource1.Main.value", TagType.INT)],
     )
     assert len(cfg.access_vars) == 1
-    assert cfg.access_vars[0].name == "hmi_tag"
+    assert cfg.access_vars[0].alias == "hmi_tag"
+    assert cfg.access_vars[0].instance_path == "Resource1.Main.value"
 
 
 # -----------------------------------------------------------------------------

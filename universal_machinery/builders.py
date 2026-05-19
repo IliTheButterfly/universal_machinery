@@ -50,11 +50,11 @@ import re
 from typing import Optional, Sequence, Union
 
 from .il import (
-    AccessSpec, Address, AliasType, ArrayType, Assignment, BinaryExpr,
-    BinaryOp, BlockPin, CaseClause, CaseStatement, Configuration,
-    Connection, ContinueStatement, DataBlock, DataType, EnumType,
-    ExitStatement, Expression, FbBlock, FbdJump, FbdLabel, FbdNetwork,
-    FbdReturn, FieldAccess, ForStatement, FunctionCallExpr,
+    AccessSpec, AccessVar, Address, AliasType, ArrayType, Assignment,
+    BinaryExpr, BinaryOp, BlockPin, CaseClause, CaseStatement, ConfigVar,
+    Configuration, Connection, ContinueStatement, DataBlock, DataType,
+    EnumType, ExitStatement, Expression, FbBlock, FbdJump, FbdLabel,
+    FbdNetwork, FbdReturn, FieldAccess, ForStatement, FunctionCallExpr,
     FunctionCallStatement, GotoStatement, IfStatement, InOutVariable,
     InVariable, IndexAccess, Interface, LabelStatement, Literal, Method,
     NamedType, OutVariable, PouInstance, PouKind, Position, Program,
@@ -1361,20 +1361,55 @@ def resource(name: str, *,
     )
 
 
+def access_var(alias: str, instance_path: str, type_: TagType, *,
+               direction: str = "READ_WRITE",
+               comment: str = "") -> AccessVar:
+    """Declare an IEC §2.7.1 ``VAR_ACCESS`` entry.
+
+    ``alias`` is the externally visible name; ``instance_path`` is
+    the absolute IEC §2.4.3.2 path
+    (``Resource.PouInstance.var[.field]``) the alias resolves to.
+    ``direction`` is ``READ_ONLY`` or ``READ_WRITE`` (default).
+    """
+    return AccessVar(
+        alias=alias, instance_path=instance_path,
+        data_type=type_, direction=direction, comment=comment,
+    )
+
+
+def config_var(instance_path: str, type_: TagType, *,
+               initial: str = "",
+               comment: str = "") -> ConfigVar:
+    """Declare an IEC §2.4.3.2 ``VAR_CONFIG`` entry.
+
+    Pins ``initial`` as the runtime value of the variable at
+    ``instance_path`` (absolute path of the form
+    ``Resource.PouInstance.var``).
+    """
+    return ConfigVar(
+        instance_path=instance_path, data_type=type_,
+        initial_value=initial, comment=comment,
+    )
+
+
 def configuration(name: str, *,
                   resources: Optional[Sequence[Resource]] = None,
                   global_vars: Optional[Sequence[Var]] = None,
-                  access_vars: Optional[Sequence[Var]] = None,
+                  access_vars: Optional[Sequence[AccessVar]] = None,
+                  config_vars: Optional[Sequence[ConfigVar]] = None,
                   comment: str = "") -> Configuration:
     """Build a ``Configuration`` -- top-level system organisation.
 
     Use one Configuration per project; multi-PLC projects use multiple
-    Resources inside the same Configuration."""
+    Resources inside the same Configuration.  ``access_vars`` declares
+    externally-visible aliases (HMI / OPC UA / fieldbus exposure);
+    ``config_vars`` pins per-instance parameter values at link time."""
     return Configuration(
         name=name,
         resources=list(resources or []),
         global_vars=list(global_vars or []),
         access_vars=list(access_vars or []),
+        config_vars=list(config_vars or []),
         comment=comment,
     )
 
@@ -1464,8 +1499,9 @@ __all__ = [
     # User-defined types
     "named_type", "struct_type", "array_type", "enum_type", "alias_type",
     "subrange_type",
-    # Configuration / Resource / Task
+    # Configuration / Resource / Task / VAR_ACCESS / VAR_CONFIG
     "task_spec", "pou_instance", "resource", "configuration",
+    "access_var", "config_var",
     # POUs
     "subroutine", "prog", "fn", "fb",
     # IEC 3rd-edition OOP

@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from .ast import Var
+    from .ast import TagType, Var
 
 
 # -----------------------------------------------------------------------------
@@ -131,30 +131,109 @@ class Resource:
 # -----------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class AccessVar:
+    """IEC §2.7.1 ``VAR_ACCESS`` declaration / PLCopen
+    ``<accessVariable>``.
+
+    Binds a short ``alias`` (the externally visible name -- HMI tag,
+    OPC UA node, fieldbus symbol) to an absolute ``instance_path``
+    inside the configuration's runtime tree.  The path follows IEC
+    §2.4.3.2 syntax: ``Resource.PouInstance.var`` (with optional
+    nested ``.field`` / ``[index]`` for struct members or array
+    elements).
+
+    ``direction`` controls read/write access from external clients:
+
+      - ``READ_ONLY``   : client may read; writes raise an error
+      - ``READ_WRITE``  : default; bidirectional
+      - ``READ_WRITE`` is also IEC's implicit default when the
+        keyword is omitted
+
+    Distinct from a plain ``Var`` because the IEC semantics are
+    different: an ``AccessVar`` is not its own storage but a
+    *binding* exposing existing storage under an alias.  Modeled
+    as a separate dataclass so emitters can produce the right
+    ``<accessVariable alias=... instancePathAndName=...>`` shape
+    without overloading ``Var`` fields.
+    """
+    alias: str
+    instance_path: str
+    data_type: "TagType"
+    direction: str = "READ_WRITE"   # READ_ONLY | READ_WRITE
+    comment: str = ""
+
+
+@dataclass(frozen=True)
+class ConfigVar:
+    """IEC §2.4.3.2 ``VAR_CONFIG`` entry / PLCopen
+    ``<configVars><configVariable>``.
+
+    Binds an absolute ``instance_path`` to an ``initial_value`` at
+    configuration-link time.  Used to parameterise programs without
+    modifying the POU's source: different ``Configuration``s (or
+    different ``Resource``s within one Configuration) can supply
+    different values for the same logical parameter.
+
+    The IEC syntax::
+
+        VAR_CONFIG
+            Resource1.MyProg.threshold : INT := 100;
+            Resource2.MyProg.threshold : INT := 200;
+        END_VAR
+
+    ``instance_path`` is the absolute path; ``initial_value`` is
+    rendered into the IEC ``:= value`` form (string-typed so any
+    IEC-literal form -- ``T#100ms``, ``DT#2026-05-19-...``,
+    ``16#FF`` -- round-trips verbatim).
+    """
+    instance_path: str
+    data_type: "TagType"
+    initial_value: str = ""
+    comment: str = ""
+
+
 @dataclass
 class Configuration:
     """IEC §2.7 CONFIGURATION -- top-level system organisation.
 
-    Holds one or more resources, system-wide global variables, and
+    Holds one or more resources, system-wide global variables,
     access variables exposed to external clients (HMI, OPC UA,
-    fieldbus).  A program typically has exactly one configuration;
-    multi-PLC projects use the same configuration with multiple
-    resources.
+    fieldbus), and config variables that pin per-instance
+    parameter values at link time.  A program typically has
+    exactly one configuration; multi-PLC projects use the same
+    configuration with multiple resources.
 
-    Access variables (``access_vars``) describe published symbols
-    with an access path -- e.g. an HMI tag that reads a specific
-    POU instance variable.  Modeled as ``Var``s for uniformity;
-    the writer-time emitter renders them in the PLCopen XML
-    ``<accessVars>`` element.
+    ``access_vars`` is a list of ``AccessVar`` -- each binds an
+    external alias to an internal instance path with a direction
+    (``READ_ONLY`` / ``READ_WRITE``).  PLCopen emits them as
+    ``<accessVars><accessVariable .../></accessVars>``.
+
+    ``config_vars`` is a list of ``ConfigVar`` -- each pins an
+    initial value to an absolute instance path at link time.
+    PLCopen emits them as ``<configVars><configVariable .../></configVars>``.
     """
     name: str
     resources: list[Resource] = field(default_factory=list)
     global_vars: list["Var"] = field(default_factory=list)
-    access_vars: list["Var"] = field(default_factory=list)
+    access_vars: list[AccessVar] = field(default_factory=list)
+    config_vars: list[ConfigVar] = field(default_factory=list)
     comment: str = ""
 
     def find_resource(self, name: str) -> Optional[Resource]:
         for r in self.resources:
             if r.name == name:
                 return r
+        return None
+
+    def find_access_var(self, alias: str) -> Optional[AccessVar]:
+        for v in self.access_vars:
+            if v.alias == alias:
+                return v
+        return None
+
+    def find_config_var(self, instance_path: str) -> Optional[ConfigVar]:
+        for v in self.config_vars:
+            if v.instance_path == instance_path:
+                return v
         return None

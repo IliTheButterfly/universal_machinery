@@ -537,12 +537,15 @@ def test_resource_block_full_structure():
 
 
 def test_configuration_block_full_structure():
-    from universal_machinery.builders import configuration, resource, task_spec
+    from universal_machinery.builders import (
+        access_var, configuration, resource, task_spec,
+    )
     from universal_machinery.emitters.st import _fmt_configuration
     cfg = configuration(
         "Default",
         global_vars=[var("system_state", TagType.INT)],
-        access_vars=[var("hmi_tag", TagType.INT)],
+        access_vars=[access_var("hmi_tag",
+                                 "CPU1.Main.value", TagType.INT)],
         resources=[
             resource("CPU1",
                      tasks=[task_spec("Fast", priority=1, interval="T#10ms")]),
@@ -554,7 +557,8 @@ def test_configuration_block_full_structure():
     assert "VAR_GLOBAL" in text
     assert "system_state : INT;" in text
     assert "VAR_ACCESS" in text
-    assert "hmi_tag : INT;" in text
+    # IEC §2.7.1: alias : instance_path : type direction;
+    assert "hmi_tag : CPU1.Main.value : INT READ_WRITE;" in text
     assert "RESOURCE CPU1 ON PLC" in text
 
 

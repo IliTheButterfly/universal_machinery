@@ -65,12 +65,12 @@ from typing import Optional, Sequence
 from xml.sax.saxutils import escape, quoteattr
 
 from ..il import (
-    Address, AliasType, ArrayType, BlockPin, Configuration, Connection,
-    DataBlock, EnumType, FbBlock, FbdJump, FbdLabel, FbdNetwork, FbdReturn,
-    InOutVariable, InVariable, NamedType, OutVariable, PouInstance,
-    PouKind, Position, Program, Resource, StructType, SubrangeType,
-    Subroutine, Tag, TagType, TaskSpec, Var, VarDirection,
-    is_signed_subrange,
+    AccessVar, Address, AliasType, ArrayType, BlockPin, ConfigVar,
+    Configuration, Connection, DataBlock, EnumType, FbBlock, FbdJump,
+    FbdLabel, FbdNetwork, FbdReturn, InOutVariable, InVariable, NamedType,
+    OutVariable, PouInstance, PouKind, Position, Program, Resource,
+    StructType, SubrangeType, Subroutine, Tag, TagType, TaskSpec, Var,
+    VarDirection, is_signed_subrange,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -907,35 +907,91 @@ def _emit_configuration(cfg: Configuration) -> str:
         parts.append(_indent(_emit_globalVars_block(cfg.global_vars), "  "))
 
     if cfg.access_vars:
-        # accessVariable has a different shape than plain <variable>:
-        # required attributes are alias + instancePathAndName, plus an
-        # optional direction.  We use Var.name for both alias and
-        # instancePathAndName since the IL doesn't carry an explicit
-        # instance path; richer access-path modeling is a follow-up.
-        inner_lines: list[str] = []
-        for v in cfg.access_vars:
-            attrs = (
-                f'alias={quoteattr(v.name)} '
-                f'instancePathAndName={quoteattr(v.name)}'
-            )
-            elem = (
-                f"    <accessVariable {attrs}>\n"
-                f"      <type>{_iec_type_element(v.data_type)}</type>"
-            )
-            if v.comment:
-                elem += (
-                    f"\n      <documentation>"
-                    f'<p xmlns="http://www.w3.org/1999/xhtml">'
-                    f"{escape(v.comment)}</p></documentation>"
-                )
-            elem += "\n    </accessVariable>"
-            inner_lines.append(elem)
-        parts.append("  <accessVars>\n"
-                     + "\n".join(inner_lines)
-                     + "\n  </accessVars>")
+        parts.append(_indent(_emit_access_vars(cfg.access_vars), "  "))
+
+    if cfg.config_vars:
+        parts.append(_indent(_emit_config_vars(cfg.config_vars), "  "))
 
     parts.append("</configuration>")
     return "\n".join(parts)
+
+
+#: PLCopen XSD's ``accessType`` enumeration uses camelCase, but IEC
+#: ST keywords are uppercase with underscores.  Map between them.
+_ACCESS_DIRECTION_XML = {
+    "READ_ONLY":  "readOnly",
+    "READ_WRITE": "readWrite",
+}
+
+
+def _emit_access_vars(access_vars: Sequence[AccessVar]) -> str:
+    """``<accessVars>`` block per the PLCopen TC6 ``varListAccess``
+    type.
+
+    Each ``AccessVar`` becomes one ``<accessVariable>`` with the
+    required ``alias`` and ``instancePathAndName`` attributes plus
+    the optional ``direction`` (``readOnly`` / ``readWrite``).
+    Body holds the ``<type>`` declaration and optional
+    ``<documentation>`` for comments.
+    """
+    inner_lines: list[str] = []
+    for v in access_vars:
+        attrs = (
+            f"alias={quoteattr(v.alias)} "
+            f"instancePathAndName={quoteattr(v.instance_path)}"
+        )
+        direction_xml = _ACCESS_DIRECTION_XML.get(v.direction)
+        if direction_xml is not None:
+            attrs += f' direction="{direction_xml}"'
+        elem = (
+            f"  <accessVariable {attrs}>\n"
+            f"    <type>{_iec_type_element(v.data_type)}</type>"
+        )
+        if v.comment:
+            elem += (
+                f"\n    <documentation>"
+                f'<p xmlns="http://www.w3.org/1999/xhtml">'
+                f"{escape(v.comment)}</p></documentation>"
+            )
+        elem += "\n  </accessVariable>"
+        inner_lines.append(elem)
+    return "<accessVars>\n" + "\n".join(inner_lines) + "\n</accessVars>"
+
+
+def _emit_config_vars(config_vars: Sequence[ConfigVar]) -> str:
+    """``<configVars>`` block per the PLCopen TC6 ``varListConfig``
+    type.
+
+    Each ``ConfigVar`` becomes one ``<configVariable>`` with the
+    required ``instancePathAndName`` attribute and a ``<type>`` /
+    optional ``<initialValue>`` body.
+    """
+    inner_lines: list[str] = []
+    for v in config_vars:
+        attrs = f"instancePathAndName={quoteattr(v.instance_path)}"
+        body_lines = [f"    <type>{_iec_type_element(v.data_type)}</type>"]
+        if v.initial_value:
+            # PLCopen schema's ``<initialValue>`` wraps a ``<simpleValue
+            # value="..."/>`` for elementary types.  We keep the
+            # textual form verbatim so IEC-typed literals
+            # (``T#100ms``, ``16#FF``, etc.) round-trip.
+            body_lines.append(
+                f'    <initialValue>'
+                f'<simpleValue value={quoteattr(v.initial_value)}/>'
+                f"</initialValue>"
+            )
+        if v.comment:
+            body_lines.append(
+                f"    <documentation>"
+                f'<p xmlns="http://www.w3.org/1999/xhtml">'
+                f"{escape(v.comment)}</p></documentation>"
+            )
+        inner_lines.append(
+            f"  <configVariable {attrs}>\n"
+            + "\n".join(body_lines)
+            + "\n  </configVariable>"
+        )
+    return "<configVars>\n" + "\n".join(inner_lines) + "\n</configVars>"
 
 
 def emit_xml(prog: Program,

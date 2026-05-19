@@ -28,14 +28,16 @@ need a type-resolver pass that's a separate slice.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 from .il import (
-    Assignment, Configuration, FbBlock, FbdJump, FbdLabel, FbdNetwork,
-    FbdReturn, ForStatement, GotoStatement, InOutVariable, InVariable,
-    Interface, LabelStatement, Method, NamedType, OutVariable, PouInstance,
-    PouKind, Program, Resource, Subroutine, TagRef,
+    AccessVar, Assignment, ConfigVar, Configuration, FbBlock, FbdJump,
+    FbdLabel, FbdNetwork, FbdReturn, ForStatement, GotoStatement,
+    InOutVariable, InVariable, Interface, LabelStatement, Method,
+    NamedType, OutVariable, PouInstance, PouKind, Program, Resource,
+    Subroutine, TagRef,
 )
 from .il.ast import VarDirection
 from .il.ops import Call, ParallelGroup, tags_of
@@ -487,6 +489,97 @@ def _check_body_kind_mutex(prog: Program) -> list[ValidationError]:
     return errors
 
 
+_INSTANCE_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\])+$"
+)
+
+
+def _check_access_and_config_vars(prog: Program) -> list[ValidationError]:
+    """IEC §2.4.3.2 / §2.7.1 well-formedness for ``VAR_ACCESS`` and
+    ``VAR_CONFIG`` entries on each configuration.
+
+    Emits:
+
+      - access-var-bad-direction   : ``AccessVar.direction`` isn't
+                                      one of ``READ_ONLY`` /
+                                      ``READ_WRITE``.
+      - access-var-duplicate-alias : two ``AccessVar``s in the same
+                                      configuration share the same
+                                      alias (external clients would
+                                      see ambiguity).
+      - access-var-bad-path        : ``instance_path`` doesn't look
+                                      like a valid IEC §2.4.3.2 path
+                                      (must contain at least one
+                                      ``.`` or ``[]`` to qualify the
+                                      reference into a resource).
+      - config-var-bad-path        : same shape check for ConfigVar.
+      - config-var-duplicate-path  : two ``ConfigVar``s in the same
+                                      configuration bind the same
+                                      ``instance_path`` (ambiguous
+                                      link-time value).
+    """
+    errors: list[ValidationError] = []
+    valid_directions = {"READ_ONLY", "READ_WRITE"}
+
+    for cfg in prog.configurations:
+        if not isinstance(cfg, Configuration):
+            continue
+        where = f"Configuration '{cfg.name}'"
+
+        # AccessVars
+        seen_aliases: set[str] = set()
+        for v in cfg.access_vars:
+            if v.direction not in valid_directions:
+                errors.append(ValidationError(
+                    code="access-var-bad-direction",
+                    message=(f"AccessVar {v.alias!r} has direction "
+                             f"{v.direction!r}; expected one of "
+                             f"{sorted(valid_directions)}"),
+                    location=where,
+                ))
+            if v.alias in seen_aliases:
+                errors.append(ValidationError(
+                    code="access-var-duplicate-alias",
+                    message=(f"AccessVar alias {v.alias!r} declared "
+                             f"more than once"),
+                    location=where,
+                ))
+            seen_aliases.add(v.alias)
+            if not _INSTANCE_PATH_RE.match(v.instance_path):
+                errors.append(ValidationError(
+                    code="access-var-bad-path",
+                    message=(f"AccessVar {v.alias!r} instance_path "
+                             f"{v.instance_path!r} doesn't look like "
+                             f"an IEC §2.4.3.2 access path "
+                             f"(expected ``Resource.PouInstance.var`` "
+                             f"or similar)"),
+                    location=where,
+                ))
+
+        # ConfigVars
+        seen_paths: set[str] = set()
+        for v in cfg.config_vars:
+            if not _INSTANCE_PATH_RE.match(v.instance_path):
+                errors.append(ValidationError(
+                    code="config-var-bad-path",
+                    message=(f"ConfigVar instance_path "
+                             f"{v.instance_path!r} doesn't look like "
+                             f"an IEC §2.4.3.2 access path"),
+                    location=where,
+                ))
+            if v.instance_path in seen_paths:
+                errors.append(ValidationError(
+                    code="config-var-duplicate-path",
+                    message=(f"ConfigVar binds {v.instance_path!r} "
+                             f"more than once"),
+                    location=where,
+                ))
+            seen_paths.add(v.instance_path)
+
+    return errors
+
+
 def _check_st_goto_labels(prog: Program) -> list[ValidationError]:
     """Goto/Label well-formedness inside ST bodies.
 
@@ -827,6 +920,8 @@ def validate(prog: Program) -> list[ValidationError]:
          connections, known source pins, known jump labels)
      13. ST Goto/Label resolution (no duplicates, every GOTO has
          a target in the same body)
+     14. VAR_ACCESS / VAR_CONFIG well-formedness (direction valid,
+         alias uniqueness, instance-path syntax)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -842,6 +937,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_st_for_index_declared(prog))
     errors.extend(_check_fbd_wellformedness(prog))
     errors.extend(_check_st_goto_labels(prog))
+    errors.extend(_check_access_and_config_vars(prog))
     return errors
 
 

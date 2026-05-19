@@ -16,9 +16,9 @@ import pytest
 xmlschema = pytest.importorskip("xmlschema")
 
 from universal_machinery.builders import (
-    abs_, add, and_, call, coil, fb, fn, gt, le, limit, move, nc, no,
-    parallel, prog, program, reset_, ret, rung, sel, set_, sub, tag, tag_decl,
-    var, var_in, var_inout, var_out,
+    abs_, access_var, add, and_, call, coil, fb, fn, gt, le, limit, move,
+    nc, no, parallel, prog, program, reset_, ret, rung, sel, set_, sub,
+    tag, tag_decl, var, var_in, var_inout, var_out,
 )
 from universal_machinery.il import TagType
 from universal_machinery.emitters.plcopen_xml import (
@@ -573,15 +573,20 @@ def test_configuration_with_global_vars_at_both_scopes():
 
 
 def test_configuration_with_access_vars_validates():
-    """accessVariable has required ``alias`` and ``instancePathAndName``
-    attributes per the schema; our emitter populates both from
-    Var.name."""
-    from universal_machinery.builders import configuration
+    """accessVariable carries IEC §2.7.1's required ``alias`` and
+    ``instancePathAndName`` plus the optional ``direction`` per
+    the schema."""
+    from universal_machinery.builders import access_var, configuration
     p = program(
         subroutines=[prog("Main", main=True)],
         configurations=[configuration("Default",
-            access_vars=[var("hmi_state", TagType.INT),
-                         var("hmi_speed", TagType.REAL)])],
+            access_vars=[
+                access_var("hmi_state",
+                           "Resource1.Main.state", TagType.INT),
+                access_var("hmi_speed",
+                           "Resource1.Main.speed", TagType.REAL,
+                           direction="READ_ONLY"),
+            ])],
     )
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
@@ -626,8 +631,10 @@ def test_comprehensive_configuration_validates():
                 var("system_ok", TagType.BOOL),
             ],
             access_vars=[
-                var("hmi_recipe", TagType.INT),
-                var("hmi_running", TagType.BOOL),
+                access_var("hmi_recipe",
+                           "MainController.Process.recipe", TagType.INT),
+                access_var("hmi_running",
+                           "MainController.Process.running", TagType.BOOL),
             ],
             resources=[resource("MainController",
                 tasks=[
