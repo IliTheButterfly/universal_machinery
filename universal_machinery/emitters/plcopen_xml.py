@@ -31,7 +31,10 @@ Coverage scope (first cut)
   - ✅ POU declarations: PROGRAM, FUNCTION, FUNCTION_BLOCK
   - ✅ Variable declarations: VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR
   - ✅ Return type for FUNCTION
-  - ✅ ST body via emit_pou_body_st() reusing the ST emitter
+  - ✅ ST body via emit_pou_body_st() -- routes authored
+        ``st_body`` (IEC §3 AST) directly through the ST emitter;
+        falls back to LD-rung-to-ST translation when ``st_body``
+        is absent
   - ✅ Tag declarations as a global VAR_GLOBAL block (PLCopen
         wraps these as ``<globalVars>`` inside ``<configurations>``;
         without the full configuration model we emit them as a
@@ -67,7 +70,7 @@ from ..il import (
     SubrangeType, Subroutine, Tag, TagType, TaskSpec, Var, VarDirection,
     is_signed_subrange,
 )
-from .st import emit_pou as _emit_pou_st, emit_rung
+from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
 
 #: PLCopen TC6 XML namespace used throughout the document.
@@ -202,22 +205,41 @@ def _emit_var_block(direction: VarDirection,
 # -----------------------------------------------------------------------------
 
 
-def _emit_pou_body_st(sub: Subroutine) -> str:
-    """Body XML for an ST-bodied POU.
+def _render_pou_body_text(sub: Subroutine) -> str:
+    """Pick the right textual ST source for a POU body.
 
-    PLCopen wraps Structured Text inside
-    ``<body><ST><xhtml>...</xhtml></ST></body>``.  We reuse the
-    standalone ST emitter (``emitters.st.emit_rung``) for each rung's
-    statements; the resulting text is the body's textual content.
+    Body-kind dispatch:
+      - ``sub.st_body`` set    : render the authored ST AST directly
+                                  via ``emit_st_body`` (preferred
+                                  path; preserves authored syntax).
+      - ``sub.sfc`` set        : leave a marker comment -- a future
+                                  slice adds a real ``<SFC>`` body.
+      - ``sub.rungs`` (default): translate the LD rungs to ST text.
+
+    The three are mutually exclusive (validator enforces).
     """
     lines: list[str] = []
-    if sub.sfc is not None:
+    if sub.st_body is not None:
+        lines.extend(emit_st_body(sub.st_body, level=0))
+    elif sub.sfc is not None:
         lines.append("(* SFC body not emitted in ST -- see <SFC> body *)")
     else:
         for rung in sub.rungs:
             for stmt in emit_rung(rung):
                 lines.append(stmt)
-    body_text = "\n".join(lines) if lines else "(* empty *)"
+    return "\n".join(lines) if lines else "(* empty *)"
+
+
+def _emit_pou_body_st(sub: Subroutine) -> str:
+    """Body XML for an ST-bodied POU.
+
+    PLCopen wraps Structured Text inside
+    ``<body><ST><xhtml>...</xhtml></ST></body>``.  The textual
+    content is sourced from ``_render_pou_body_text``, which picks
+    the right form (authored ST AST, SFC marker, or rung
+    translation) based on what the IL Subroutine carries.
+    """
+    body_text = _render_pou_body_text(sub)
     # PLCopen schema requires the textual content inside an element
     # from the XHTML namespace (xsd:any namespace="..xhtml").  We use
     # ``<pre>`` (preformatted text) so the ST source's whitespace +

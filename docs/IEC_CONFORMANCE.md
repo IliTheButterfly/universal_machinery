@@ -192,9 +192,10 @@ Concrete slices to close the larger conformance gaps, in priority order:
    ``and_e``/``or_e``/...) and JSON round-trip are complete.
    The ST emitter renders the AST directly when ``st_body`` is
    set; otherwise it falls back to rung-to-ST translation.
-   PLCopen XML ``<ST>`` emission of authored ST is the follow-up
-   slice -- the XML emitter currently goes through rung
-   translation.
+   **PLCopen XML emission**: authored ``st_body`` is rendered
+   verbatim inside ``<body><ST><xhtml:pre>...`` -- the XML
+   emitter picks ``st_body`` over ``rungs`` whenever set.
+   XSD-validated against the bundled TC6 v2.01 schema.
 
 3. ✅ ~~**Direct representation parser**.~~ *Done.*  IEC §2.4.1.1
    direct-representation addresses (``%I0.0``, ``%QB5``, ``%MW10``,
