@@ -84,13 +84,14 @@ All 16 IEC elementary types are present in `TagType`:
 | STRING | `TagType.STRING` | |
 
 User-defined types are now first-class: `StructType`, `ArrayType`,
-`EnumType`, and `AliasType` live in
+`EnumType`, `SubrangeType`, and `AliasType` live in
 [`universal_machinery/il/types.py`](../universal_machinery/il/types.py).
 `Program.user_types` is the declaration table; both the ST emitter
 (emits `TYPE ... END_TYPE` blocks) and the PLCopen XML emitter
 (emits `<dataTypes><dataType><baseType>...` per the TC6 schema)
-support them, XSD-validated.  Subrange types (`INT(0..100)`) are
-still missing -- a small follow-up addition.
+support every variant, XSD-validated.  Subrange types emit as
+`<subrangeSigned>` or `<subrangeUnsigned>` driven by the
+signed/unsigned classification of the underlying integer base.
 
 ## §2.5.2  Standard library functions
 
@@ -198,9 +199,9 @@ Concrete slices to close the larger conformance gaps, in priority order:
    one Configuration with multiple Resources.
 
 6. ✅ ~~**User-defined types**.  STRUCT, ARRAY, ENUM, subrange.~~
-   *Mostly done.*  STRUCT, ARRAY, ENUM, ALIAS landed in `il/types.py`
-   with full ST + PLCopen XML emission, XSD-validated.  Subrange
-   types (`INT(0..100)` form) remain -- small follow-up.
+   *Done.*  All five variants (STRUCT, ARRAY, ENUM, SUBRANGE, ALIAS)
+   landed in `il/types.py` with full ST + PLCopen XML emission,
+   XSD-validated against the official TC6 v2.01 schema.
 
 7. **FBD topology**.  Explicit FBD body type with named connections
    between FB instances.  Lowerable to LD where the backend lacks

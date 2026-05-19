@@ -9,11 +9,13 @@ construct exactly the same dataclasses as direct construction.
 import pytest
 
 from universal_machinery.il import (
-    AliasType, ArrayType, EnumType, NamedType, Program, StructType, TagType,
-    Var, is_elementary, is_user_type, type_name,
+    AliasType, ArrayType, EnumType, NamedType, Program, StructType,
+    SubrangeType, TagType, Var, is_elementary, is_signed_subrange,
+    is_user_type, type_name,
 )
 from universal_machinery.builders import (
-    alias_type, array_type, enum_type, named_type, program, struct_type, var,
+    alias_type, array_type, enum_type, named_type, program, struct_type,
+    subrange_type, var,
 )
 
 
@@ -107,6 +109,54 @@ def test_enum_values_are_ordered_tuple():
     starting at 0)."""
     state = enum_type("State", values=["IDLE", "RUNNING", "DONE"])
     assert state.values == ("IDLE", "RUNNING", "DONE")
+
+
+# -----------------------------------------------------------------------------
+# SubrangeType
+# -----------------------------------------------------------------------------
+
+
+def test_subrange_of_signed_integer():
+    """``TYPE SmallInt : INT (-100..100); END_TYPE``"""
+    t = subrange_type("SmallInt", TagType.INT, lower=-100, upper=100)
+    assert t == SubrangeType(
+        name="SmallInt", base=TagType.INT, lower=-100, upper=100,
+    )
+    assert is_signed_subrange(t) is True
+
+
+def test_subrange_of_unsigned_integer():
+    """``TYPE Percent : UINT (0..100); END_TYPE``"""
+    t = subrange_type("Percent", TagType.UINT, lower=0, upper=100)
+    assert t.lower == 0 and t.upper == 100
+    assert is_signed_subrange(t) is False
+
+
+def test_subrange_all_signed_int_widths_classified_signed():
+    for base in (TagType.SINT, TagType.INT, TagType.DINT, TagType.LINT):
+        t = subrange_type("S", base, lower=0, upper=1)
+        assert is_signed_subrange(t) is True, f"{base} should be signed"
+
+
+def test_subrange_all_unsigned_int_widths_classified_unsigned():
+    for base in (TagType.USINT, TagType.UINT, TagType.UDINT, TagType.ULINT):
+        t = subrange_type("U", base, lower=0, upper=1)
+        assert is_signed_subrange(t) is False, f"{base} should be unsigned"
+
+
+def test_subrange_is_a_user_type():
+    t = subrange_type("X", TagType.INT, lower=0, upper=10)
+    assert is_user_type(t) is True
+    assert is_elementary(t) is False
+    assert type_name(t) == "X"
+
+
+def test_program_collects_subrange_types():
+    t1 = subrange_type("SmallInt", TagType.INT, lower=-100, upper=100)
+    t2 = subrange_type("Percent", TagType.UINT, lower=0, upper=100)
+    p = program(user_types=[t1, t2])
+    assert p.find_user_type("SmallInt") is t1
+    assert p.find_user_type("Percent") is t2
 
 
 # -----------------------------------------------------------------------------

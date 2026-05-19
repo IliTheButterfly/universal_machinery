@@ -52,8 +52,8 @@ from typing import Optional, Sequence, Union
 from .il import (
     Address, AliasType, ArrayType, Configuration, DataBlock, DataType,
     EnumType, NamedType, PouInstance, PouKind, Program, Resource, Rung,
-    StructType, Subroutine, Tag, TagRef, TagType, TaskSpec, UserType, Var,
-    VarDirection,
+    StructType, SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec,
+    UserType, Var, VarDirection,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -704,6 +704,24 @@ def alias_type(name: str, base: DataType,
     return AliasType(name=name, base=base, comment=comment)
 
 
+def subrange_type(name: str, base: DataType,
+                  lower: int, upper: int,
+                  comment: str = "") -> SubrangeType:
+    """Declare a SUBRANGE user-defined type (IEC §2.3.3.1).
+
+    Restricts an integer ``base`` (or NamedType pointing at one) to
+    the inclusive range ``[lower, upper]``::
+
+        subrange_type("SmallInt", TagType.INT,  lower=-100, upper=100)
+        subrange_type("Percent",  TagType.UINT, lower=0,    upper=100)
+
+    PLCopen XML emission picks ``<subrangeSigned>`` vs
+    ``<subrangeUnsigned>`` based on whether ``base`` is a signed or
+    unsigned IEC integer type."""
+    return SubrangeType(name=name, base=base,
+                        lower=lower, upper=upper, comment=comment)
+
+
 # -----------------------------------------------------------------------------
 # CONFIGURATION / RESOURCE / TASK (IEC 61131-3 §2.7)
 # -----------------------------------------------------------------------------
@@ -851,6 +869,7 @@ __all__ = [
     "tag_decl", "data_block",
     # User-defined types
     "named_type", "struct_type", "array_type", "enum_type", "alias_type",
+    "subrange_type",
     # Configuration / Resource / Task
     "task_spec", "pou_instance", "resource", "configuration",
     # POUs

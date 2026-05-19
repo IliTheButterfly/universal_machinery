@@ -69,7 +69,8 @@ from .ops import (
 from .sfc import Action, SfcNetwork, Step, Transition
 from .types import (
     AliasType, ArrayType, DataType, EnumType, NamedType, StructType,
-    UserType, is_elementary, is_user_type, type_name,
+    SubrangeType, UserType, is_elementary, is_signed_subrange,
+    is_user_type, type_name,
 )
 from .configuration import (
     Configuration, PouInstance, Resource, TaskSpec,
@@ -100,6 +101,7 @@ __all__ = [
     "StdFunc",
     "Step",
     "StructType",
+    "SubrangeType",
     "Subroutine",
     "Tag",
     "TagRef",
@@ -112,10 +114,11 @@ __all__ = [
     "VarDirection",
     "VendorOp",
     "is_elementary",
+    "is_signed_subrange",
     "is_user_type",
     "ops",
     "sfc",
     "type_name",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
