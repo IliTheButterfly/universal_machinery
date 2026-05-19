@@ -44,13 +44,13 @@ from typing import Iterable, Optional, Sequence, Union
 
 from ..il import (
     AccessSpec, Address, AliasType, ArrayType, Assignment, BinaryExpr,
-    CaseStatement, Configuration, ContinueStatement, DataBlock, EnumType,
-    ExitStatement, FieldAccess, ForStatement, FunctionCallExpr,
-    FunctionCallStatement, IfStatement, IndexAccess, Interface, Literal,
-    Method, NamedType, PouInstance, PouKind, Program, RepeatStatement,
-    Resource, ReturnStatement, Rung, Statement, StructType, SubrangeType,
-    Subroutine, Tag, TagRef, TagType, TaskSpec, UnaryExpr, Var,
-    VarDirection, VarRef, WhileStatement, type_name,
+    CaseStatement, CommentStatement, Configuration, ContinueStatement,
+    DataBlock, EnumType, ExitStatement, FieldAccess, ForStatement,
+    FunctionCallExpr, FunctionCallStatement, IfStatement, IndexAccess,
+    Interface, Literal, Method, NamedType, PouInstance, PouKind, Program,
+    RepeatStatement, Resource, ReturnStatement, Rung, Statement,
+    StructType, SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec,
+    UnaryExpr, Var, VarDirection, VarRef, WhileStatement, type_name,
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -475,6 +475,9 @@ def emit_statement(stmt, indent: str = "    ", level: int = 0) -> list[str]:
     if isinstance(stmt, FunctionCallStatement):
         return [f"{prefix}{_fmt_expr(stmt.call)};"]
 
+    if isinstance(stmt, CommentStatement):
+        return [f"{prefix}(* {stmt.text} *)"]
+
     raise TypeError(f"unknown Statement: {type(stmt).__name__}")
 
 
@@ -638,12 +641,28 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
         lines.append(f"{indent}(* SFC body not emitted in ST -- "
                      f"see PLCopen XML <SFC> *)")
     elif sub.fbd_body is not None:
-        # FBD-to-ST lowering needs topological sort + temp-var
-        # allocation; tracked as a separate slice.  Emit a marker
-        # so the output is well-formed ST and the body's intent
-        # is preserved verbatim in PLCopen XML's <FBD> element.
-        lines.append(f"{indent}(* FBD body not emitted in ST -- "
-                     f"see PLCopen XML <FBD> *)")
+        # Lower the FBD network to an equivalent ST statement list
+        # (topological sort + producer-expression resolution +
+        # temp-var allocation).  Temp vars are *not* injected into
+        # the POU's local_vars by this path; the emitter declares
+        # them inline via the VAR section above only if the caller
+        # ran the lowering pass explicitly first.  For round-trip
+        # safety, run the lowering at emit time and rely on the
+        # lowering-internal naming (_t0, _t1, ...) being collision-
+        # free with user names.
+        from ..lowering.fbd_to_st import lower_fbd_to_st
+        result = lower_fbd_to_st(sub.fbd_body)
+        if result.temp_vars:
+            # Inject a synthetic VAR section for the temps so the
+            # output ST is self-contained.
+            lines.append("VAR  (* FBD lowering temporaries *)")
+            for v in result.temp_vars:
+                lines.append(
+                    f"{indent}{v.name} : {_fmt_iec_type(v.data_type)};"
+                )
+            lines.append("END_VAR")
+        lines.extend(emit_st_body(result.statements,
+                                    indent=indent, level=1))
     else:
         for rung in sub.rungs:
             for stmt in emit_rung(rung):

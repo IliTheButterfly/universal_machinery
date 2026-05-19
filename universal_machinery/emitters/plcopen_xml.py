@@ -214,15 +214,25 @@ def _render_pou_body_text(sub: Subroutine) -> str:
       - ``sub.st_body`` set    : render the authored ST AST directly
                                   via ``emit_st_body`` (preferred
                                   path; preserves authored syntax).
+      - ``sub.fbd_body`` set   : lower the FBD network to ST + emit
+                                  the lowered statement list (the
+                                  XML emitter uses native ``<FBD>``;
+                                  this path is only hit when the
+                                  caller asks for ``<ST>`` body XML
+                                  for an FBD-authored POU).
       - ``sub.sfc`` set        : leave a marker comment -- a future
                                   slice adds a real ``<SFC>`` body.
       - ``sub.rungs`` (default): translate the LD rungs to ST text.
 
-    The three are mutually exclusive (validator enforces).
+    The four are mutually exclusive (validator enforces).
     """
     lines: list[str] = []
     if sub.st_body is not None:
         lines.extend(emit_st_body(sub.st_body, level=0))
+    elif sub.fbd_body is not None:
+        from ..lowering.fbd_to_st import lower_fbd_to_st
+        result = lower_fbd_to_st(sub.fbd_body)
+        lines.extend(emit_st_body(result.statements, level=0))
     elif sub.sfc is not None:
         lines.append("(* SFC body not emitted in ST -- see <SFC> body *)")
     else:

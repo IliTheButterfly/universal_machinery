@@ -74,10 +74,10 @@ from .ops import (
 from .sfc import Action, SfcNetwork, Step, Transition
 from .st import (
     Assignment, BinaryExpr, BinaryOp, CaseClause, CaseStatement,
-    ContinueStatement, ExitStatement, Expression, FieldAccess,
-    ForStatement, FunctionCallExpr, FunctionCallStatement, IfStatement,
-    IndexAccess, Literal, RepeatStatement, ReturnStatement, Statement,
-    UnaryExpr, UnaryOp, VarRef, WhileStatement, is_lvalue,
+    CommentStatement, ContinueStatement, ExitStatement, Expression,
+    FieldAccess, ForStatement, FunctionCallExpr, FunctionCallStatement,
+    IfStatement, IndexAccess, Literal, RepeatStatement, ReturnStatement,
+    Statement, UnaryExpr, UnaryOp, VarRef, WhileStatement, is_lvalue,
     walk_expressions,
 )
 from .types import (
@@ -102,6 +102,7 @@ __all__ = [
     "BlockPin",
     "CaseClause",
     "CaseStatement",
+    "CommentStatement",
     "Configuration",
     "Connection",
     "ContinueStatement",

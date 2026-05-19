@@ -130,7 +130,7 @@ signed/unsigned classification of the underlying integer base.
 | SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py` |
 | ST (Structured Text) | ✅ | First-class AST in [`il/st.py`](../universal_machinery/il/st.py): expressions (Literal, VarRef, FieldAccess, IndexAccess, UnaryExpr, BinaryExpr, FunctionCallExpr), statements (Assignment, IF/CASE/FOR/WHILE/REPEAT, RETURN/EXIT/CONTINUE, function-call statement).  `Subroutine.st_body` / `Method.st_body` carry ST programs; ST emitter renders the AST directly with IEC §3.3.1 operator precedence and parenthesisation |
 | IL (Instruction List, aka STL) | ❌ | Deprecated in IEC 3rd ed. but still common in older systems |
-| FBD (Function Block Diagram) | ✅ | First-class AST in [`il/fbd.py`](../universal_machinery/il/fbd.py): ``FbdNetwork`` containing ``FbBlock`` (function/FB call sites), ``InVariable``/``OutVariable``/``InOutVariable`` (variable connectors), ``FbdJump``/``FbdLabel``/``FbdReturn`` (control flow).  Wires stored sink-side as ``Connection(source_id, source_pin)`` matching PLCopen's connection model.  ``Subroutine.fbd_body`` / ``Method.fbd_body`` carry FBD bodies; PLCopen XML emits ``<FBD>`` with auto-layout positions, XSD-validated.  ST emission emits a marker comment until the FBD→ST topological-sort lowering pass lands |
+| FBD (Function Block Diagram) | ✅ | First-class AST in [`il/fbd.py`](../universal_machinery/il/fbd.py): ``FbdNetwork`` containing ``FbBlock`` (function/FB call sites), ``InVariable``/``OutVariable``/``InOutVariable`` (variable connectors), ``FbdJump``/``FbdLabel``/``FbdReturn`` (control flow).  Wires stored sink-side as ``Connection(source_id, source_pin)`` matching PLCopen's connection model.  ``Subroutine.fbd_body`` / ``Method.fbd_body`` carry FBD bodies; PLCopen XML emits ``<FBD>`` with auto-layout positions, XSD-validated.  ST emission lowers via [`lowering/fbd_to_st.py`](../universal_machinery/lowering/fbd_to_st.py): topological sort + producer-expression resolution; stateless 2-input blocks (``ADD``/``MUL``/``AND``/``GT``/...) inline as ``BinaryExpr``, FB calls emit ``Inst(IN := src);`` + ``Inst.OUT`` dot-access, other functions route through temp vars.  Jumps/labels emit ``CommentStatement`` markers pending first-class Goto/Label in the ST AST |
 
 ## §2.7  Configuration / Resource / Task
 
@@ -229,23 +229,26 @@ Concrete slices to close the larger conformance gaps, in priority order:
    landed in `il/types.py` with full ST + PLCopen XML emission,
    XSD-validated against the official TC6 v2.01 schema.
 
-7. ✅ ~~**FBD topology**.~~ *Done.*  ``il/fbd.py`` defines
-   ``FbdNetwork`` and seven element kinds (``FbBlock``,
-   ``InVariable``, ``OutVariable``, ``InOutVariable``,
-   ``FbdLabel``, ``FbdJump``, ``FbdReturn``) with sink-side
-   ``Connection(source_id, source_pin)`` wires matching the
-   PLCopen XSD's connection model.  ``Subroutine.fbd_body`` and
-   ``Method.fbd_body`` carry FBD bodies (mutex with ``rungs`` /
-   ``sfc`` / ``st_body``); builder DSL (``fbd_network``,
-   ``fb_block``, ``in_var``, ``out_var``, ``inout_var``, ``pin``,
-   ``fbd_jump``, ``fbd_label``, ``fbd_return``), JSON round-trip,
-   validation (``local_id`` uniqueness, connection resolution,
-   known source pins, known jump labels), and PLCopen XML
-   emission (with auto-layout positions when not authored) all
-   land.  XSD-validated against bundled TC6 v2.01 schema.
-   FBD→ST topological-sort lowering -- so FBD bodies render as
-   real ST text instead of the current marker comment -- is the
-   follow-up slice.
+7. ✅ ~~**FBD topology + FBD→ST lowering**.~~ *Done.*
+   ``il/fbd.py`` defines ``FbdNetwork`` and seven element kinds
+   (``FbBlock``, ``InVariable``, ``OutVariable``,
+   ``InOutVariable``, ``FbdLabel``, ``FbdJump``, ``FbdReturn``)
+   with sink-side ``Connection(source_id, source_pin)`` wires
+   matching the PLCopen XSD's connection model.
+   ``Subroutine.fbd_body`` and ``Method.fbd_body`` carry FBD
+   bodies (mutex with ``rungs`` / ``sfc`` / ``st_body``); builder
+   DSL, JSON round-trip, validation (``local_id`` uniqueness,
+   connection resolution, known source pins, known jump labels),
+   and PLCopen XML emission (with auto-layout positions) all
+   land.  ``lowering/fbd_to_st.py`` translates an ``FbdNetwork``
+   into an equivalent list of ST ``Statement``s (topological
+   sort + producer-expression resolution + temp-var allocation):
+   stateless 2-input blocks lower inline as ``BinaryExpr``, FB
+   calls emit IEC named-arg syntax with dot-access for outputs,
+   other functions go through synthesised temp vars.  Lets any
+   backend that speaks ST execute FBD-authored programs even
+   without native FBD support.  XSD-validated against bundled
+   TC6 v2.01 schema.
 
 8. **Full standard library coverage**.  The ~100 IEC §2.5.2
    functions; mechanical to add, but bulk work.  Each new function
