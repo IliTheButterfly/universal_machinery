@@ -356,6 +356,205 @@ def test_var_typed_with_user_type_validates():
     validate_plcopen_xml(xml)
 
 
+# -----------------------------------------------------------------------------
+# CONFIGURATION / RESOURCE / TASK -- IEC §2.7 + XSD <instances><configurations>
+# -----------------------------------------------------------------------------
+
+
+def test_empty_configuration_validates():
+    from universal_machinery.builders import configuration
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default")],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_configuration_with_resource_validates():
+    from universal_machinery.builders import configuration, resource
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default",
+            resources=[resource("CPU1")])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_configuration_with_cyclic_task_validates():
+    from universal_machinery.builders import (
+        configuration, resource, task_spec,
+    )
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default",
+            resources=[resource("CPU1",
+                tasks=[task_spec("Fast", priority=1, interval="T#10ms")])])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_configuration_with_single_shot_task_validates():
+    from universal_machinery.builders import (
+        configuration, resource, task_spec,
+    )
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default",
+            resources=[resource("CPU1",
+                tasks=[task_spec("OnButton", priority=0,
+                                 single="start_btn")])])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_pou_instance_bound_to_task_nested_under_task_element():
+    """PLCopen schema places task-bound POU instances under
+    ``<task>``, not at the resource level."""
+    from universal_machinery.builders import (
+        configuration, pou_instance, resource, task_spec,
+    )
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default",
+            resources=[resource("CPU1",
+                tasks=[task_spec("Fast", priority=1, interval="T#10ms")],
+                pou_instances=[pou_instance("MainProg",
+                                            type_name="Main",
+                                            task="Fast")])])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # And the instance lives inside the task element.
+    import xml.etree.ElementTree as ET
+    from universal_machinery.emitters.plcopen_xml import PLCOPEN_NS
+    NS = {"plc": PLCOPEN_NS}
+    root = ET.fromstring(xml)
+    task_inst = root.find(".//plc:task/plc:pouInstance", NS)
+    assert task_inst is not None
+    assert task_inst.attrib["name"] == "MainProg"
+    assert task_inst.attrib["typeName"] == "Main"
+
+
+def test_resource_level_pou_instance_no_task_binding():
+    """Unbound POU instances appear at the resource level, not under
+    any task."""
+    from universal_machinery.builders import (
+        configuration, pou_instance, resource,
+    )
+    p = program(
+        subroutines=[prog("Helper", main=False)],
+        configurations=[configuration("Default",
+            resources=[resource("CPU1",
+                pou_instances=[pou_instance("Helper1",
+                                            type_name="Helper")])])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_configuration_with_global_vars_at_both_scopes():
+    from universal_machinery.builders import configuration, resource
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default",
+            global_vars=[var("system_state", TagType.INT)],
+            resources=[resource("CPU1",
+                global_vars=[var("cpu_temp", TagType.REAL)])])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_configuration_with_access_vars_validates():
+    """accessVariable has required ``alias`` and ``instancePathAndName``
+    attributes per the schema; our emitter populates both from
+    Var.name."""
+    from universal_machinery.builders import configuration
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default",
+            access_vars=[var("hmi_state", TagType.INT),
+                         var("hmi_speed", TagType.REAL)])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_multi_resource_configuration_validates():
+    """A multi-PLC Configuration has multiple Resources -- the
+    project-vision multi-PLC arc starts here."""
+    from universal_machinery.builders import configuration, resource
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("CellController",
+            resources=[
+                resource("PLC_A"),
+                resource("PLC_B"),
+                resource("PLC_C"),
+            ])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_comprehensive_configuration_validates():
+    """Real-shape Configuration with multiple tasks, multiple bound
+    + unbound POU instances, globals at both scopes, and access
+    variables -- end-to-end XSD validation."""
+    from universal_machinery.builders import (
+        configuration, pou_instance, resource, task_spec,
+    )
+    p = program(
+        project_name="ProductionLine",
+        subroutines=[
+            prog("MotionControl", main=False),
+            prog("ProcessControl", main=False),
+            prog("Diagnostics", main=False),
+            prog("EmergencyStop", main=False),
+            prog("BackgroundJobs", main=False),
+        ],
+        configurations=[configuration("ProductionLine",
+            global_vars=[
+                var("recipe_id", TagType.INT),
+                var("system_ok", TagType.BOOL),
+            ],
+            access_vars=[
+                var("hmi_recipe", TagType.INT),
+                var("hmi_running", TagType.BOOL),
+            ],
+            resources=[resource("MainController",
+                tasks=[
+                    task_spec("FastControl",  priority=1, interval="T#10ms"),
+                    task_spec("MediumControl", priority=2, interval="T#100ms"),
+                    task_spec("SlowControl",  priority=3, interval="T#1s"),
+                    task_spec("OnEmergency", priority=0,
+                              single="emergency_btn"),
+                ],
+                pou_instances=[
+                    pou_instance("Motion", type_name="MotionControl",
+                                 task="FastControl"),
+                    pou_instance("Process", type_name="ProcessControl",
+                                 task="MediumControl"),
+                    pou_instance("Diag", type_name="Diagnostics",
+                                 task="SlowControl"),
+                    pou_instance("EStop", type_name="EmergencyStop",
+                                 task="OnEmergency"),
+                    pou_instance("Background",
+                                 type_name="BackgroundJobs"),  # unbound
+                ],
+                global_vars=[
+                    var("cpu_temp",     TagType.REAL),
+                    var("scan_time_ms", TagType.INT),
+                ])])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
 def test_comprehensive_udt_program_validates():
     """Mixed program with every UDT variant + UDT-typed POU
     variables + nested types -- single end-to-end XSD check."""

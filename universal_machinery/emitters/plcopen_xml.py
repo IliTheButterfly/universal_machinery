@@ -62,8 +62,9 @@ from typing import Optional, Sequence
 from xml.sax.saxutils import escape, quoteattr
 
 from ..il import (
-    Address, AliasType, ArrayType, DataBlock, EnumType, NamedType, PouKind,
-    Program, StructType, Subroutine, Tag, TagType, Var, VarDirection,
+    Address, AliasType, ArrayType, Configuration, DataBlock, EnumType,
+    NamedType, PouInstance, PouKind, Program, Resource, StructType,
+    Subroutine, Tag, TagType, TaskSpec, Var, VarDirection,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung
 
@@ -435,6 +436,169 @@ def _emit_globals_pou(tags: dict) -> Optional[str]:
 # -----------------------------------------------------------------------------
 
 
+def _emit_pou_instance(inst: PouInstance) -> str:
+    """One ``<pouInstance name="..." typeName="..."/>`` element.
+
+    Per the TC6 schema, pouInstance has no taskName attribute --
+    binding to a task is expressed by *nesting* the pouInstance
+    inside the task's element.  Resource-level instances (with no
+    task binding) appear directly under ``<resource>``.
+    """
+    parts: list[str] = [
+        f'<pouInstance name={quoteattr(inst.name)} '
+        f'typeName={quoteattr(inst.type_name)}'
+    ]
+    if inst.comment:
+        parts.append(">")
+        parts.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(inst.comment)}</p></documentation>'
+        )
+        parts.append("</pouInstance>")
+    else:
+        parts[-1] += "/>"
+    return "\n".join(parts)
+
+
+def _emit_task(task: TaskSpec,
+               instances_for_task: list[PouInstance]) -> str:
+    """One ``<task name="..." priority="..." ...>`` element.
+
+    Per the schema, ``<task>`` carries the task's name, priority, and
+    one of ``interval`` / ``single`` attributes (interrupt is not in
+    the schema's attribute list -- vendor-specific, treated as an
+    interval for now).  POU instances scheduled by this task are
+    nested as ``<pouInstance>`` children.
+    """
+    attrs = [f"name={quoteattr(task.name)}"]
+    if task.interval is not None:
+        attrs.append(f"interval={quoteattr(task.interval)}")
+    if task.single is not None:
+        attrs.append(f"single={quoteattr(task.single)}")
+    # Note: PLCopen TC6 v2.01 doesn't carry an explicit "interrupt"
+    # attribute on <task>; we render interrupt tasks with the
+    # interrupt source in the single attribute as a vendor-extension
+    # fallback (real-world tools vary on this).
+    if task.interrupt is not None and task.single is None:
+        attrs.append(f"single={quoteattr(task.interrupt)}")
+    attrs.append(f"priority={quoteattr(str(task.priority))}")
+    open_tag = f"<task {' '.join(attrs)}"
+
+    if not instances_for_task:
+        return open_tag + "/>"
+
+    lines = [open_tag + ">"]
+    for inst in instances_for_task:
+        lines.append(_indent(_emit_pou_instance(inst), "  "))
+    lines.append("</task>")
+    return "\n".join(lines)
+
+
+def _emit_globalVars_block(vars_: list[Var]) -> str:
+    """Emit a ``<globalVars>`` block containing ``<variable>`` children."""
+    if not vars_:
+        return ""
+    inner = "\n".join(_indent(_emit_var(v), "  ") for v in vars_)
+    return f"<globalVars>\n{inner}\n</globalVars>"
+
+
+def _emit_resource(r: Resource) -> str:
+    """One ``<resource name="...">`` element.
+
+    Layout per the TC6 schema::
+
+        <resource name="...">
+          <task name="..." priority="..." interval="...">
+            <pouInstance .../>     ← bound to this task
+          </task>*
+          <globalVars>...</globalVars>?
+          <pouInstance .../>*      ← resource-level (no task binding)
+        </resource>
+    """
+    parts: list[str] = [f'<resource name={quoteattr(r.name)}>']
+
+    # Group POU instances by task name.
+    by_task: dict[str, list[PouInstance]] = {}
+    unbound: list[PouInstance] = []
+    for inst in r.pou_instances:
+        if inst.task is None:
+            unbound.append(inst)
+        else:
+            by_task.setdefault(inst.task, []).append(inst)
+
+    # Emit tasks, each with its bound instances.
+    for task in r.tasks:
+        parts.append(_indent(_emit_task(task, by_task.get(task.name, [])),
+                             "  "))
+
+    # Resource-level globals.
+    if r.global_vars:
+        parts.append(_indent(_emit_globalVars_block(r.global_vars), "  "))
+
+    # Unbound POU instances at the resource level.
+    for inst in unbound:
+        parts.append(_indent(_emit_pou_instance(inst), "  "))
+
+    parts.append("</resource>")
+    return "\n".join(parts)
+
+
+def _emit_configuration(cfg: Configuration) -> str:
+    """One ``<configuration name="...">`` element.
+
+    Layout per the TC6 schema::
+
+        <configuration name="...">
+          <resource ...>...</resource>*
+          <globalVars>...</globalVars>?
+          <accessVars>...</accessVars>?
+        </configuration>
+
+    accessVars uses ``ppx:varListAccess`` -- structurally a varList
+    with extra attributes per declaration; we emit each as a plain
+    ``<variable>`` for now (the schema's extra attributes are
+    optional).
+    """
+    parts: list[str] = [f'<configuration name={quoteattr(cfg.name)}>']
+
+    for r in cfg.resources:
+        parts.append(_indent(_emit_resource(r), "  "))
+
+    if cfg.global_vars:
+        parts.append(_indent(_emit_globalVars_block(cfg.global_vars), "  "))
+
+    if cfg.access_vars:
+        # accessVariable has a different shape than plain <variable>:
+        # required attributes are alias + instancePathAndName, plus an
+        # optional direction.  We use Var.name for both alias and
+        # instancePathAndName since the IL doesn't carry an explicit
+        # instance path; richer access-path modeling is a follow-up.
+        inner_lines: list[str] = []
+        for v in cfg.access_vars:
+            attrs = (
+                f'alias={quoteattr(v.name)} '
+                f'instancePathAndName={quoteattr(v.name)}'
+            )
+            elem = (
+                f"    <accessVariable {attrs}>\n"
+                f"      <type>{_iec_type_element(v.data_type)}</type>"
+            )
+            if v.comment:
+                elem += (
+                    f"\n      <documentation>"
+                    f'<p xmlns="http://www.w3.org/1999/xhtml">'
+                    f"{escape(v.comment)}</p></documentation>"
+                )
+            elem += "\n    </accessVariable>"
+            inner_lines.append(elem)
+        parts.append("  <accessVars>\n"
+                     + "\n".join(inner_lines)
+                     + "\n  </accessVars>")
+
+    parts.append("</configuration>")
+    return "\n".join(parts)
+
+
 def emit_xml(prog: Program,
              company: str = "universal_machinery",
              product: str = "universal_machinery IL emitter",
@@ -506,7 +670,15 @@ def emit_xml(prog: Program,
 
     parts.append('    </pous>')
     parts.append('  </types>')
-    parts.append('  <instances><configurations/></instances>')
+    if prog.configurations:
+        parts.append('  <instances>')
+        parts.append('    <configurations>')
+        for cfg in prog.configurations:
+            parts.append(_indent(_emit_configuration(cfg), "      "))
+        parts.append('    </configurations>')
+        parts.append('  </instances>')
+    else:
+        parts.append('  <instances><configurations/></instances>')
     parts.append('</project>')
     return "\n".join(parts) + "\n"
 

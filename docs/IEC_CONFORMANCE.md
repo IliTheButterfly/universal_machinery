@@ -132,9 +132,13 @@ still missing -- a small follow-up addition.
 
 | Section | Construct | Status | Notes |
 | --- | --- | --- | --- |
-| §2.7.1 | CONFIGURATION | ❌ | Pairs with the future multi-PLC Project container ([`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Open Questions) |
-| §2.7.1 | RESOURCE | ❌ | |
-| §2.7.2 | TASK | ❌ | |
+| §2.7.1 | CONFIGURATION | ✅ | ``Configuration`` in [`il/configuration.py`](../universal_machinery/il/configuration.py); ST emits ``CONFIGURATION ... END_CONFIGURATION``; PLCopen XML emits ``<instances><configurations><configuration>`` with XSD validation |
+| §2.7.1 | RESOURCE | ✅ | ``Resource`` -- one PLC CPU; multi-PLC = multi-resource within one Configuration |
+| §2.7.2 | TASK | ✅ | ``TaskSpec`` with cyclic/single-shot/interrupt triggering + priority; PLCopen XML nests bound POU instances under their task element per the schema |
+| §2.7.1 | VAR_ACCESS / accessVariable | ✅ | ``Configuration.access_vars``; XML emits ``<accessVariable alias="..." instancePathAndName="..."/>`` per the TC6 schema |
+| §2.7.1 | VAR_GLOBAL (config-scope) | ✅ | ``Configuration.global_vars`` -- system-wide globals |
+| §2.7.1 | VAR_GLOBAL (resource-scope) | ✅ | ``Resource.global_vars`` -- per-CPU globals |
+| §2.7.1 | configVars | ⚠️ | Schema has ``<configVars>`` for configuration-scoped parameter inits; not yet modeled in the IL (rare in practice) |
 
 ## §3  Common elements (extension hatches)
 
@@ -184,10 +188,14 @@ Concrete slices to close the larger conformance gaps, in priority order:
    Add `Subroutine.methods: list[Subroutine]` and an `Interface`
    declaration.  Required for 3rd-edition conformance.
 
-5. **CONFIGURATION / RESOURCE / TASK**.  Top-level project model
-   for multi-PLC, multi-task systems.  Aligns with the multi-PLC
-   Project container we documented in
-   [`ARCHITECTURE.md`](ARCHITECTURE.md).
+5. ✅ ~~**CONFIGURATION / RESOURCE / TASK**.~~ *Done.*  IEC §2.7 system-
+   organisation model lives in [`il/configuration.py`](../universal_machinery/il/configuration.py).
+   ST emits ``CONFIGURATION ... END_CONFIGURATION``; PLCopen XML
+   emits ``<instances><configurations>`` with task-bound POU
+   instances nested under ``<task>`` per the schema.  XSD-validated.
+   Pairs with the multi-PLC Project container documented in
+   [`ARCHITECTURE.md`](ARCHITECTURE.md) -- a multi-PLC project is
+   one Configuration with multiple Resources.
 
 6. ✅ ~~**User-defined types**.  STRUCT, ARRAY, ENUM, subrange.~~
    *Mostly done.*  STRUCT, ARRAY, ENUM, ALIAS landed in `il/types.py`
