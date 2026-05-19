@@ -100,15 +100,15 @@ signed/unsigned classification of the underlying integer base.
 
 | Section | Family | Status | IL representation | Notes |
 | --- | --- | --- | --- | --- |
-| §2.5.2.1 | Type conversion (BOOL_TO_INT, INT_TO_REAL, ...) | ⚠️ | `StdFunc(name="INT_TO_REAL", ...)` | Common conversions registered in `STD_FUNCTION_NAMES`; full IEC set is 40+ pairs |
+| §2.5.2.1 | Type conversion (BOOL_TO_INT, INT_TO_REAL, ...) | ✅ | `StdFunc(name="INT_TO_REAL", ...)` or `convert("INT", "REAL", src, dst)` | All ``<SRC>_TO_<DST>`` pairs (21 IEC elementary types × 20 distinct destinations = 420 conversions) generated programmatically.  BCD family (``BCD_TO_INT``, ``INT_TO_BCD``, ...) and TRUNC family (generic ``TRUNC`` + 16 typed ``REAL_TRUNC_*`` / ``LREAL_TRUNC_*`` variants) included.  ``is_iec_std_function(name)`` predicate for backend / validation gatekeeping |
 | §2.5.2.4 | Numerical (ABS, SQRT, LN, LOG, EXP, SIN/COS/TAN, ASIN/ACOS/ATAN) | ✅ | `StdFunc(name="ABS", ...)` | All standard names registered; backend support varies |
 | §2.5.2.5 | Arithmetic (ADD, SUB, MUL, DIV, MOD) | ✅ | `BinaryMath(op="+", ...)` | Modeled as dedicated op since `dst = lhs OP rhs` is universal |
 | §2.5.2.6 | Bit-string (SHL, SHR, ROR, ROL) | ✅ | `StdFunc(name="SHL", ...)` | |
 | §2.5.2.7 | Logical / bitwise (AND, OR, XOR, NOT) | ✅ | `StdFunc(name="AND", ...)` | Applies to BOOL or bit-string per IEC |
 | §2.5.2.8 | Selection (SEL, MAX, MIN, LIMIT, MUX) | ✅ | `StdFunc(name="SEL", ...)` | |
 | §2.5.2.8 | Comparison (GT, GE, EQ, LE, LT, NE) | ✅ | `Compare(op=">", ...)` | Dedicated op (returns a boolean for rung gating) |
-| §2.5.2.9 | Character-string (LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND) | ⚠️ | `StdFunc(name="LEN", ...)` | Names registered; backend STRING support depends on target |
-| §2.5.2.10 | Time / date (ADD_DT_TIME, SUB_DT_TIME, ...) | ⚠️ | `StdFunc(name="ADD_DT_TIME", ...)` | Common ones registered |
+| §2.5.2.9 | Character-string (LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND) | ✅ | `StdFunc(name="LEN", ...)` | All 9 names from IEC §2.5.2.9 table 28 registered.  Backend STRING runtime support varies by target -- that's a vendor-capability axis tracked separately |
+| §2.5.2.10 | Time / date (ADD_TIME / SUB_TIME / ADD_DT_TIME / ..., DT_TO_DATE / DT_TO_TOD / ..., CONCAT_DATE_TOD) | ✅ | `StdFunc(name="ADD_DT_TIME", ...)` | Full IEC §2.5.2.10 table 30: TIME arithmetic (ADD/SUB/MUL/DIV_TIME, MULTIME/DIVTIME), TOD/DT + TIME composition (ADD/SUB_TOD_TIME, ADD/SUB_DT_TIME), same-type subtractions yielding TIME (SUB_DATE_DATE, SUB_TOD_TOD, SUB_DT_DT), composition (CONCAT_DATE_TOD), extraction (DT_TO_DATE, DT_TO_TOD, DT_TO_TIME) |
 
 ## §2.5.3  Standard function blocks (stateful)
 
