@@ -62,7 +62,8 @@ from typing import Optional, Sequence
 from xml.sax.saxutils import escape, quoteattr
 
 from ..il import (
-    Address, PouKind, Program, Subroutine, Tag, TagType, Var, VarDirection,
+    Address, AliasType, ArrayType, DataBlock, EnumType, NamedType, PouKind,
+    Program, StructType, Subroutine, Tag, TagType, Var, VarDirection,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung
 
@@ -127,7 +128,7 @@ def _emit_var(var: Var) -> str:
     """One ``<variable>`` element with type + optional initial value."""
     parts: list[str] = []
     parts.append(f'<variable name={quoteattr(var.name)}>')
-    parts.append(f"  <type><{_iec_type_element(var.data_type)}/></type>")
+    parts.append(f"  <type>{_iec_type_element(var.data_type)}</type>")
     if var.initial_value:
         parts.append(
             f"  <initialValue>"
@@ -145,11 +146,27 @@ def _emit_var(var: Var) -> str:
     return "\n".join(parts)
 
 
-def _iec_type_element(t: TagType) -> str:
-    """PLCopen XML uses self-closing tags for elementary types:
-    ``<BOOL/>``, ``<INT/>``, ``<REAL/>``, etc.  TagType.value is the
-    IEC keyword (uppercase) -- the schema's element names match."""
-    return t.value
+def _iec_type_element(t) -> str:
+    """Render a ``DataType`` as a PLCopen ``<type>``-body element
+    (full self-closing form, including angle brackets).
+
+    Elementary ``TagType`` emits as ``<BOOL/>`` / ``<INT/>`` /
+    ``<REAL/>`` / etc. -- the schema's elementary-type element names
+    match ``TagType.value``.
+
+    User-defined type references emit as ``<derived name="..."/>``
+    per the schema's ``derivedTypes`` group; the named type must be
+    declared in ``Program.user_types`` for the resulting XML to
+    compile in a PLCopen tool.  Inline ``StructType`` / ``ArrayType``
+    / etc. resolve via the type's ``name``.
+    """
+    if isinstance(t, TagType):
+        return f"<{t.value}/>"
+    if isinstance(t, NamedType):
+        return f'<derived name="{escape(t.name)}"/>'
+    if isinstance(t, (StructType, ArrayType, EnumType, AliasType)):
+        return f'<derived name="{escape(t.name)}"/>'
+    raise TypeError(f"can't emit type element for: {type(t).__name__}")
 
 
 def _emit_var_block(direction: VarDirection,
@@ -224,7 +241,7 @@ def emit_pou_xml(sub: Subroutine) -> str:
     # FUNCTION return type goes inside <interface> as <returnType>
     if sub.kind is PouKind.FUNCTION and sub.return_type is not None:
         interface_inner.append(
-            f"<returnType><{_iec_type_element(sub.return_type)}/></returnType>"
+            f"<returnType>{_iec_type_element(sub.return_type)}</returnType>"
         )
 
     for direction in (VarDirection.INPUT, VarDirection.OUTPUT,
@@ -268,6 +285,114 @@ def _vars_by_direction(sub: Subroutine,
 # -----------------------------------------------------------------------------
 
 
+# -----------------------------------------------------------------------------
+# User-defined types
+# -----------------------------------------------------------------------------
+
+
+def _emit_struct_baseType(s: StructType) -> str:
+    """Render a StructType's body as a ``<baseType><struct>...</struct></baseType>``.
+
+    Inside ``<struct>`` is a ``varListPlain``: a sequence of
+    ``<variable name="..."><type>...</type><initialValue/></variable>``
+    elements, one per member.  Members are Var instances; we reuse
+    ``_emit_var`` to render each.
+    """
+    member_xml = "\n".join(_indent(_emit_var(m), "    ") for m in s.members)
+    return (
+        "<baseType>\n"
+        "  <struct>\n"
+        f"{member_xml}\n"
+        "  </struct>\n"
+        "</baseType>"
+    )
+
+
+def _emit_array_baseType(a: ArrayType) -> str:
+    """Render an ArrayType's body as ``<baseType><array>...</array></baseType>``.
+
+    ``<array>`` has ``<dimension lower=".." upper=".."/>`` per
+    dimension and a single ``<baseType>`` for the element type.
+    """
+    dims = "\n".join(
+        f'    <dimension lower="{lo}" upper="{hi}"/>' for lo, hi in a.bounds
+    )
+    elem_xml = _iec_type_element(a.element_type)
+    return (
+        "<baseType>\n"
+        "  <array>\n"
+        f"{dims}\n"
+        f"    <baseType>{elem_xml}</baseType>\n"
+        "  </array>\n"
+        "</baseType>"
+    )
+
+
+def _emit_enum_baseType(e: EnumType) -> str:
+    """Render an EnumType's body as ``<baseType><enum>...</enum></baseType>``.
+
+    Each value is a ``<value name="..."/>``.  IEC's optional explicit
+    numeric ``value`` attribute is omitted (PLCopen tools assign
+    them implicitly based on declaration order).
+    """
+    values_xml = "\n".join(
+        f'      <value name="{escape(v)}"/>' for v in e.values
+    )
+    return (
+        "<baseType>\n"
+        "  <enum>\n"
+        "    <values>\n"
+        f"{values_xml}\n"
+        "    </values>\n"
+        "  </enum>\n"
+        "</baseType>"
+    )
+
+
+def _emit_alias_baseType(a: AliasType) -> str:
+    """Render an AliasType's body as ``<baseType>{elem-or-derived}</baseType>``.
+
+    Aliases simply wrap their base type in the dataType's baseType
+    element -- no intermediate ``<alias>`` wrapper (the PLCopen
+    schema treats alias-of-elementary as a dataType with a plain
+    elementary baseType).
+    """
+    return f"<baseType>{_iec_type_element(a.base)}</baseType>"
+
+
+def _emit_user_type(ut) -> str:
+    """Render one UDT as a ``<dataType name="..">...</dataType>`` element.
+
+    The dispatch picks the right base-type body based on the UDT
+    variant; all four IEC §2.3.3 forms are supported.
+    """
+    if isinstance(ut, StructType):
+        body = _emit_struct_baseType(ut)
+    elif isinstance(ut, ArrayType):
+        body = _emit_array_baseType(ut)
+    elif isinstance(ut, EnumType):
+        body = _emit_enum_baseType(ut)
+    elif isinstance(ut, AliasType):
+        body = _emit_alias_baseType(ut)
+    else:
+        raise TypeError(f"not a UserType: {type(ut).__name__}")
+
+    lines = [f'<dataType name={quoteattr(ut.name)}>']
+    lines.append(_indent(body, "  "))
+    if ut.comment:
+        lines.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(ut.comment)}</p></documentation>'
+        )
+    lines.append("</dataType>")
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# Synthetic GlobalsHolder (tags as a POU's localVars)
+# -----------------------------------------------------------------------------
+
+
 def _emit_globals_pou(tags: dict) -> Optional[str]:
     """If the program has Tag declarations, emit a synthetic
     ``GlobalsHolder`` PROGRAM POU whose ``<localVars>`` contains them.
@@ -286,7 +411,7 @@ def _emit_globals_pou(tags: dict) -> Optional[str]:
     ]
     for tag in tags.values():
         lines.append(f'      <variable name={quoteattr(tag.name)}>')
-        lines.append(f"        <type><{_iec_type_element(tag.data_type)}/></type>")
+        lines.append(f"        <type>{_iec_type_element(tag.data_type)}</type>")
         if tag.address is not None:
             lines.append(f"        <!-- AT {escape(tag.address.raw)} -->")
         if tag.description:
@@ -363,7 +488,13 @@ def emit_xml(prog: Program,
     parts.append('  </contentHeader>')
 
     parts.append('  <types>')
-    parts.append('    <dataTypes/>')
+    if prog.user_types:
+        parts.append('    <dataTypes>')
+        for ut in prog.user_types:
+            parts.append(_indent(_emit_user_type(ut), "      "))
+        parts.append('    </dataTypes>')
+    else:
+        parts.append('    <dataTypes/>')
     parts.append('    <pous>')
 
     globals_pou = _emit_globals_pou(prog.tags)

@@ -83,10 +83,14 @@ All 16 IEC elementary types are present in `TagType`:
 | TIME | `TagType.TIME` | |
 | STRING | `TagType.STRING` | |
 
-User-defined types (STRUCT, ARRAY, ENUM, subrange): ❌ not yet
-modeled.  Single-level structs are partially expressible via
-`DataBlock` (typed members) but the IEC `TYPE ... END_TYPE`
-declaration form is missing.
+User-defined types are now first-class: `StructType`, `ArrayType`,
+`EnumType`, and `AliasType` live in
+[`universal_machinery/il/types.py`](../universal_machinery/il/types.py).
+`Program.user_types` is the declaration table; both the ST emitter
+(emits `TYPE ... END_TYPE` blocks) and the PLCopen XML emitter
+(emits `<dataTypes><dataType><baseType>...` per the TC6 schema)
+support them, XSD-validated.  Subrange types (`INT(0..100)`) are
+still missing -- a small follow-up addition.
 
 ## §2.5.2  Standard library functions
 
@@ -185,8 +189,10 @@ Concrete slices to close the larger conformance gaps, in priority order:
    Project container we documented in
    [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-6. **User-defined types**.  STRUCT, ARRAY, ENUM, subrange.  TYPE...
-   END_TYPE declaration form.  Required for non-trivial IEC programs.
+6. ✅ ~~**User-defined types**.  STRUCT, ARRAY, ENUM, subrange.~~
+   *Mostly done.*  STRUCT, ARRAY, ENUM, ALIAS landed in `il/types.py`
+   with full ST + PLCopen XML emission, XSD-validated.  Subrange
+   types (`INT(0..100)` form) remain -- small follow-up.
 
 7. **FBD topology**.  Explicit FBD body type with named connections
    between FB instances.  Lowerable to LD where the backend lacks

@@ -217,3 +217,177 @@ def test_validation_is_idempotent():
     )
     validate_plcopen_xml(xml)
     validate_plcopen_xml(xml)         # second pass also clean
+
+
+# -----------------------------------------------------------------------------
+# User-defined types -- every variant must produce XSD-valid output
+# -----------------------------------------------------------------------------
+
+
+def test_enum_type_validates():
+    from universal_machinery.builders import enum_type
+    p = program(
+        user_types=[enum_type("Color", values=["RED", "GREEN", "BLUE"])],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_struct_type_validates():
+    from universal_machinery.builders import struct_type
+    p = program(
+        user_types=[struct_type("Point", members=[
+            var("x", TagType.INT), var("y", TagType.INT),
+        ])],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_struct_with_initial_values_validates():
+    from universal_machinery.builders import struct_type
+    p = program(
+        user_types=[struct_type("Config", members=[
+            var("max_speed", TagType.INT,  initial="1000"),
+            var("enabled",   TagType.BOOL, initial="TRUE"),
+        ])],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_array_type_single_dimension_validates():
+    from universal_machinery.builders import array_type
+    p = program(
+        user_types=[array_type("Vector10",
+                                element_type=TagType.INT,
+                                bounds=[(0, 9)])],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_array_type_multidimensional_validates():
+    from universal_machinery.builders import array_type
+    p = program(
+        user_types=[array_type("Matrix3x3",
+                                element_type=TagType.REAL,
+                                bounds=[(0, 2), (0, 2)])],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_array_of_user_type_validates():
+    from universal_machinery.builders import array_type, named_type, struct_type
+    p = program(
+        user_types=[
+            struct_type("Point", members=[var("x", TagType.INT)]),
+            array_type("PointBuffer",
+                        element_type=named_type("Point"),
+                        bounds=[(0, 99)]),
+        ],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_alias_of_elementary_validates():
+    from universal_machinery.builders import alias_type
+    p = program(
+        user_types=[alias_type("Distance", base=TagType.DINT)],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_alias_of_user_type_validates():
+    from universal_machinery.builders import alias_type, named_type, struct_type
+    p = program(
+        user_types=[
+            struct_type("Point", members=[var("x", TagType.INT)]),
+            alias_type("BigPoint", base=named_type("Point")),
+        ],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_nested_struct_via_named_type_validates():
+    from universal_machinery.builders import struct_type, named_type
+    p = program(
+        user_types=[
+            struct_type("Point", members=[
+                var("x", TagType.INT), var("y", TagType.INT),
+            ]),
+            struct_type("Line", members=[
+                var("start", named_type("Point")),
+                var("end",   named_type("Point")),
+            ]),
+        ],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_var_typed_with_user_type_validates():
+    """A POU local declared with a UDT type renders as
+    <type><derived name="..."/></type> and validates."""
+    from universal_machinery.builders import struct_type, named_type
+    p = program(
+        user_types=[struct_type("Point", members=[
+            var("x", TagType.INT), var("y", TagType.INT),
+        ])],
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[var("origin", named_type("Point"))]),
+        ],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_comprehensive_udt_program_validates():
+    """Mixed program with every UDT variant + UDT-typed POU
+    variables + nested types -- single end-to-end XSD check."""
+    from universal_machinery.builders import (
+        alias_type, array_type, enum_type, named_type, struct_type,
+    )
+    p = program(
+        project_name="UDTDemo",
+        user_types=[
+            enum_type("MachineState",
+                       values=["IDLE", "STARTING", "RUNNING", "STOPPING"]),
+            struct_type("AxisConfig", members=[
+                var("max_velocity", TagType.REAL, initial="100.0"),
+                var("max_accel",    TagType.REAL, initial="500.0"),
+            ]),
+            struct_type("MachineConfig", members=[
+                var("axis_x", named_type("AxisConfig")),
+                var("axis_y", named_type("AxisConfig")),
+                var("state",  named_type("MachineState")),
+            ]),
+            array_type("RecipeBuffer",
+                        element_type=TagType.INT,
+                        bounds=[(0, 99)]),
+            alias_type("Distance", base=TagType.DINT),
+        ],
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[
+                     var("config", named_type("MachineConfig")),
+                     var("recipes", named_type("RecipeBuffer")),
+                 ]),
+        ],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
