@@ -324,12 +324,25 @@ class FunctionCallStatement:
     call: FunctionCallExpr
 
 
+@dataclass(frozen=True)
+class CommentStatement:
+    """A free-form comment line, rendered as ``(* text *)``.
+
+    Used by lowering passes to inject markers / pragmas that don't
+    map onto any other ST construct (e.g. an FBD jump that
+    couldn't be translated, a vendor-specific hint).  The text is
+    inserted verbatim between ``(* `` and `` *)`` -- callers are
+    responsible for keeping any embedded ``*)`` out of the body.
+    """
+    text: str
+
+
 #: Union of every statement node.
 Statement = Union[
     Assignment, IfStatement, CaseStatement,
     WhileStatement, RepeatStatement, ForStatement,
     ReturnStatement, ExitStatement, ContinueStatement,
-    FunctionCallStatement,
+    FunctionCallStatement, CommentStatement,
 ]
 
 

@@ -14,7 +14,18 @@ Modules
     Move/Call/Move sequences for FUNCTIONs, FUNCTION_BLOCKs, and
     parameterized PROGRAMs.  The scheduler trampoline and the
     inside-subroutine-call rewriter are still TODO.
-"""
-from . import click_calling
 
-__all__ = ["click_calling"]
+``fbd_to_st``
+    Topological-sort-based lowering of a ``FbdNetwork`` to an
+    equivalent list of ST ``Statement``s + temp ``Var``
+    declarations.  Used as a fallback by backends that don't
+    speak FBD natively, and by the ST emitter to render FBD
+    bodies as real ST text instead of a marker comment.
+"""
+from . import click_calling, fbd_to_st
+from .fbd_to_st import LoweringError, LoweringResult, lower_fbd_to_st
+
+__all__ = [
+    "LoweringError", "LoweringResult", "click_calling",
+    "fbd_to_st", "lower_fbd_to_st",
+]

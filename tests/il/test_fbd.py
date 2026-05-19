@@ -131,7 +131,10 @@ def test_fbd_jump_and_return_with_gate():
 # -----------------------------------------------------------------------------
 
 
-def test_st_emitter_marker_comment_for_fbd_body():
+def test_st_emitter_lowers_fbd_body_to_assignment():
+    """The ST emitter now lowers FBD bodies via
+    ``lowering.fbd_to_st``; a single InVariable -> OutVariable
+    network becomes a plain assignment."""
     net = fbd_network(
         in_var(0, "x"),
         out_var(1, "y", source_id=0),
@@ -139,8 +142,7 @@ def test_st_emitter_marker_comment_for_fbd_body():
     sub = prog("Main", main=True, fbd_body=net)
     txt = emit_pou(sub)
     assert "PROGRAM Main" in txt
-    assert "FBD body not emitted in ST" in txt
-    assert "see PLCopen XML <FBD>" in txt
+    assert "y := x;" in txt
     assert "END_PROGRAM" in txt
 
 
