@@ -331,6 +331,133 @@ def test_program_emits_pou_per_subroutine():
     assert "FUNCTION Avg : INT" in text
 
 
+# -----------------------------------------------------------------------------
+# User-defined type emission
+# -----------------------------------------------------------------------------
+
+
+def test_enum_type_emits_paren_list():
+    from universal_machinery.builders import enum_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    e = enum_type("State", values=["IDLE", "RUNNING", "DONE"])
+    text = _fmt_user_type_decl(e)
+    assert "TYPE" in text
+    assert "State : (IDLE, RUNNING, DONE);" in text
+    assert "END_TYPE" in text
+
+
+def test_struct_type_emits_struct_block():
+    from universal_machinery.builders import struct_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    s = struct_type("Point", members=[
+        var("x", TagType.INT),
+        var("y", TagType.INT),
+    ])
+    text = _fmt_user_type_decl(s)
+    assert "Point :" in text
+    assert "STRUCT" in text
+    assert "x : INT;" in text
+    assert "y : INT;" in text
+    assert "END_STRUCT;" in text
+    assert "END_TYPE" in text
+
+
+def test_struct_with_initial_values():
+    from universal_machinery.builders import struct_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    s = struct_type("Config", members=[
+        var("max_speed", TagType.INT,  initial="1000"),
+        var("enabled",   TagType.BOOL, initial="TRUE"),
+    ])
+    text = _fmt_user_type_decl(s)
+    assert "max_speed : INT := 1000;" in text
+    assert "enabled : BOOL := TRUE;" in text
+
+
+def test_array_type_emits_bounds_and_element_type():
+    from universal_machinery.builders import array_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    a = array_type("Vector10", element_type=TagType.INT, bounds=[(0, 9)])
+    text = _fmt_user_type_decl(a)
+    assert "Vector10 : ARRAY [0..9] OF INT;" in text
+
+
+def test_multidimensional_array_emits_comma_separated_bounds():
+    from universal_machinery.builders import array_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    a = array_type("Matrix3x3", element_type=TagType.REAL,
+                   bounds=[(0, 2), (0, 2)])
+    text = _fmt_user_type_decl(a)
+    assert "Matrix3x3 : ARRAY [0..2, 0..2] OF REAL;" in text
+
+
+def test_array_of_user_type_renders_named_element():
+    from universal_machinery.builders import array_type, named_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    a = array_type("PointBuf",
+                   element_type=named_type("Point"),
+                   bounds=[(0, 99)])
+    text = _fmt_user_type_decl(a)
+    assert "ARRAY [0..99] OF Point;" in text
+
+
+def test_alias_of_elementary():
+    from universal_machinery.builders import alias_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    d = alias_type("Distance", base=TagType.DINT)
+    text = _fmt_user_type_decl(d)
+    assert "Distance : DINT;" in text
+
+
+def test_alias_of_user_type():
+    from universal_machinery.builders import alias_type, named_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    d = alias_type("BigPoint", base=named_type("Point"))
+    text = _fmt_user_type_decl(d)
+    assert "BigPoint : Point;" in text
+
+
+def test_struct_member_with_named_type_reference():
+    from universal_machinery.builders import struct_type, named_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    line = struct_type("Line", members=[
+        var("start", named_type("Point")),
+        var("end",   named_type("Point")),
+    ])
+    text = _fmt_user_type_decl(line)
+    assert "start : Point;" in text
+    assert "end : Point;" in text
+
+
+def test_emit_program_emits_user_types_before_pous():
+    """User-defined types are declared first so subsequent VAR
+    sections can reference them by name."""
+    from universal_machinery.builders import struct_type, enum_type, named_type
+    p = program(
+        user_types=[
+            enum_type("State", values=["IDLE", "RUNNING"]),
+            struct_type("Point", members=[
+                var("x", TagType.INT),
+                var("y", TagType.INT),
+            ]),
+        ],
+        subroutines=[prog("Main", main=True)],
+    )
+    text = emit_program(p)
+    type_pos = text.index("TYPE")
+    pou_pos  = text.index("PROGRAM Main")
+    assert type_pos < pou_pos
+
+
+def test_emit_program_with_no_user_types_omits_TYPE_block():
+    """A program with no UDTs produces no TYPE...END_TYPE blocks."""
+    p = program(subroutines=[prog("Main", main=True)])
+    text = emit_program(p)
+    # Should NOT have any "TYPE\n" header at the start of a section
+    assert "\nTYPE\n" not in text
+    assert not text.startswith("TYPE\n")
+
+
 def test_realistic_full_program_round_trips_to_ST():
     """End-to-end shape check: a non-trivial program emits as
     well-formed ST.  We don't try to parse it back (no ST parser

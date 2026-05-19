@@ -43,8 +43,9 @@ from __future__ import annotations
 from typing import Iterable, Optional, Sequence, Union
 
 from ..il import (
-    Address, DataBlock, PouKind, Program, Rung, Subroutine, Tag, TagRef,
-    TagType, Var, VarDirection,
+    Address, AliasType, ArrayType, DataBlock, EnumType, NamedType, PouKind,
+    Program, Rung, StructType, Subroutine, Tag, TagRef, TagType,
+    Var, VarDirection, type_name,
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -80,9 +81,17 @@ def _fmt_value(v) -> str:
     raise TypeError(f"can't format value: {v!r}")
 
 
-def _fmt_iec_type(t: TagType) -> str:
-    """IEC ST type name -- TagType values already match IEC spelling."""
-    return t.value
+def _fmt_iec_type(t) -> str:
+    """IEC ST type name for any ``DataType``.
+
+    Elementary types (``TagType``) render as their IEC keyword
+    (``INT``, ``BOOL``, ``REAL``, ...).  User-defined types
+    (``NamedType``, ``StructType``, ``ArrayType``, ``EnumType``,
+    ``AliasType``) render as the type's name; the type itself must be
+    declared in ``Program.user_types`` and emitted via
+    ``_fmt_user_type_decl`` for the resulting ST to compile.
+    """
+    return type_name(t)
 
 
 # -----------------------------------------------------------------------------
@@ -393,19 +402,70 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
 # -----------------------------------------------------------------------------
 
 
+def _fmt_user_type_decl(ut) -> str:
+    """Render one UDT as an IEC ``TYPE ... END_TYPE`` block.
+
+    Maps each UDT variant to its IEC textual form:
+
+      AliasType  -> ``TYPE Name : Base; END_TYPE``
+      EnumType   -> ``TYPE Name : (V1, V2, V3); END_TYPE``
+      ArrayType  -> ``TYPE Name : ARRAY [lo..hi, lo..hi] OF ElemType; END_TYPE``
+      StructType -> ``TYPE Name : STRUCT field : type; ... END_STRUCT; END_TYPE``
+
+    Nested type references (a struct member of struct type, an array
+    of structs, an alias of a struct, ...) resolve via
+    ``_fmt_iec_type`` -- which renders both elementary and
+    user-defined types by their IEC name.
+    """
+    if isinstance(ut, AliasType):
+        body = f"    {ut.name} : {_fmt_iec_type(ut.base)};"
+        return "\n".join(["TYPE", body, "END_TYPE"])
+
+    if isinstance(ut, EnumType):
+        values = ", ".join(ut.values)
+        body = f"    {ut.name} : ({values});"
+        return "\n".join(["TYPE", body, "END_TYPE"])
+
+    if isinstance(ut, ArrayType):
+        bounds_str = ", ".join(f"{lo}..{hi}" for lo, hi in ut.bounds)
+        elem = _fmt_iec_type(ut.element_type)
+        body = f"    {ut.name} : ARRAY [{bounds_str}] OF {elem};"
+        return "\n".join(["TYPE", body, "END_TYPE"])
+
+    if isinstance(ut, StructType):
+        lines = ["TYPE", f"    {ut.name} :", "        STRUCT"]
+        for m in ut.members:
+            init = f" := {m.initial_value}" if m.initial_value else ""
+            comment = f"  (* {m.comment} *)" if m.comment else ""
+            lines.append(
+                f"            {m.name} : {_fmt_iec_type(m.data_type)}{init};{comment}"
+            )
+        lines.extend(["        END_STRUCT;", "END_TYPE"])
+        return "\n".join(lines)
+
+    raise ValueError(f"unknown UserType: {type(ut).__name__}")
+
+
 def emit_program(prog: Program) -> str:
     """Return the full ST text for a Program.
 
     Sections, in order::
 
+        (optional) TYPE ... END_TYPE block per user-defined type
+                   (StructType, ArrayType, EnumType, AliasType)
         (optional) VAR_GLOBAL declarations for all Tags
         (optional) DATA_BLOCK declarations (non-instance) -- emitted as
                    typed VAR_GLOBAL groups for now; IEC has TYPE/STRUCT
-                   declarations that are a closer fit, but those need
-                   a structured-type AST that's not in the IL yet.
+                   declarations for those too, but the IL doesn't yet
+                   model the DB-as-STRUCT translation explicitly.
         One POU per Subroutine in declaration order.
     """
     sections: list[str] = []
+
+    # User-defined types first -- subsequent VAR sections can reference
+    # them by name.
+    for ut in prog.user_types:
+        sections.append(_fmt_user_type_decl(ut))
 
     if prog.tags:
         lines = ["VAR_GLOBAL"]
