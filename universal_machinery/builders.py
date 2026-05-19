@@ -55,8 +55,9 @@ from .il import (
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, CTD, CTU, CTUD, End, Jump, Label, Move, OutCoil,
-    OutReset, OutSet, ParallelGroup, Return, TOF, TON, TP, VendorOp,
+    ContactRisingEdge, CTD, CTU, CTUD, End, FTrig, Jump, Label, Move, OutCoil,
+    OutReset, OutSet, ParallelGroup, Return, RS, RTrig, SR, StdFunc, TOF, TON,
+    TP, VendorOp,
 )
 
 
@@ -278,6 +279,118 @@ def ctud(addr: LocLike, preset: int,
         qu=_loc(qu) if qu is not None else None,
         qd=_loc(qd) if qd is not None else None,
     )
+
+
+# -----------------------------------------------------------------------------
+# IEC 61131-3 §2.5.2.3.3 bistables and edge triggers
+# -----------------------------------------------------------------------------
+
+
+def r_trig(state: LocLike, clk: LocLike, q: LocLike) -> RTrig:
+    """IEC R_TRIG: ``q`` pulses for one scan on rising edge of ``clk``."""
+    return RTrig(state=_loc(state), clk=_loc(clk), q=_loc(q))
+
+
+def f_trig(state: LocLike, clk: LocLike, q: LocLike) -> FTrig:
+    """IEC F_TRIG: ``q`` pulses for one scan on falling edge of ``clk``."""
+    return FTrig(state=_loc(state), clk=_loc(clk), q=_loc(q))
+
+
+def sr(q1: LocLike, s1: LocLike, r: LocLike) -> SR:
+    """IEC SR: set-dominant bistable.  Set wins on simultaneous fire."""
+    return SR(q1=_loc(q1), s1=_loc(s1), r=_loc(r))
+
+
+def rs(q1: LocLike, r1: LocLike, s: LocLike) -> RS:
+    """IEC RS: reset-dominant bistable.  Reset wins on simultaneous fire."""
+    return RS(q1=_loc(q1), r1=_loc(r1), s=_loc(s))
+
+
+# -----------------------------------------------------------------------------
+# IEC 61131-3 §2.5.2 standard-library function call (generic + convenience)
+# -----------------------------------------------------------------------------
+
+
+def std_func(name: str, inputs: Sequence[ValueLike],
+             output: LocLike) -> StdFunc:
+    """Generic IEC standard-library function call.
+
+    Use the named convenience helpers below (``abs_``, ``sqrt``,
+    ``and_``, ``or_``, ``sel``, ...) when the function is one of
+    the common ones; ``std_func`` is the escape hatch for anything
+    in ``STD_FUNCTION_NAMES`` (or vendor extensions a backend
+    accepts).
+    """
+    return StdFunc(
+        name=name,
+        inputs=tuple(_value(v) for v in inputs),
+        output=_loc(output),
+    )
+
+
+def _single(name: str):
+    """Factory: returns a one-input helper for IEC function ``name``."""
+    def _fn(arg: ValueLike, output: LocLike) -> StdFunc:
+        return std_func(name, [arg], output)
+    _fn.__name__ = name.lower() + "_"
+    return _fn
+
+
+def _binary(name: str):
+    """Factory: returns a two-input helper for IEC function ``name``."""
+    def _fn(a: ValueLike, b: ValueLike, output: LocLike) -> StdFunc:
+        return std_func(name, [a, b], output)
+    _fn.__name__ = name.lower() + "_"
+    return _fn
+
+
+# Numerical (§2.5.2.4)
+abs_  = _single("ABS")
+sqrt  = _single("SQRT")
+ln    = _single("LN")
+log   = _single("LOG")
+exp   = _single("EXP")
+sin   = _single("SIN")
+cos   = _single("COS")
+tan   = _single("TAN")
+asin  = _single("ASIN")
+acos  = _single("ACOS")
+atan  = _single("ATAN")
+
+# Bitwise / logical (§2.5.2.7).  Trailing underscore: ``and``/``or``/``not``
+# are Python keywords.
+and_  = _binary("AND")
+or_   = _binary("OR")
+xor_  = _binary("XOR")
+not_  = _single("NOT")
+
+# Bit-string (§2.5.2.6).  Each is binary: SHL(value, count, output).
+shl   = _binary("SHL")
+shr   = _binary("SHR")
+ror   = _binary("ROR")
+rol   = _binary("ROL")
+
+# Selection / comparison (§2.5.2.8).  ``max``/``min`` are Python builtins.
+max_  = _binary("MAX")
+min_  = _binary("MIN")
+
+
+def sel(g: ValueLike, in0: ValueLike, in1: ValueLike,
+        output: LocLike) -> StdFunc:
+    """IEC SEL: 2-way selector.  Output := IN1 if G else IN0."""
+    return std_func("SEL", [g, in0, in1], output)
+
+
+def limit(lo: ValueLike, value: ValueLike, hi: ValueLike,
+          output: LocLike) -> StdFunc:
+    """IEC LIMIT: clamp value to [lo, hi]."""
+    return std_func("LIMIT", [lo, value, hi], output)
+
+
+def mux(k: ValueLike, *inputs: ValueLike,
+        output: LocLike) -> StdFunc:
+    """IEC MUX: select the K-th of N inputs (K is 0-indexed)."""
+    return std_func("MUX", [k, *inputs], output)
 
 
 # -----------------------------------------------------------------------------
@@ -576,6 +689,15 @@ __all__ = [
     "no", "nc", "redge", "fedge", "coil", "set_", "reset_",
     # Timers / counters
     "ton", "tof", "tp", "ctu", "ctd", "ctud",
+    # IEC bistables / edge triggers
+    "r_trig", "f_trig", "sr", "rs",
+    # IEC stdlib (generic + named)
+    "std_func",
+    "abs_", "sqrt", "ln", "log", "exp",
+    "sin", "cos", "tan", "asin", "acos", "atan",
+    "and_", "or_", "xor_", "not_",
+    "shl", "shr", "ror", "rol",
+    "max_", "min_", "sel", "limit", "mux",
     # Compare
     "eq", "ne", "lt", "le", "gt", "ge",
     # Math / move

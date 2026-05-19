@@ -63,18 +63,26 @@ from .ast import (
     VarDirection,
 )
 from . import ops, sfc
-from .ops import Loc, Value, VendorOp
+from .ops import (
+    FTrig, Loc, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc, Value, VendorOp,
+)
 from .sfc import Action, SfcNetwork, Step, Transition
 
 __all__ = [
     "Action",
     "Address",
     "DataBlock",
+    "FTrig",
     "Loc",
     "PouKind",
     "Program",
+    "RS",
+    "RTrig",
     "Rung",
     "SfcNetwork",
+    "SR",
+    "STD_FUNCTION_NAMES",
+    "StdFunc",
     "Step",
     "Subroutine",
     "Tag",
@@ -89,4 +97,4 @@ __all__ = [
     "sfc",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

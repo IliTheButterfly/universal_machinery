@@ -167,6 +167,139 @@ class CTUD:
 
 
 # -----------------------------------------------------------------------------
+# Bistables and edge triggers (IEC 61131-3 §2.5.2.3.3)
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RTrig:
+    """IEC 61131-3 rising-edge trigger (R_TRIG).
+
+    ``q`` is TRUE for exactly one scan when ``clk`` transitions
+    FALSE -> TRUE.  Equivalent to ``ContactRisingEdge(clk) -> Coil(q)``
+    but spelled as a single named FB instance per IEC conformance.
+
+    ``state`` is the memory bit that holds the previous CLK value
+    (the FB instance's hidden state).  Backends may collapse it
+    into the ``q`` output's storage where the runtime allows; the
+    IL keeps it explicit so the symbol table stays complete.
+    """
+    state: Loc           # previous CLK value (instance state)
+    clk:   Loc           # input
+    q:     Loc           # output (pulse on rising edge)
+
+
+@dataclass(frozen=True)
+class FTrig:
+    """IEC 61131-3 falling-edge trigger (F_TRIG).
+
+    Mirror of ``RTrig``: ``q`` pulses on TRUE -> FALSE transition
+    of ``clk``.
+    """
+    state: Loc
+    clk:   Loc
+    q:     Loc
+
+
+@dataclass(frozen=True)
+class SR:
+    """IEC 61131-3 set-dominant bistable (SR).
+
+    ``q1`` := ``s1`` OR (``q1`` AND NOT ``r``).
+    When both inputs fire simultaneously, **Set takes priority**
+    (``q1`` stays / becomes TRUE).
+
+    ``q1`` is both the output address and the FB instance's state
+    storage -- one memory bit serves both roles per IEC's model.
+    """
+    q1: Loc              # output AND state
+    s1: Loc              # set (dominant)
+    r:  Loc              # reset
+
+
+@dataclass(frozen=True)
+class RS:
+    """IEC 61131-3 reset-dominant bistable (RS).
+
+    ``q1`` := NOT ``r1`` AND (``s`` OR ``q1``).
+    When both inputs fire, **Reset takes priority** (``q1`` clears).
+    """
+    q1: Loc
+    r1: Loc              # reset (dominant)
+    s:  Loc              # set
+
+
+# -----------------------------------------------------------------------------
+# Generic IEC standard-library function call (§2.5.2)
+# -----------------------------------------------------------------------------
+
+
+#: The set of IEC 61131-3 §2.5.2 standard-function names this IL
+#: recognises by default.  Backends may emit any name they support;
+#: the registry exists for validation passes that want to flag
+#: unknown names early.  Names follow IEC conventions (uppercase
+#: ASCII, underscores).
+STD_FUNCTION_NAMES = frozenset({
+    # §2.5.2.1 Type conversion (selected; the full set is huge)
+    "BOOL_TO_INT", "BOOL_TO_DINT", "BOOL_TO_REAL",
+    "INT_TO_BOOL", "INT_TO_REAL", "INT_TO_DINT", "INT_TO_STRING",
+    "DINT_TO_INT", "DINT_TO_REAL", "DINT_TO_STRING",
+    "REAL_TO_INT", "REAL_TO_DINT", "REAL_TO_STRING",
+    "STRING_TO_INT", "STRING_TO_REAL",
+    "TIME_TO_DINT", "DINT_TO_TIME",
+    # §2.5.2.4 Numerical
+    "ABS", "SQRT", "LN", "LOG", "EXP",
+    "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN",
+    # §2.5.2.6 Bit-string
+    "SHL", "SHR", "ROR", "ROL",
+    # §2.5.2.7 Bitwise / logical
+    "AND", "OR", "XOR", "NOT",
+    # §2.5.2.8 Selection / comparison
+    "SEL", "MAX", "MIN", "LIMIT", "MUX",
+    # §2.5.2.9 Character-string
+    "LEN", "LEFT", "RIGHT", "MID",
+    "CONCAT", "INSERT", "DELETE", "REPLACE", "FIND",
+    # §2.5.2.10 Time / date
+    "ADD_DT_TIME", "SUB_DT_TIME", "SUB_DATE_DATE", "SUB_DT_DT",
+})
+
+
+@dataclass(frozen=True)
+class StdFunc:
+    """A call to an IEC 61131-3 §2.5.2 standard-library *function*
+    (stateless).
+
+    Why a single op rather than one dataclass per function?  IEC
+    defines ~100 standard functions and they share the same shape:
+    inputs -> single output.  A generic op keeps the IL compact;
+    backends dispatch on ``name`` to emit the right vendor call.
+
+    For *stateful* FBs (timers, counters, bistables, edge triggers),
+    use their dedicated ops (TON, CTU, RTrig, SR, ...) -- IEC defines
+    those as FUNCTION_BLOCKs with explicit instance state, and the
+    dedicated ops carry that state in their fields.
+
+    Examples::
+
+        StdFunc(name="ABS",         inputs=(Address("DS10"),),
+                                    output=Address("DS11"))
+        StdFunc(name="SEL",         inputs=(Address("X001"),
+                                            Address("DS10"),
+                                            Address("DS20")),
+                                    output=Address("DS30"))
+        StdFunc(name="INT_TO_REAL", inputs=(TagRef("count"),),
+                                    output=TagRef("count_real"))
+
+    ``name`` should normally be a member of ``STD_FUNCTION_NAMES``;
+    backends that recognise additional vendor extensions may accept
+    unknown names but should declare a corresponding capability.
+    """
+    name:    str
+    inputs:  tuple[Value, ...]
+    output:  Loc
+
+
+# -----------------------------------------------------------------------------
 # Compare ops (binary comparisons producing a logic bit)
 # -----------------------------------------------------------------------------
 
@@ -392,6 +525,8 @@ Op = Union[
     OutCoil, OutSet, OutReset,
     TON, TOF, TP,
     CTU, CTD, CTUD,
+    RTrig, FTrig, SR, RS,
+    StdFunc,
     Compare,
     Move, BinaryMath,
     Call, Return, End, Jump, Label,
@@ -429,6 +564,17 @@ def _locs_of(op: object) -> list[Loc]:
                   op.accumulator, op.qu, op.qd):
             if a is not None:
                 out.append(a)
+    elif isinstance(op, (RTrig, FTrig)):
+        out.extend([op.state, op.clk, op.q])
+    elif isinstance(op, SR):
+        out.extend([op.q1, op.s1, op.r])
+    elif isinstance(op, RS):
+        out.extend([op.q1, op.r1, op.s])
+    elif isinstance(op, StdFunc):
+        for v in op.inputs:
+            if isinstance(v, (Address, TagRef)):
+                out.append(v)
+        out.append(op.output)
     elif isinstance(op, Compare):
         for v in (op.lhs, op.rhs):
             if isinstance(v, (Address, TagRef)):
