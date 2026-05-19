@@ -75,8 +75,10 @@ from .types import (
 from .configuration import (
     Configuration, PouInstance, Resource, TaskSpec,
 )
+from .oop import AccessSpec, Interface, Method
 
 __all__ = [
+    "AccessSpec",
     "Action",
     "Address",
     "AliasType",
@@ -86,7 +88,9 @@ __all__ = [
     "DataType",
     "EnumType",
     "FTrig",
+    "Interface",
     "Loc",
+    "Method",
     "NamedType",
     "PouInstance",
     "PouKind",
@@ -121,4 +125,4 @@ __all__ = [
     "type_name",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

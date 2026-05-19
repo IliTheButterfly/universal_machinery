@@ -32,8 +32,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .il import (
-    Configuration, NamedType, PouInstance, Program, Resource, Subroutine,
-    TagRef,
+    Configuration, Interface, Method, NamedType, PouInstance, PouKind,
+    Program, Resource, Subroutine, TagRef,
 )
 from .il.ast import VarDirection
 from .il.ops import Call, ParallelGroup, tags_of
@@ -365,6 +365,89 @@ def _check_task_references(prog: Program) -> list[ValidationError]:
     return errors
 
 
+def _check_oop_references(prog: Program) -> list[ValidationError]:
+    """IEC 61131-3 3rd-edition OOP checks (METHOD / INTERFACE /
+    EXTENDS / IMPLEMENTS / ABSTRACT).
+
+    Catches:
+      - extends-unknown-fb     : Subroutine.extends names a non-FB
+                                 or undeclared POU.
+      - implements-unknown-iface: Subroutine.implements names an
+                                 Interface that isn't in Program.interfaces.
+      - abstract-method-on-concrete-fb: a FUNCTION_BLOCK declares
+                                 ``abstract=False`` but has methods
+                                 with ``abstract=True``.
+      - interface-method-not-abstract: a method on an ``Interface``
+                                 has ``abstract=False`` or a body.
+      - abstract-method-has-body: any ``abstract=True`` method also
+                                 carries rungs (contradictory).
+    """
+    errors: list[ValidationError] = []
+    declared_fbs = {s.name: s for s in prog.subroutines
+                    if s.kind is PouKind.FUNCTION_BLOCK}
+    declared_ifaces = {getattr(i, "name", None) for i in prog.interfaces}
+
+    for sub in prog.subroutines:
+        if sub.kind is not PouKind.FUNCTION_BLOCK:
+            continue
+        if sub.extends and sub.extends not in declared_fbs:
+            errors.append(ValidationError(
+                code="extends-unknown-fb",
+                message=(f"FUNCTION_BLOCK {sub.name!r} extends "
+                         f"{sub.extends!r}, which is not a declared "
+                         f"FUNCTION_BLOCK"),
+                location=f"Subroutine '{sub.name}'",
+            ))
+        for iface_name in sub.implements:
+            if iface_name not in declared_ifaces:
+                errors.append(ValidationError(
+                    code="implements-unknown-iface",
+                    message=(f"FUNCTION_BLOCK {sub.name!r} implements "
+                             f"{iface_name!r}, which is not a declared "
+                             f"Interface"),
+                    location=f"Subroutine '{sub.name}'",
+                ))
+        for m in sub.methods:
+            if getattr(m, "abstract", False):
+                if not sub.abstract:
+                    errors.append(ValidationError(
+                        code="abstract-method-on-concrete-fb",
+                        message=(f"FUNCTION_BLOCK {sub.name!r} declares "
+                                 f"abstract method {m.name!r} but the "
+                                 f"FB itself is not marked abstract"),
+                        location=f"Subroutine '{sub.name}' / Method '{m.name}'",
+                    ))
+                if m.rungs:
+                    errors.append(ValidationError(
+                        code="abstract-method-has-body",
+                        message=(f"Method {m.name!r} on FB {sub.name!r} "
+                                 f"is abstract but carries a body"),
+                        location=f"Subroutine '{sub.name}' / Method '{m.name}'",
+                    ))
+
+    for iface in prog.interfaces:
+        if not isinstance(iface, Interface):
+            continue
+        for m in iface.methods:
+            if not m.abstract:
+                errors.append(ValidationError(
+                    code="interface-method-not-abstract",
+                    message=(f"Interface {iface.name!r} method "
+                             f"{m.name!r} must be abstract "
+                             f"(interfaces declare only signatures)"),
+                    location=f"Interface '{iface.name}' / Method '{m.name}'",
+                ))
+            if m.rungs:
+                errors.append(ValidationError(
+                    code="interface-method-has-body",
+                    message=(f"Interface {iface.name!r} method "
+                             f"{m.name!r} must not carry a body"),
+                    location=f"Interface '{iface.name}' / Method '{m.name}'",
+                ))
+
+    return errors
+
+
 def _check_sfc_wellformedness(prog: Program) -> list[ValidationError]:
     """Delegate to ``SfcNetwork.validate()`` for each POU's SFC body."""
     errors: list[ValidationError] = []
@@ -399,7 +482,9 @@ def validate(prog: Program) -> list[ValidationError]:
       4. Call parameter-binding mismatches
       5. Call-graph cycles
       6. PouInstance task / type references
-      7. SFC well-formedness (per POU's SFC body)
+      7. IEC 3rd-edition OOP references (EXTENDS / IMPLEMENTS /
+         ABSTRACT consistency, Interface method shape)
+      8. SFC well-formedness (per POU's SFC body)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -408,6 +493,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_call_parameter_bindings(prog))
     errors.extend(_check_call_graph_cycles(prog))
     errors.extend(_check_task_references(prog))
+    errors.extend(_check_oop_references(prog))
     errors.extend(_check_sfc_wellformedness(prog))
     return errors
 

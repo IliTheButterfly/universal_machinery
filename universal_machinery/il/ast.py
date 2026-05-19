@@ -304,9 +304,25 @@ class Subroutine:
     local_vars: list[Var] = field(default_factory=list)
     return_type: Optional[TagType] = None
     sfc: Optional["SfcNetwork"] = None
+    # IEC 61131-3 3rd-edition OOP additions (apply to FUNCTION_BLOCK
+    # POUs only; ignored for other kinds).
+    methods:    list[object] = field(default_factory=list)
+    extends:    Optional[str] = None
+    implements: list[str] = field(default_factory=list)
+    abstract:   bool = False
+    # ``methods`` is annotated list[object] to keep ``il.ast`` free of
+    # a circular import on ``il.oop``; the runtime element type is
+    # ``il.oop.Method``.
 
     def append(self, rung: Rung) -> None:
         self.rungs.append(rung)
+
+    def find_method(self, name: str):
+        """Look up a Method by name on a FUNCTION_BLOCK POU."""
+        for m in self.methods:
+            if getattr(m, "name", None) == name:
+                return m
+        return None
 
     def find_var(self, name: str) -> Optional[Var]:
         for bucket in (self.inputs, self.outputs, self.in_outs, self.local_vars):
@@ -345,11 +361,12 @@ class Program:
     data_blocks: list[DataBlock] = field(default_factory=list)
     user_types: list[object] = field(default_factory=list)
     configurations: list[object] = field(default_factory=list)
-    # ``user_types`` and ``configurations`` are annotated
-    # ``list[object]`` to avoid circular imports (the ``types`` and
-    # ``configuration`` modules import from this one).  The runtime
-    # element types are ``il.types.UserType`` and
-    # ``il.configuration.Configuration`` respectively.
+    interfaces: list[object] = field(default_factory=list)
+    # ``user_types`` / ``configurations`` / ``interfaces`` are
+    # annotated ``list[object]`` to avoid circular imports (the
+    # ``types`` / ``configuration`` / ``oop`` modules import from
+    # this one).  Runtime element types are ``il.types.UserType``,
+    # ``il.configuration.Configuration``, and ``il.oop.Interface``.
 
     # Optional metadata that some backends consume
     cpu_model: str = ""            # e.g. "C2-01CPU" for CLICK
@@ -394,6 +411,13 @@ class Program:
         for cfg in self.configurations:
             if getattr(cfg, "name", None) == name:
                 return cfg
+        return None
+
+    def find_interface(self, name: str):
+        """Look up an Interface by name (IEC 61131-3 3rd ed. §2.5.1.5)."""
+        for iface in self.interfaces:
+            if getattr(iface, "name", None) == name:
+                return iface
         return None
 
     def find_tag(self, name: str) -> Optional[Tag]:

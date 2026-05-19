@@ -50,10 +50,10 @@ import re
 from typing import Optional, Sequence, Union
 
 from .il import (
-    Address, AliasType, ArrayType, Configuration, DataBlock, DataType,
-    EnumType, NamedType, PouInstance, PouKind, Program, Resource, Rung,
-    StructType, SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec,
-    UserType, Var, VarDirection,
+    AccessSpec, Address, AliasType, ArrayType, Configuration, DataBlock,
+    DataType, EnumType, Interface, Method, NamedType, PouInstance, PouKind,
+    Program, Resource, Rung, StructType, SubrangeType, Subroutine, Tag,
+    TagRef, TagType, TaskSpec, UserType, Var, VarDirection,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -630,8 +630,12 @@ def _make_pou(kind: PouKind, name: str, *,
               outputs: Optional[Sequence[Var]] = None,
               in_outs: Optional[Sequence[Var]] = None,
               local_vars: Optional[Sequence[Var]] = None,
-              return_type: Optional[TagType] = None,
+              return_type: Optional[DataType] = None,
               sfc=None,
+              methods: Optional[Sequence[Method]] = None,
+              extends: Optional[str] = None,
+              implements: Optional[Sequence[str]] = None,
+              abstract: bool = False,
               comment: str = "") -> Subroutine:
     return Subroutine(
         name=name, kind=kind, main=main,
@@ -642,6 +646,10 @@ def _make_pou(kind: PouKind, name: str, *,
         local_vars=list(local_vars or []),
         return_type=return_type,
         sfc=sfc, comment=comment,
+        methods=list(methods or []),
+        extends=extends,
+        implements=list(implements or []),
+        abstract=abstract,
     )
 
 
@@ -667,8 +675,91 @@ def fn(name: str, *, return_type: Optional[TagType] = None, **kw) -> Subroutine:
 
 
 def fb(name: str, **kw) -> Subroutine:
-    """FUNCTION_BLOCK POU (stateful; state lives in an instance DataBlock)."""
+    """FUNCTION_BLOCK POU (stateful; state lives in an instance DataBlock).
+
+    Accepts the IEC 3rd-edition OOP additions: ``methods=[...]``,
+    ``extends="ParentFB"``, ``implements=["IDrive", "IBraking"]``,
+    ``abstract=True`` for an FB that can't be instantiated directly
+    (subclasses must override its abstract methods).
+    """
     return _make_pou(PouKind.FUNCTION_BLOCK, name, **kw)
+
+
+# -----------------------------------------------------------------------------
+# IEC 3rd-edition OOP: methods + interfaces (§2.5.1.5)
+# -----------------------------------------------------------------------------
+
+
+def method(name: str, *,
+           rungs: Optional[Sequence[Rung]] = None,
+           inputs: Optional[Sequence[Var]] = None,
+           outputs: Optional[Sequence[Var]] = None,
+           in_outs: Optional[Sequence[Var]] = None,
+           local_vars: Optional[Sequence[Var]] = None,
+           return_type: Optional[DataType] = None,
+           access: AccessSpec = AccessSpec.PUBLIC,
+           override: bool = False,
+           comment: str = "") -> Method:
+    """Declare a concrete method on a FUNCTION_BLOCK (IEC §2.5.1.5).
+
+    A method has the same parameter shape as a FUNCTION plus an
+    access specifier (PUBLIC by default) and an ``override=True``
+    flag when it implements a parent FB's or interface's signature.
+    The method's body (``rungs``) has implicit access to the
+    enclosing FB's state."""
+    return Method(
+        name=name,
+        rungs=list(rungs or []),
+        inputs=list(inputs or []),
+        outputs=list(outputs or []),
+        in_outs=list(in_outs or []),
+        local_vars=list(local_vars or []),
+        return_type=return_type,
+        access=access,
+        abstract=False,
+        override=override,
+        comment=comment,
+    )
+
+
+def abstract_method(name: str, *,
+                    inputs: Optional[Sequence[Var]] = None,
+                    outputs: Optional[Sequence[Var]] = None,
+                    in_outs: Optional[Sequence[Var]] = None,
+                    return_type: Optional[DataType] = None,
+                    access: AccessSpec = AccessSpec.PUBLIC,
+                    comment: str = "") -> Method:
+    """Declare an abstract method signature.
+
+    Use this for interface methods (an ``Interface`` collects
+    abstract-method signatures) and for declaring abstract slots on
+    an ``abstract=True`` FUNCTION_BLOCK.  Has no body."""
+    return Method(
+        name=name,
+        rungs=[],
+        inputs=list(inputs or []),
+        outputs=list(outputs or []),
+        in_outs=list(in_outs or []),
+        local_vars=[],
+        return_type=return_type,
+        access=access,
+        abstract=True,
+        override=False,
+        comment=comment,
+    )
+
+
+def interface(name: str, *,
+              methods: Optional[Sequence[Method]] = None,
+              comment: str = "") -> Interface:
+    """Declare an IEC ``INTERFACE`` -- an abstract contract of method
+    signatures that ``FUNCTION_BLOCK``s ``IMPLEMENT``.
+
+    All methods on an interface should be abstract (signatures only,
+    no body); use ``abstract_method(...)`` to construct them."""
+    return Interface(name=name,
+                     methods=list(methods or []),
+                     comment=comment)
 
 
 # -----------------------------------------------------------------------------
@@ -819,6 +910,7 @@ def program(*,
             data_blocks: Optional[Sequence[DataBlock]] = None,
             user_types: Optional[Sequence[UserType]] = None,
             configurations: Optional[Sequence[Configuration]] = None,
+            interfaces: Optional[Sequence[Interface]] = None,
             cpu_model: str = "",
             project_name: str = "",
             comment: str = "") -> Program:
@@ -847,6 +939,7 @@ def program(*,
         data_blocks=list(data_blocks or []),
         user_types=list(user_types or []),
         configurations=list(configurations or []),
+        interfaces=list(interfaces or []),
         cpu_model=cpu_model,
         project_name=project_name,
         comment=comment,
@@ -894,6 +987,8 @@ __all__ = [
     "task_spec", "pou_instance", "resource", "configuration",
     # POUs
     "subroutine", "prog", "fn", "fb",
+    # IEC 3rd-edition OOP
+    "method", "abstract_method", "interface",
     # Program
     "program",
 ]
