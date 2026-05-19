@@ -45,7 +45,8 @@ from typing import Iterable, Optional, Sequence, Union
 from ..il import (
     Address, AliasType, ArrayType, Configuration, DataBlock, EnumType,
     NamedType, PouInstance, PouKind, Program, Resource, Rung, StructType,
-    Subroutine, Tag, TagRef, TagType, TaskSpec, Var, VarDirection, type_name,
+    SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec, Var,
+    VarDirection, type_name,
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -417,6 +418,12 @@ def _fmt_user_type_decl(ut) -> str:
     ``_fmt_iec_type`` -- which renders both elementary and
     user-defined types by their IEC name.
     """
+    if isinstance(ut, SubrangeType):
+        body = (f"    {ut.name} : "
+                f"{_fmt_iec_type(ut.base)} "
+                f"({ut.lower}..{ut.upper});")
+        return "\n".join(["TYPE", body, "END_TYPE"])
+
     if isinstance(ut, AliasType):
         body = f"    {ut.name} : {_fmt_iec_type(ut.base)};"
         return "\n".join(["TYPE", body, "END_TYPE"])

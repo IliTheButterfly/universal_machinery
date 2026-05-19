@@ -308,6 +308,46 @@ def test_alias_of_elementary_validates():
     validate_plcopen_xml(xml)
 
 
+def test_subrange_of_signed_integer_validates():
+    from universal_machinery.builders import subrange_type
+    p = program(
+        user_types=[subrange_type("SmallInt", TagType.INT,
+                                    lower=-100, upper=100)],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # And the schema-correct element name appears.
+    assert "<subrangeSigned>" in xml
+    assert 'lower="-100"' in xml and 'upper="100"' in xml
+
+
+def test_subrange_of_unsigned_integer_validates():
+    from universal_machinery.builders import subrange_type
+    p = program(
+        user_types=[subrange_type("Percent", TagType.UINT,
+                                    lower=0, upper=100)],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<subrangeUnsigned>" in xml
+
+
+def test_subrange_typed_var_validates():
+    """A POU local declared with a subrange UDT reference renders as
+    <derived name="..."/> and validates."""
+    from universal_machinery.builders import subrange_type, named_type
+    p = program(
+        user_types=[subrange_type("Percent", TagType.UINT,
+                                    lower=0, upper=100)],
+        subroutines=[prog("Main", main=True,
+                          local_vars=[var("level", named_type("Percent"))])],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
 def test_alias_of_user_type_validates():
     from universal_machinery.builders import alias_type, named_type, struct_type
     p = program(

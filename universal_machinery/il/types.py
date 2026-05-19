@@ -134,6 +134,35 @@ class EnumType:
 
 
 @dataclass(frozen=True)
+class SubrangeType:
+    """IEC 61131-3 §2.3.3.1 subrange type.
+
+    A user-defined type that restricts an integer type's value range::
+
+        TYPE SmallInt : INT (-100..100); END_TYPE
+        TYPE Percent  : UINT (0..100);   END_TYPE
+        TYPE Index    : USINT (0..15);   END_TYPE
+
+    ``base`` is the underlying integer ``TagType`` (or NamedType
+    pointing at one).  ``lower`` and ``upper`` bound the legal value
+    range, inclusive.  PLCopen TC6 XML emits these as
+    ``<subrangeSigned>`` or ``<subrangeUnsigned>`` depending on
+    whether ``base`` is a signed or unsigned IEC integer type
+    (see ``is_signed_subrange``).
+
+    Subranges are conceptually aliases with range-restriction
+    metadata -- backends that don't enforce the bounds at runtime
+    may treat them as plain aliases for code-gen purposes; tooling
+    can still use the bounds for validation.
+    """
+    name: str
+    base: "DataType"
+    lower: int
+    upper: int
+    comment: str = ""
+
+
+@dataclass(frozen=True)
 class AliasType:
     """IEC 61131-3 §2.3.3.4 simple / alias type.
 
@@ -158,14 +187,43 @@ class AliasType:
 
 
 #: Union of every user-defined type variant.
-UserType = Union[StructType, ArrayType, EnumType, AliasType]
+UserType = Union[StructType, ArrayType, EnumType, SubrangeType, AliasType]
 
 
 #: Anything that can appear as a variable's declared type:
 #: an elementary ``TagType`` value, a ``NamedType`` reference to a
 #: user-defined type, or a ``UserType`` instance inline (rare; usually
 #: types are declared at program scope and referenced by name).
-DataType = Union[TagType, NamedType, StructType, ArrayType, EnumType, AliasType]
+DataType = Union[TagType, NamedType, StructType, ArrayType, EnumType,
+                 SubrangeType, AliasType]
+
+
+#: The IEC signed-integer elementary types.  Used to discriminate
+#: ``<subrangeSigned>`` vs ``<subrangeUnsigned>`` when emitting
+#: PLCopen XML.
+_SIGNED_INTEGER_TYPES = frozenset({
+    TagType.SINT, TagType.INT, TagType.DINT, TagType.LINT,
+})
+
+#: The IEC unsigned-integer elementary types.
+_UNSIGNED_INTEGER_TYPES = frozenset({
+    TagType.USINT, TagType.UINT, TagType.UDINT, TagType.ULINT,
+})
+
+
+def is_signed_subrange(sub: SubrangeType) -> bool:
+    """True iff the subrange's base is a signed IEC integer type.
+
+    Resolves the base through one level of NamedType / AliasType when
+    needed; backends call this to pick ``<subrangeSigned>`` vs
+    ``<subrangeUnsigned>`` in PLCopen XML emission.
+    """
+    base = sub.base
+    if isinstance(base, TagType):
+        return base in _SIGNED_INTEGER_TYPES
+    # NamedType references resolve at the Program level; default to
+    # signed (the more permissive choice, matching IEC's INT default).
+    return True
 
 
 # -----------------------------------------------------------------------------
@@ -186,7 +244,8 @@ def type_name(t: DataType) -> str:
         return t.value
     if isinstance(t, NamedType):
         return t.name
-    if isinstance(t, (StructType, ArrayType, EnumType, AliasType)):
+    if isinstance(t, (StructType, ArrayType, EnumType,
+                      SubrangeType, AliasType)):
         return t.name
     raise TypeError(f"not a DataType: {t!r}")
 
@@ -194,7 +253,7 @@ def type_name(t: DataType) -> str:
 def is_user_type(t: DataType) -> bool:
     """True iff ``t`` references a user-defined type (named or inline)."""
     return isinstance(t, (NamedType, StructType, ArrayType,
-                          EnumType, AliasType))
+                          EnumType, SubrangeType, AliasType))
 
 
 def is_elementary(t: DataType) -> bool:

@@ -409,6 +409,22 @@ def test_alias_of_elementary():
     assert "Distance : DINT;" in text
 
 
+def test_subrange_emits_iec_paren_range():
+    from universal_machinery.builders import subrange_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    t = subrange_type("SmallInt", TagType.INT, lower=-100, upper=100)
+    text = _fmt_user_type_decl(t)
+    assert "SmallInt : INT (-100..100);" in text
+
+
+def test_subrange_unsigned_emits_unsigned_base():
+    from universal_machinery.builders import subrange_type
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    t = subrange_type("Percent", TagType.UINT, lower=0, upper=100)
+    text = _fmt_user_type_decl(t)
+    assert "Percent : UINT (0..100);" in text
+
+
 def test_alias_of_user_type():
     from universal_machinery.builders import alias_type, named_type
     from universal_machinery.emitters.st import _fmt_user_type_decl

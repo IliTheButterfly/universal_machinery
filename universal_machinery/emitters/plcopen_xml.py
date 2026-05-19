@@ -64,7 +64,8 @@ from xml.sax.saxutils import escape, quoteattr
 from ..il import (
     Address, AliasType, ArrayType, Configuration, DataBlock, EnumType,
     NamedType, PouInstance, PouKind, Program, Resource, StructType,
-    Subroutine, Tag, TagType, TaskSpec, Var, VarDirection,
+    SubrangeType, Subroutine, Tag, TagType, TaskSpec, Var, VarDirection,
+    is_signed_subrange,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung
 
@@ -350,6 +351,31 @@ def _emit_enum_baseType(e: EnumType) -> str:
     )
 
 
+def _emit_subrange_baseType(s: SubrangeType) -> str:
+    """Render a SubrangeType's body.
+
+    Per the TC6 schema the choice between ``<subrangeSigned>`` and
+    ``<subrangeUnsigned>`` is driven by the signedness of the base
+    integer type::
+
+        <baseType>
+          <subrangeSigned>
+            <range lower="-100" upper="100"/>
+            <baseType><INT/></baseType>
+          </subrangeSigned>
+        </baseType>
+    """
+    elem = "subrangeSigned" if is_signed_subrange(s) else "subrangeUnsigned"
+    return (
+        "<baseType>\n"
+        f"  <{elem}>\n"
+        f'    <range lower="{s.lower}" upper="{s.upper}"/>\n'
+        f"    <baseType>{_iec_type_element(s.base)}</baseType>\n"
+        f"  </{elem}>\n"
+        "</baseType>"
+    )
+
+
 def _emit_alias_baseType(a: AliasType) -> str:
     """Render an AliasType's body as ``<baseType>{elem-or-derived}</baseType>``.
 
@@ -373,6 +399,8 @@ def _emit_user_type(ut) -> str:
         body = _emit_array_baseType(ut)
     elif isinstance(ut, EnumType):
         body = _emit_enum_baseType(ut)
+    elif isinstance(ut, SubrangeType):
+        body = _emit_subrange_baseType(ut)
     elif isinstance(ut, AliasType):
         body = _emit_alias_baseType(ut)
     else:
