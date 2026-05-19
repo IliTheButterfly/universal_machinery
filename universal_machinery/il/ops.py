@@ -234,34 +234,178 @@ class RS:
 # -----------------------------------------------------------------------------
 
 
+#: IEC 61131-3 §2.5.2.1 elementary types that participate in
+#: standard-named ``<SRC>_TO_<DST>`` conversions.  Every pair
+#: appears in ``STD_FUNCTION_NAMES``; backends decide which
+#: conversions are physically meaningful on their target (e.g.
+#: ``BOOL_TO_TIME`` is unusual but accepted by some compilers).
+_IEC_CONVERTIBLE_TYPES = (
+    # Boolean
+    "BOOL",
+    # Bit-string
+    "BYTE", "WORD", "DWORD", "LWORD",
+    # Signed integer
+    "SINT", "INT", "DINT", "LINT",
+    # Unsigned integer
+    "USINT", "UINT", "UDINT", "ULINT",
+    # Real
+    "REAL", "LREAL",
+    # Time / date
+    "TIME", "DATE", "TOD", "DT",
+    # Strings
+    "STRING", "WSTRING",
+)
+
+
+def _build_type_conversions() -> set[str]:
+    """All ``<SRC>_TO_<DST>`` pairs for IEC elementary types.
+
+    21 source types × 20 distinct destinations = 420 names.  Some
+    are nonsensical (e.g. ``BOOL_TO_TIME``) but IEC §2.5.2.1
+    permits implementation-defined conversion semantics for any
+    pair, and PLC vendors widely accept the lot.  Including all
+    pairs makes the registry exhaustive for validation purposes.
+    """
+    return {
+        f"{src}_TO_{dst}"
+        for src in _IEC_CONVERTIBLE_TYPES
+        for dst in _IEC_CONVERTIBLE_TYPES
+        if src != dst
+    }
+
+
+#: BCD (binary-coded decimal) conversions per §2.5.2.1.  Common on
+#: legacy industrial controllers that store integers as packed
+#: BCD digits.
+_BCD_CONVERSIONS = frozenset({
+    "BCD_TO_INT", "INT_TO_BCD",
+    "BCD_TO_DINT", "DINT_TO_BCD",
+    "BCD_TO_USINT", "USINT_TO_BCD",
+    "BCD_TO_UINT", "UINT_TO_BCD",
+    "BCD_TO_UDINT", "UDINT_TO_BCD",
+    "BCD_TO_ULINT", "ULINT_TO_BCD",
+})
+
+
+#: TRUNC family per §2.5.2.1.  ``TRUNC`` truncates REAL/LREAL → DINT;
+#: typed variants ``REAL_TRUNC_*`` and ``LREAL_TRUNC_*`` target a
+#: specific integer destination type.
+_TRUNC_FUNCTIONS = frozenset({
+    "TRUNC",
+    "REAL_TRUNC_INT", "REAL_TRUNC_DINT", "REAL_TRUNC_LINT",
+    "REAL_TRUNC_SINT", "REAL_TRUNC_USINT", "REAL_TRUNC_UINT",
+    "REAL_TRUNC_UDINT", "REAL_TRUNC_ULINT",
+    "LREAL_TRUNC_INT", "LREAL_TRUNC_DINT", "LREAL_TRUNC_LINT",
+    "LREAL_TRUNC_SINT", "LREAL_TRUNC_USINT", "LREAL_TRUNC_UINT",
+    "LREAL_TRUNC_UDINT", "LREAL_TRUNC_ULINT",
+})
+
+
+#: §2.5.2.10 Time / date arithmetic.  Per IEC table 30: every
+#: combination of TIME / DATE / TOD / DT with the result-typed
+#: ``ADD_`` / ``SUB_`` / ``MUL_`` / ``DIV_`` / ``CONCAT_`` /
+#: extraction functions.
+_TIME_DATE_FUNCTIONS = frozenset({
+    # TIME arithmetic
+    "ADD_TIME",  "SUB_TIME",
+    "MULTIME",   "DIVTIME",
+    "MUL_TIME",  "DIV_TIME",   # alternate names some vendors use
+    # DATE/TOD/DT + TIME
+    "ADD_TOD_TIME", "SUB_TOD_TIME",
+    "ADD_DT_TIME",  "SUB_DT_TIME",
+    # Same-type subtraction (yields TIME)
+    "SUB_DATE_DATE", "SUB_TOD_TOD", "SUB_DT_DT",
+    # Composition
+    "CONCAT_DATE_TOD",
+    # Extraction (DT -> DATE / TOD)
+    "DT_TO_DATE", "DT_TO_TOD", "DT_TO_TIME",
+    "DATE_AND_TIME_TO_TIME_OF_DAY",
+    "DATE_AND_TIME_TO_DATE",
+    # Comparison operators for date/time also live in §2.5.2.10 but
+    # we model those via the dedicated Compare op for ``>``/``<``/
+    # ``=``/etc. across all elementary types.
+})
+
+
+#: §2.5.2.9 Character / string-handling functions.  Names per IEC
+#: §2.5.2.9 table 28 -- complete for the standard.
+_STRING_FUNCTIONS = frozenset({
+    "LEN", "LEFT", "RIGHT", "MID",
+    "CONCAT", "INSERT", "DELETE", "REPLACE", "FIND",
+})
+
+
+#: §2.5.2.4 Numerical functions.
+_NUMERICAL_FUNCTIONS = frozenset({
+    "ABS", "SQRT", "LN", "LOG", "EXP",
+    "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN",
+})
+
+
+#: §2.5.2.6 Bit-string functions.
+_BIT_STRING_FUNCTIONS = frozenset({
+    "SHL", "SHR", "ROR", "ROL",
+})
+
+
+#: §2.5.2.7 Bitwise / logical functions.
+_LOGICAL_FUNCTIONS = frozenset({
+    "AND", "OR", "XOR", "NOT",
+})
+
+
+#: §2.5.2.8 Selection / multiplexing functions.
+_SELECTION_FUNCTIONS = frozenset({
+    "SEL", "MAX", "MIN", "LIMIT", "MUX",
+})
+
+
 #: The set of IEC 61131-3 §2.5.2 standard-function names this IL
 #: recognises by default.  Backends may emit any name they support;
 #: the registry exists for validation passes that want to flag
 #: unknown names early.  Names follow IEC conventions (uppercase
 #: ASCII, underscores).
-STD_FUNCTION_NAMES = frozenset({
-    # §2.5.2.1 Type conversion (selected; the full set is huge)
-    "BOOL_TO_INT", "BOOL_TO_DINT", "BOOL_TO_REAL",
-    "INT_TO_BOOL", "INT_TO_REAL", "INT_TO_DINT", "INT_TO_STRING",
-    "DINT_TO_INT", "DINT_TO_REAL", "DINT_TO_STRING",
-    "REAL_TO_INT", "REAL_TO_DINT", "REAL_TO_STRING",
-    "STRING_TO_INT", "STRING_TO_REAL",
-    "TIME_TO_DINT", "DINT_TO_TIME",
-    # §2.5.2.4 Numerical
-    "ABS", "SQRT", "LN", "LOG", "EXP",
-    "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN",
-    # §2.5.2.6 Bit-string
-    "SHL", "SHR", "ROR", "ROL",
-    # §2.5.2.7 Bitwise / logical
-    "AND", "OR", "XOR", "NOT",
-    # §2.5.2.8 Selection / comparison
-    "SEL", "MAX", "MIN", "LIMIT", "MUX",
-    # §2.5.2.9 Character-string
-    "LEN", "LEFT", "RIGHT", "MID",
-    "CONCAT", "INSERT", "DELETE", "REPLACE", "FIND",
-    # §2.5.2.10 Time / date
-    "ADD_DT_TIME", "SUB_DT_TIME", "SUB_DATE_DATE", "SUB_DT_DT",
-})
+#:
+#: The set is the union of:
+#:   - Programmatically-generated ``<SRC>_TO_<DST>`` pairs for the
+#:     20 IEC elementary types in ``_IEC_CONVERTIBLE_TYPES``.
+#:   - BCD conversions (legacy packed-decimal integers).
+#:   - TRUNC family.
+#:   - Numerical / bit-string / logical / selection helpers.
+#:   - Character-string library.
+#:   - Time / date arithmetic.
+STD_FUNCTION_NAMES = frozenset(
+    _build_type_conversions()
+    | _BCD_CONVERSIONS
+    | _TRUNC_FUNCTIONS
+    | _NUMERICAL_FUNCTIONS
+    | _BIT_STRING_FUNCTIONS
+    | _LOGICAL_FUNCTIONS
+    | _SELECTION_FUNCTIONS
+    | _STRING_FUNCTIONS
+    | _TIME_DATE_FUNCTIONS
+)
+
+
+def is_iec_std_function(name: str) -> bool:
+    """True iff ``name`` is in ``STD_FUNCTION_NAMES``.
+
+    Convenience predicate for backends / validation that want to
+    distinguish IEC-standard names from vendor extensions
+    (custom function blocks, vendor-specific instructions).
+    """
+    return name in STD_FUNCTION_NAMES
+
+
+def iec_convertible_types() -> tuple[str, ...]:
+    """Snapshot of the elementary type list participating in
+    ``<SRC>_TO_<DST>`` conversions.
+
+    Returned as a tuple so callers can't mutate the underlying
+    registry.  Useful for documentation generators / conformance
+    reports.
+    """
+    return _IEC_CONVERTIBLE_TYPES
 
 
 @dataclass(frozen=True)

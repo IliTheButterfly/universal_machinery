@@ -70,6 +70,7 @@ from .fbd import (
 )
 from .ops import (
     FTrig, Loc, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc, Value, VendorOp,
+    iec_convertible_types, is_iec_std_function,
 )
 from .sfc import Action, SfcNetwork, Step, Transition
 from .st import (
@@ -168,7 +169,9 @@ __all__ = [
     "VendorOp",
     "WhileStatement",
     "fbd",
+    "iec_convertible_types",
     "is_elementary",
+    "is_iec_std_function",
     "is_lvalue",
     "is_signed_subrange",
     "is_user_type",

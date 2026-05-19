@@ -424,6 +424,48 @@ def mux(k: ValueLike, *inputs: ValueLike,
 
 
 # -----------------------------------------------------------------------------
+# Type-conversion helpers (IEC §2.5.2.1)
+# -----------------------------------------------------------------------------
+
+
+def convert(src_type: str, dst_type: str,
+            source: ValueLike, output: LocLike) -> StdFunc:
+    """Generic IEC ``<SRC>_TO_<DST>`` conversion shortcut.
+
+    Builds a ``StdFunc(name="<SRC>_TO_<DST>", ...)``.  Both type
+    names are uppercased.  All standard elementary-type pairs
+    (``INT_TO_REAL``, ``REAL_TO_INT``, ``BOOL_TO_BYTE``, ...) are
+    in ``STD_FUNCTION_NAMES``; pairs outside the IEC convertible-
+    type list are still accepted -- backends may opt out
+    explicitly.
+
+    Example::
+
+        convert("INT", "REAL", "count", "count_real")
+        # -> StdFunc(name="INT_TO_REAL", inputs=("count",),
+        #            output=TagRef("count_real"))
+    """
+    return std_func(f"{src_type.upper()}_TO_{dst_type.upper()}",
+                    [source], output)
+
+
+def trunc(source: ValueLike, output: LocLike,
+          dst_type: Optional[str] = None,
+          src_type: str = "REAL") -> StdFunc:
+    """IEC TRUNC: truncate REAL/LREAL toward zero into an integer.
+
+    ``trunc(src, dst)`` emits the generic ``TRUNC`` (REAL→DINT).
+    Pass ``dst_type="INT"`` for the typed variant
+    ``REAL_TRUNC_INT``; pass ``src_type="LREAL"`` to start from
+    LREAL instead of REAL.
+    """
+    if dst_type is None:
+        return std_func("TRUNC", [source], output)
+    return std_func(f"{src_type.upper()}_TRUNC_{dst_type.upper()}",
+                    [source], output)
+
+
+# -----------------------------------------------------------------------------
 # Compare shortcuts
 # -----------------------------------------------------------------------------
 
@@ -1405,6 +1447,7 @@ __all__ = [
     "and_", "or_", "xor_", "not_",
     "shl", "shr", "ror", "rol",
     "max_", "min_", "sel", "limit", "mux",
+    "convert", "trunc",
     # Compare
     "eq", "ne", "lt", "le", "gt", "ge",
     # Math / move
