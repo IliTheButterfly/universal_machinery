@@ -47,11 +47,15 @@ from typing import Any, Union, get_args, get_origin
 
 from . import il
 from .il import (
-    AccessSpec, Action, Address, AliasType, ArrayType, Configuration,
-    DataBlock, EnumType, Interface, Method, NamedType, PouInstance,
-    PouKind, Program, Resource, Rung, SfcNetwork, Step, StructType,
-    SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec, Transition,
-    Var, VarDirection, VendorOp,
+    AccessSpec, Action, Address, AliasType, ArrayType, Assignment,
+    BinaryExpr, BinaryOp, CaseClause, CaseStatement, Configuration,
+    ContinueStatement, DataBlock, EnumType, ExitStatement, FieldAccess,
+    ForStatement, FunctionCallExpr, FunctionCallStatement, IfStatement,
+    IndexAccess, Interface, Literal, Method, NamedType, PouInstance,
+    PouKind, Program, RepeatStatement, Resource, ReturnStatement, Rung,
+    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagRef,
+    TagType, TaskSpec, Transition, UnaryExpr, UnaryOp, Var, VarDirection,
+    VarRef, VendorOp, WhileStatement,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -85,6 +89,13 @@ _DATACLASSES: dict[str, type] = {
         Configuration, Resource, TaskSpec, PouInstance,
         # IEC 3rd-edition OOP (METHOD / INTERFACE)
         Method, Interface,
+        # ST AST (IEC §3 Structured Text -- expressions + statements)
+        Literal, VarRef, FieldAccess, IndexAccess,
+        UnaryExpr, BinaryExpr, FunctionCallExpr,
+        Assignment, IfStatement, CaseClause, CaseStatement,
+        WhileStatement, RepeatStatement, ForStatement,
+        ReturnStatement, ExitStatement, ContinueStatement,
+        FunctionCallStatement,
         # SFC
         SfcNetwork, Step, Transition, Action,
         # Ops
@@ -101,7 +112,9 @@ _DATACLASSES: dict[str, type] = {
 
 #: All enum types the serializer recognises.
 _ENUMS: dict[str, type[Enum]] = {
-    cls.__name__: cls for cls in (TagType, PouKind, VarDirection, AccessSpec)
+    cls.__name__: cls for cls in (
+        TagType, PouKind, VarDirection, AccessSpec, UnaryOp, BinaryOp,
+    )
 }
 
 
@@ -220,8 +233,8 @@ def _resolved_hints(cls: type) -> dict[str, Any]:
     populated with the IL public API to handle forward refs like
     ``"SfcNetwork"`` and ``"DataType"``.
     """
-    ns = {**vars(il), **vars(il.ops), **vars(il.sfc), **vars(il.types),
-          **vars(il.configuration)}
+    ns = {**vars(il), **vars(il.ops), **vars(il.sfc), **vars(il.st),
+          **vars(il.types), **vars(il.configuration)}
     return typing.get_type_hints(cls, globalns=ns, localns=ns)
 
 

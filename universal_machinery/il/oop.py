@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from .ast import Rung, Var
+    from .st import Statement
     from .types import DataType
 
 
@@ -82,10 +83,13 @@ class Method:
     abstract: bool = False
     override: bool = False
     comment: str = ""
+    st_body: Optional[list["Statement"]] = None
 
     def is_signature_only(self) -> bool:
         """True iff this method has no body (abstract / interface decl)."""
-        return self.abstract or not self.rungs
+        if self.abstract:
+            return True
+        return not self.rungs and not self.st_body
 
 
 @dataclass

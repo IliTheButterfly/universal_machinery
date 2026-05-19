@@ -32,11 +32,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .il import (
-    Configuration, Interface, Method, NamedType, PouInstance, PouKind,
-    Program, Resource, Subroutine, TagRef,
+    Assignment, Configuration, ForStatement, Interface, Method, NamedType,
+    PouInstance, PouKind, Program, Resource, Subroutine, TagRef,
 )
 from .il.ast import VarDirection
 from .il.ops import Call, ParallelGroup, tags_of
+from .il.st import is_lvalue, walk_expressions
 
 
 @dataclass(frozen=True)
@@ -448,6 +449,157 @@ def _check_oop_references(prog: Program) -> list[ValidationError]:
     return errors
 
 
+def _check_body_kind_mutex(prog: Program) -> list[ValidationError]:
+    """A POU's body must be exactly one of ``rungs`` / ``sfc`` / ``st_body``.
+
+    Declaring more than one is ambiguous (which one runs?); declaring
+    none is fine for SUBROUTINE / abstract methods but produces a
+    warning for non-abstract callable POUs.  Same rule applies to
+    ``Method`` bodies on FUNCTION_BLOCK POUs.
+    """
+    errors: list[ValidationError] = []
+
+    def _check_body(name: str, where: str, rungs, sfc, st_body) -> None:
+        kinds_set = sum(1 for x in (rungs, sfc, st_body) if x)
+        if kinds_set > 1:
+            errors.append(ValidationError(
+                code="multiple-body-kinds",
+                message=(f"{name!r} declares more than one body kind "
+                         f"(rungs / sfc / st_body); pick exactly one"),
+                location=where,
+            ))
+
+    for sub in prog.subroutines:
+        _check_body(sub.name, f"Subroutine '{sub.name}'",
+                    sub.rungs, sub.sfc, sub.st_body)
+        for m in sub.methods:
+            # Method's rungs default to [] (falsy); st_body defaults
+            # to None.  Only the abstract case both-empty is allowed
+            # without warning.
+            _check_body(m.name,
+                        f"Subroutine '{sub.name}' / Method '{m.name}'",
+                        m.rungs, None, m.st_body)
+
+    return errors
+
+
+def _check_st_lvalues(prog: Program) -> list[ValidationError]:
+    """``Assignment.target`` must be an lvalue (VarRef / FieldAccess /
+    IndexAccess).  Literals, math expressions, and function-call
+    results can't be assigned to."""
+    errors: list[ValidationError] = []
+
+    for sub in prog.subroutines:
+        if sub.st_body is not None:
+            _walk_st_stmts(sub.st_body, f"Subroutine '{sub.name}' / st_body",
+                           errors)
+        for m in sub.methods:
+            if m.st_body is not None:
+                _walk_st_stmts(m.st_body,
+                               f"Subroutine '{sub.name}' / Method "
+                               f"'{m.name}' / st_body", errors)
+
+    return errors
+
+
+def _walk_st_stmts(stmts, where: str,
+                   errors: list[ValidationError]) -> None:
+    """Recursively walk a Statement list, checking each for
+    structural issues.  Used by ``_check_st_lvalues``.
+    """
+    from .il import (
+        CaseStatement, ForStatement, IfStatement, RepeatStatement,
+        WhileStatement,
+    )
+    for s in stmts:
+        if isinstance(s, Assignment):
+            if not is_lvalue(s.target):
+                errors.append(ValidationError(
+                    code="bad-assignment-target",
+                    message=(f"Assignment.target must be an lvalue; "
+                             f"got {type(s.target).__name__}"),
+                    location=where,
+                ))
+        elif isinstance(s, IfStatement):
+            for _cond, body in s.branches:
+                _walk_st_stmts(body, where, errors)
+            if s.else_branch is not None:
+                _walk_st_stmts(s.else_branch, where, errors)
+        elif isinstance(s, CaseStatement):
+            for clause in s.clauses:
+                _walk_st_stmts(clause.body, where, errors)
+            if s.else_branch is not None:
+                _walk_st_stmts(s.else_branch, where, errors)
+        elif isinstance(s, WhileStatement):
+            _walk_st_stmts(s.body, where, errors)
+        elif isinstance(s, RepeatStatement):
+            _walk_st_stmts(s.body, where, errors)
+        elif isinstance(s, ForStatement):
+            _walk_st_stmts(s.body, where, errors)
+
+
+def _check_st_for_index_declared(prog: Program) -> list[ValidationError]:
+    """``ForStatement.index_var`` must name a local variable or
+    parameter declared on the enclosing POU."""
+    errors: list[ValidationError] = []
+
+    def _collect_for_indices(stmts, into: list[str]) -> None:
+        from .il import (
+            CaseStatement, ForStatement, IfStatement, RepeatStatement,
+            WhileStatement,
+        )
+        for s in stmts:
+            if isinstance(s, ForStatement):
+                into.append(s.index_var)
+                _collect_for_indices(s.body, into)
+            elif isinstance(s, IfStatement):
+                for _cond, body in s.branches:
+                    _collect_for_indices(body, into)
+                if s.else_branch is not None:
+                    _collect_for_indices(s.else_branch, into)
+            elif isinstance(s, CaseStatement):
+                for clause in s.clauses:
+                    _collect_for_indices(clause.body, into)
+                if s.else_branch is not None:
+                    _collect_for_indices(s.else_branch, into)
+            elif isinstance(s, (WhileStatement, RepeatStatement)):
+                _collect_for_indices(s.body, into)
+
+    for sub in prog.subroutines:
+        scope = {v.name for v in (sub.inputs + sub.outputs
+                                    + sub.in_outs + sub.local_vars)}
+        if sub.st_body is not None:
+            indices: list[str] = []
+            _collect_for_indices(sub.st_body, indices)
+            for name in indices:
+                if name not in scope:
+                    errors.append(ValidationError(
+                        code="for-index-undeclared",
+                        message=(f"FOR index variable {name!r} is not "
+                                 f"declared as a local or parameter"),
+                        location=f"Subroutine '{sub.name}'",
+                    ))
+        for m in sub.methods:
+            method_scope = scope | {v.name for v in (m.inputs + m.outputs
+                                                      + m.in_outs
+                                                      + m.local_vars)}
+            if m.st_body is not None:
+                indices = []
+                _collect_for_indices(m.st_body, indices)
+                for name in indices:
+                    if name not in method_scope:
+                        errors.append(ValidationError(
+                            code="for-index-undeclared",
+                            message=(f"FOR index variable {name!r} is "
+                                     f"not declared as a local or "
+                                     f"parameter"),
+                            location=(f"Subroutine '{sub.name}' / "
+                                      f"Method '{m.name}'"),
+                        ))
+
+    return errors
+
+
 def _check_sfc_wellformedness(prog: Program) -> list[ValidationError]:
     """Delegate to ``SfcNetwork.validate()`` for each POU's SFC body."""
     errors: list[ValidationError] = []
@@ -485,6 +637,9 @@ def validate(prog: Program) -> list[ValidationError]:
       7. IEC 3rd-edition OOP references (EXTENDS / IMPLEMENTS /
          ABSTRACT consistency, Interface method shape)
       8. SFC well-formedness (per POU's SFC body)
+      9. ST body kind mutex (rungs / sfc / st_body exactly one)
+     10. ST Assignment.target is an lvalue
+     11. ST FOR index variable is declared
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -495,6 +650,9 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_task_references(prog))
     errors.extend(_check_oop_references(prog))
     errors.extend(_check_sfc_wellformedness(prog))
+    errors.extend(_check_body_kind_mutex(prog))
+    errors.extend(_check_st_lvalues(prog))
+    errors.extend(_check_st_for_index_declared(prog))
     return errors
 
 

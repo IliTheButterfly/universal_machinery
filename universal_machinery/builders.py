@@ -50,10 +50,15 @@ import re
 from typing import Optional, Sequence, Union
 
 from .il import (
-    AccessSpec, Address, AliasType, ArrayType, Configuration, DataBlock,
-    DataType, EnumType, Interface, Method, NamedType, PouInstance, PouKind,
-    Program, Resource, Rung, StructType, SubrangeType, Subroutine, Tag,
-    TagRef, TagType, TaskSpec, UserType, Var, VarDirection,
+    AccessSpec, Address, AliasType, ArrayType, Assignment, BinaryExpr,
+    BinaryOp, CaseClause, CaseStatement, Configuration, ContinueStatement,
+    DataBlock, DataType, EnumType, ExitStatement, Expression, FieldAccess,
+    ForStatement, FunctionCallExpr, FunctionCallStatement, IfStatement,
+    IndexAccess, Interface, Literal, Method, NamedType, PouInstance,
+    PouKind, Program, RepeatStatement, Resource, ReturnStatement, Rung,
+    Statement, StructType, SubrangeType, Subroutine, Tag, TagRef, TagType,
+    TaskSpec, UnaryExpr, UnaryOp, UserType, Var, VarDirection, VarRef,
+    WhileStatement,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -619,6 +624,247 @@ def data_block(name: str,
 
 
 # -----------------------------------------------------------------------------
+# Structured Text expression / statement builders (IEC §3)
+# -----------------------------------------------------------------------------
+
+
+ExprLike = Union["Expression", LocLike, int, float, bool]
+
+
+def _expr(x: ExprLike) -> Expression:
+    """Coerce a Python value into an ST ``Expression``.
+
+    Routing:
+      - Pre-built ``Expression`` nodes (``Literal``, ``VarRef``, ...)
+        pass through.
+      - ``Address`` / ``TagRef`` get wrapped as ``VarRef``.
+      - ``bool`` (True / False) becomes ``Literal("TRUE"|"FALSE",
+        kind="bool")``.
+      - ``int`` / ``float`` become numeric ``Literal``.
+      - Strings: if they look like an address (CLICK-style or IEC
+        direct rep), become ``VarRef(Address)``; otherwise become
+        ``VarRef(TagRef)``.  Use ``lit(...)`` to force a literal.
+
+    The smart-string coercion matches the rest of the builders DSL
+    so ``assign("count", add_e("count", 1))`` reads naturally.
+    """
+    if isinstance(x, (Literal, VarRef, FieldAccess, IndexAccess,
+                      UnaryExpr, BinaryExpr, FunctionCallExpr)):
+        return x
+    if isinstance(x, bool):
+        return Literal("TRUE" if x else "FALSE", kind="bool")
+    if isinstance(x, int):
+        return Literal(str(x), kind="int")
+    if isinstance(x, float):
+        return Literal(repr(x), kind="real")
+    if isinstance(x, Address):
+        return VarRef(x)
+    if isinstance(x, TagRef):
+        return VarRef(x)
+    if isinstance(x, str):
+        return VarRef(_loc(x))
+    raise TypeError(f"can't coerce to Expression: {x!r}")
+
+
+def lit(value, kind: Optional[str] = None) -> Literal:
+    """Build an ST ``Literal`` verbatim.
+
+    Use to inject a typed-literal form the smart coercion wouldn't
+    pick up: ``lit("T#100ms", kind="time")``, ``lit("16#FF",
+    kind="int")``, ``lit("'hello'", kind="string")``.  For plain
+    Python int/float/bool, just pass the value through ``_expr``
+    -- it'll wrap appropriately.
+    """
+    if isinstance(value, bool):
+        return Literal("TRUE" if value else "FALSE", kind=kind or "bool")
+    if isinstance(value, int):
+        return Literal(str(value), kind=kind or "int")
+    if isinstance(value, float):
+        return Literal(repr(value), kind=kind or "real")
+    return Literal(str(value), kind=kind or "raw")
+
+
+def var_ref(x: LocLike) -> VarRef:
+    """Build a ``VarRef`` from a name or address.  Bypasses ``_expr``."""
+    return VarRef(_loc(x))
+
+
+def field_(base: ExprLike, name: str) -> FieldAccess:
+    """Build a ``FieldAccess``: ``base.name`` (chainable)."""
+    return FieldAccess(base=_expr(base), field=name)
+
+
+def index_(base: ExprLike, *indices: ExprLike) -> IndexAccess:
+    """Build an ``IndexAccess``: ``base[i, j, ...]``."""
+    return IndexAccess(base=_expr(base),
+                       indices=tuple(_expr(i) for i in indices))
+
+
+def neg(operand: ExprLike) -> UnaryExpr:
+    """Arithmetic negation: ``-operand``."""
+    return UnaryExpr(op=UnaryOp.NEG, operand=_expr(operand))
+
+
+def not_e(operand: ExprLike) -> UnaryExpr:
+    """Logical/bitwise complement: ``NOT operand``.
+
+    Suffixed ``_e`` (expression) to avoid clashing with ``not_``
+    (the StdFunc shortcut)."""
+    return UnaryExpr(op=UnaryOp.NOT, operand=_expr(operand))
+
+
+def _binop(op: BinaryOp):
+    def _fn(lhs: ExprLike, rhs: ExprLike) -> BinaryExpr:
+        return BinaryExpr(op=op, lhs=_expr(lhs), rhs=_expr(rhs))
+    _fn.__name__ = op.name.lower() + "_e"
+    return _fn
+
+
+# Arithmetic / bitwise expression builders.  ``_e`` suffix to
+# avoid colliding with the rung-op builders (add / sub / mul / ...).
+add_e = _binop(BinaryOp.ADD)
+sub_e = _binop(BinaryOp.SUB)
+mul_e = _binop(BinaryOp.MUL)
+div_e = _binop(BinaryOp.DIV)
+mod_e = _binop(BinaryOp.MOD)
+exp_e = _binop(BinaryOp.EXP)
+
+# Comparison
+eq_e = _binop(BinaryOp.EQ)
+ne_e = _binop(BinaryOp.NE)
+lt_e = _binop(BinaryOp.LT)
+le_e = _binop(BinaryOp.LE)
+gt_e = _binop(BinaryOp.GT)
+ge_e = _binop(BinaryOp.GE)
+
+# Logical
+and_e = _binop(BinaryOp.AND)
+or_e  = _binop(BinaryOp.OR)
+xor_e = _binop(BinaryOp.XOR)
+
+
+def fcall_expr(name: str,
+               *positional: ExprLike,
+               **named: ExprLike) -> FunctionCallExpr:
+    """Build a function-call **expression** (value-producing).
+
+    Positional args come first; keyword args become IEC's named-
+    parameter form (``DoIt(in := value)``).  Use ``call_stmt`` for
+    the side-effecting form (no return-value capture).
+    """
+    return FunctionCallExpr(
+        name=name,
+        positional=tuple(_expr(p) for p in positional),
+        named=tuple((k, _expr(v)) for k, v in named.items()),
+    )
+
+
+def assign(target: ExprLike, value: ExprLike) -> Assignment:
+    """``target := value;`` -- assign a value to a variable.
+
+    ``target`` must be an lvalue (``VarRef`` / ``FieldAccess`` /
+    ``IndexAccess`` or a string that coerces to one).  Validation
+    catches non-lvalue targets at validate-time."""
+    return Assignment(target=_expr(target), value=_expr(value))
+
+
+def if_(*branches_and_else,
+        else_: Optional[Sequence[Statement]] = None) -> IfStatement:
+    """Build an ``IF / ELSIF / ELSE / END_IF`` statement.
+
+    Branches are passed as alternating ``(condition, body)`` pairs::
+
+        if_((c1, [s1, s2]),
+            (c2, [s3]),
+            else_=[s4])
+
+    Body lists are coerced to tuples internally so the dataclass
+    stays hashable.
+    """
+    branch_tuples = tuple(
+        (_expr(cond), tuple(body))
+        for (cond, body) in branches_and_else
+    )
+    return IfStatement(
+        branches=branch_tuples,
+        else_branch=tuple(else_) if else_ is not None else None,
+    )
+
+
+def case_clause(labels: Sequence[ExprLike],
+                body: Sequence[Statement]) -> CaseClause:
+    """One ``label_list : body`` clause inside a CASE."""
+    return CaseClause(
+        labels=tuple(_expr(l) for l in labels),
+        body=tuple(body),
+    )
+
+
+def case_(selector: ExprLike,
+          *clauses: CaseClause,
+          else_: Optional[Sequence[Statement]] = None) -> CaseStatement:
+    """``CASE selector OF clause+ [ELSE body] END_CASE``."""
+    return CaseStatement(
+        selector=_expr(selector),
+        clauses=tuple(clauses),
+        else_branch=tuple(else_) if else_ is not None else None,
+    )
+
+
+def while_(condition: ExprLike,
+           body: Sequence[Statement]) -> WhileStatement:
+    """``WHILE c DO body END_WHILE``."""
+    return WhileStatement(condition=_expr(condition), body=tuple(body))
+
+
+def repeat_(body: Sequence[Statement],
+            until: ExprLike) -> RepeatStatement:
+    """``REPEAT body UNTIL c END_REPEAT``."""
+    return RepeatStatement(body=tuple(body), until=_expr(until))
+
+
+def for_(index_var: str,
+         start: ExprLike,
+         end: ExprLike,
+         body: Sequence[Statement],
+         step: Optional[ExprLike] = None) -> ForStatement:
+    """``FOR i := start TO end [BY step] DO body END_FOR``."""
+    return ForStatement(
+        index_var=index_var,
+        start=_expr(start),
+        end=_expr(end),
+        body=tuple(body),
+        step=_expr(step) if step is not None else None,
+    )
+
+
+def call_stmt(name: str,
+              *positional: ExprLike,
+              **named: ExprLike) -> FunctionCallStatement:
+    """Build a function-call **statement** (side-effecting; result
+    discarded).  Same arg shape as ``fcall_expr``."""
+    return FunctionCallStatement(
+        call=fcall_expr(name, *positional, **named),
+    )
+
+
+def ret_st() -> ReturnStatement:
+    """``RETURN;`` -- exit the enclosing POU early.  Spelled
+    ``ret_st`` to avoid clashing with ``ret`` (the LD return op)."""
+    return ReturnStatement()
+
+
+def exit_st() -> ExitStatement:
+    """``EXIT;`` -- break out of the innermost loop."""
+    return ExitStatement()
+
+
+def continue_st() -> ContinueStatement:
+    """``CONTINUE;`` -- skip to the next iteration (IEC 3rd ed.)."""
+    return ContinueStatement()
+
+
+# -----------------------------------------------------------------------------
 # POU shortcuts
 # -----------------------------------------------------------------------------
 
@@ -632,6 +878,7 @@ def _make_pou(kind: PouKind, name: str, *,
               local_vars: Optional[Sequence[Var]] = None,
               return_type: Optional[DataType] = None,
               sfc=None,
+              st_body: Optional[Sequence[Statement]] = None,
               methods: Optional[Sequence[Method]] = None,
               extends: Optional[str] = None,
               implements: Optional[Sequence[str]] = None,
@@ -645,7 +892,9 @@ def _make_pou(kind: PouKind, name: str, *,
         in_outs=list(in_outs or []),
         local_vars=list(local_vars or []),
         return_type=return_type,
-        sfc=sfc, comment=comment,
+        sfc=sfc,
+        st_body=list(st_body) if st_body is not None else None,
+        comment=comment,
         methods=list(methods or []),
         extends=extends,
         implements=list(implements or []),
@@ -692,6 +941,7 @@ def fb(name: str, **kw) -> Subroutine:
 
 def method(name: str, *,
            rungs: Optional[Sequence[Rung]] = None,
+           st_body: Optional[Sequence[Statement]] = None,
            inputs: Optional[Sequence[Var]] = None,
            outputs: Optional[Sequence[Var]] = None,
            in_outs: Optional[Sequence[Var]] = None,
@@ -705,11 +955,13 @@ def method(name: str, *,
     A method has the same parameter shape as a FUNCTION plus an
     access specifier (PUBLIC by default) and an ``override=True``
     flag when it implements a parent FB's or interface's signature.
-    The method's body (``rungs``) has implicit access to the
-    enclosing FB's state."""
+    The body is either ``rungs`` (LD) or ``st_body`` (ST); pass
+    exactly one.  The method has implicit access to the enclosing
+    FB's state."""
     return Method(
         name=name,
         rungs=list(rungs or []),
+        st_body=list(st_body) if st_body is not None else None,
         inputs=list(inputs or []),
         outputs=list(outputs or []),
         in_outs=list(in_outs or []),
@@ -989,6 +1241,16 @@ __all__ = [
     "subroutine", "prog", "fn", "fb",
     # IEC 3rd-edition OOP
     "method", "abstract_method", "interface",
+    # ST expression / statement helpers (IEC §3)
+    "lit", "var_ref", "field_", "index_",
+    "neg", "not_e",
+    "add_e", "sub_e", "mul_e", "div_e", "mod_e", "exp_e",
+    "eq_e", "ne_e", "lt_e", "le_e", "gt_e", "ge_e",
+    "and_e", "or_e", "xor_e",
+    "fcall_expr", "assign",
+    "if_", "case_clause", "case_",
+    "while_", "repeat_", "for_",
+    "call_stmt", "ret_st", "exit_st", "continue_st",
     # Program
     "program",
 ]

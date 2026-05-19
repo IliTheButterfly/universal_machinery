@@ -43,10 +43,14 @@ from __future__ import annotations
 from typing import Iterable, Optional, Sequence, Union
 
 from ..il import (
-    AccessSpec, Address, AliasType, ArrayType, Configuration, DataBlock,
-    EnumType, Interface, Method, NamedType, PouInstance, PouKind, Program,
-    Resource, Rung, StructType, SubrangeType, Subroutine, Tag, TagRef,
-    TagType, TaskSpec, Var, VarDirection, type_name,
+    AccessSpec, Address, AliasType, ArrayType, Assignment, BinaryExpr,
+    CaseStatement, Configuration, ContinueStatement, DataBlock, EnumType,
+    ExitStatement, FieldAccess, ForStatement, FunctionCallExpr,
+    FunctionCallStatement, IfStatement, IndexAccess, Interface, Literal,
+    Method, NamedType, PouInstance, PouKind, Program, RepeatStatement,
+    Resource, ReturnStatement, Rung, Statement, StructType, SubrangeType,
+    Subroutine, Tag, TagRef, TagType, TaskSpec, UnaryExpr, Var,
+    VarDirection, VarRef, WhileStatement, type_name,
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -322,6 +326,171 @@ def emit_rung(rung: Rung) -> list[str]:
 
 
 # -----------------------------------------------------------------------------
+# ST AST emitter (IEC §3 Structured Text -- first-class body kind)
+# -----------------------------------------------------------------------------
+
+
+#: Precedence of each ST binary operator (IEC §3.3.1 Table 55).
+#: Higher number = binds tighter.  Unary ops (NEG / NOT) sit between
+#: EXP (highest binary) and the rest of binary -- modelled by giving
+#: them a synthetic ``UNARY_PRECEDENCE``.
+_BINARY_PRECEDENCE = {
+    "**":   12,
+    "*":    10, "/": 10, "MOD": 10,
+    "+":    9,  "-": 9,
+    "<":    8,  ">": 8,  "<=": 8, ">=": 8,
+    "=":    7,  "<>": 7,
+    "AND":  6,
+    "XOR":  5,
+    "OR":   4,
+}
+_UNARY_PRECEDENCE = 11
+
+
+def _fmt_expr(expr, parent_prec: int = 0) -> str:
+    """Render an Expression as ST source text.
+
+    ``parent_prec`` is the precedence of the enclosing operator; we
+    wrap sub-expressions in parentheses when their precedence is
+    lower than (or equal to, for right-associativity safety) the
+    parent's.
+    """
+    if isinstance(expr, Literal):
+        return expr.value
+
+    if isinstance(expr, VarRef):
+        ref = expr.ref
+        if isinstance(ref, Address):
+            return ref.raw
+        if isinstance(ref, TagRef):
+            return ref.name
+        raise TypeError(f"VarRef.ref must be Address|TagRef: {ref!r}")
+
+    if isinstance(expr, FieldAccess):
+        return f"{_fmt_expr(expr.base, parent_prec=99)}.{expr.field}"
+
+    if isinstance(expr, IndexAccess):
+        idx = ", ".join(_fmt_expr(i) for i in expr.indices)
+        return f"{_fmt_expr(expr.base, parent_prec=99)}[{idx}]"
+
+    if isinstance(expr, UnaryExpr):
+        inner = _fmt_expr(expr.operand, parent_prec=_UNARY_PRECEDENCE)
+        if expr.op.value == "NOT":
+            return f"NOT {inner}"
+        return f"-{inner}"
+
+    if isinstance(expr, BinaryExpr):
+        my_prec = _BINARY_PRECEDENCE[expr.op.value]
+        lhs = _fmt_expr(expr.lhs, parent_prec=my_prec)
+        rhs = _fmt_expr(expr.rhs, parent_prec=my_prec + 1)
+        body = f"{lhs} {expr.op.value} {rhs}"
+        if my_prec < parent_prec:
+            return f"({body})"
+        return body
+
+    if isinstance(expr, FunctionCallExpr):
+        parts: list[str] = []
+        for p in expr.positional:
+            parts.append(_fmt_expr(p))
+        for n, v in expr.named:
+            parts.append(f"{n} := {_fmt_expr(v)}")
+        return f"{expr.name}({', '.join(parts)})"
+
+    raise TypeError(f"unknown Expression: {type(expr).__name__}")
+
+
+def emit_statement(stmt, indent: str = "    ", level: int = 0) -> list[str]:
+    """Render one Statement as a list of ST source lines.
+
+    Multi-line constructs (IF / CASE / FOR / WHILE / REPEAT) return
+    multiple lines; simple statements return one.  ``level`` is the
+    current nesting depth (each level adds one ``indent``).
+    """
+    prefix = indent * level
+
+    if isinstance(stmt, Assignment):
+        return [f"{prefix}{_fmt_expr(stmt.target)} := {_fmt_expr(stmt.value)};"]
+
+    if isinstance(stmt, IfStatement):
+        lines: list[str] = []
+        for i, (cond, body) in enumerate(stmt.branches):
+            keyword = "IF" if i == 0 else "ELSIF"
+            lines.append(f"{prefix}{keyword} {_fmt_expr(cond)} THEN")
+            for s in body:
+                lines.extend(emit_statement(s, indent, level + 1))
+        if stmt.else_branch is not None:
+            lines.append(f"{prefix}ELSE")
+            for s in stmt.else_branch:
+                lines.extend(emit_statement(s, indent, level + 1))
+        lines.append(f"{prefix}END_IF;")
+        return lines
+
+    if isinstance(stmt, CaseStatement):
+        lines = [f"{prefix}CASE {_fmt_expr(stmt.selector)} OF"]
+        for clause in stmt.clauses:
+            labels = ", ".join(_fmt_expr(l) for l in clause.labels)
+            lines.append(f"{prefix}{indent}{labels}:")
+            for s in clause.body:
+                lines.extend(emit_statement(s, indent, level + 2))
+        if stmt.else_branch is not None:
+            lines.append(f"{prefix}ELSE")
+            for s in stmt.else_branch:
+                lines.extend(emit_statement(s, indent, level + 1))
+        lines.append(f"{prefix}END_CASE;")
+        return lines
+
+    if isinstance(stmt, WhileStatement):
+        lines = [f"{prefix}WHILE {_fmt_expr(stmt.condition)} DO"]
+        for s in stmt.body:
+            lines.extend(emit_statement(s, indent, level + 1))
+        lines.append(f"{prefix}END_WHILE;")
+        return lines
+
+    if isinstance(stmt, RepeatStatement):
+        lines = [f"{prefix}REPEAT"]
+        for s in stmt.body:
+            lines.extend(emit_statement(s, indent, level + 1))
+        lines.append(f"{prefix}UNTIL {_fmt_expr(stmt.until)} END_REPEAT;")
+        return lines
+
+    if isinstance(stmt, ForStatement):
+        step = (f" BY {_fmt_expr(stmt.step)}"
+                if stmt.step is not None else "")
+        lines = [f"{prefix}FOR {stmt.index_var} := "
+                 f"{_fmt_expr(stmt.start)} TO {_fmt_expr(stmt.end)}{step} DO"]
+        for s in stmt.body:
+            lines.extend(emit_statement(s, indent, level + 1))
+        lines.append(f"{prefix}END_FOR;")
+        return lines
+
+    if isinstance(stmt, ReturnStatement):
+        return [f"{prefix}RETURN;"]
+
+    if isinstance(stmt, ExitStatement):
+        return [f"{prefix}EXIT;"]
+
+    if isinstance(stmt, ContinueStatement):
+        return [f"{prefix}CONTINUE;"]
+
+    if isinstance(stmt, FunctionCallStatement):
+        return [f"{prefix}{_fmt_expr(stmt.call)};"]
+
+    raise TypeError(f"unknown Statement: {type(stmt).__name__}")
+
+
+def emit_st_body(stmts, indent: str = "    ", level: int = 1) -> list[str]:
+    """Render a sequence of Statements as ST source lines.
+
+    Default ``level=1`` because POU bodies indent one level inside
+    the keyword block.  Use ``level=0`` for free-standing snippets.
+    """
+    lines: list[str] = []
+    for s in stmts:
+        lines.extend(emit_statement(s, indent=indent, level=level))
+    return lines
+
+
+# -----------------------------------------------------------------------------
 # POU emitter
 # -----------------------------------------------------------------------------
 
@@ -386,9 +555,12 @@ def _fmt_method(m: Method, indent: str = "    ") -> str:
     parts.extend(_fmt_var_block("VAR_IN_OUT", m.in_outs))
     parts.extend(_fmt_var_block("VAR",        m.local_vars))
     if not m.abstract:
-        for rung in m.rungs:
-            for stmt in emit_rung(rung):
-                parts.append(indent + stmt)
+        if m.st_body is not None:
+            parts.extend(emit_st_body(m.st_body, indent=indent, level=1))
+        else:
+            for rung in m.rungs:
+                for stmt in emit_rung(rung):
+                    parts.append(indent + stmt)
     parts.append("END_METHOD")
     return "\n".join(parts)
 
@@ -459,7 +631,10 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
     for m in sub.methods:
         lines.append(_fmt_method(m, indent=indent))
 
-    if sub.sfc is not None:
+    if sub.st_body is not None:
+        # First-class ST body -- render the AST directly.
+        lines.extend(emit_st_body(sub.st_body, indent=indent, level=1))
+    elif sub.sfc is not None:
         lines.append(f"{indent}(* SFC body not emitted in ST -- "
                      f"see PLCopen XML <SFC> *)")
     else:
