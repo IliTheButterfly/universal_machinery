@@ -1,0 +1,52 @@
+name: submodules-on-main
+
+# Guard rail for the main branch: a PR cannot merge into main if any
+# submodule is pinned to a commit that's not yet on the submodule's own
+# main branch.  Without this, main can ship pointing at WIP submodule
+# commits that downstream consumers can't reproduce (or that disappear
+# if the submodule's WIP branch is force-pushed / deleted).
+#
+# Per project policy: only runs on PRs targeting main.  PRs targeting
+# dev may legitimately pin to submodule dev branches.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    name: submodules pinned to main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # fetch-depth: 0 ensures merge-base checks have full history;
+          # default depth 1 would fail on any non-trivial ancestry test.
+          fetch-depth: 0
+
+      - name: Verify each submodule pin is reachable from its main
+        run: |
+          set -euo pipefail
+          FAIL=0
+          # git submodule foreach gives us each submodule's path + URL in
+          # an isolated subshell.  --recursive walks nested submodules.
+          git submodule foreach --recursive '
+            echo "=== $name ($path) ==="
+            # Fetch the submodule'"'"'s main branch from its origin so
+            # we can compare ancestry locally.
+            git fetch --quiet --no-tags origin main
+            PIN=$(git rev-parse HEAD)
+            REMOTE_MAIN=$(git rev-parse origin/main)
+            echo "  pinned : $PIN"
+            echo "  main   : $REMOTE_MAIN"
+            if git merge-base --is-ancestor "$PIN" origin/main; then
+              echo "  ✓ pinned commit is reachable from origin/main"
+            else
+              echo "  ✗ pinned commit is NOT on main -- merge of this PR"
+              echo "    would land a submodule SHA that downstream consumers"
+              echo "    cannot resolve from the submodule'"'"'s main branch."
+              exit 1
+            fi
+          '
