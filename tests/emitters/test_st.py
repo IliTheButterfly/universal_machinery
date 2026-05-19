@@ -458,6 +458,119 @@ def test_emit_program_with_no_user_types_omits_TYPE_block():
     assert not text.startswith("TYPE\n")
 
 
+# -----------------------------------------------------------------------------
+# CONFIGURATION / RESOURCE / TASK emission
+# -----------------------------------------------------------------------------
+
+
+def test_task_cyclic_emits_interval_and_priority():
+    from universal_machinery.builders import task_spec
+    from universal_machinery.emitters.st import _fmt_task
+    t = task_spec("Fast", priority=1, interval="T#10ms")
+    assert _fmt_task(t) == "        TASK Fast(INTERVAL := T#10ms, PRIORITY := 1);"
+
+
+def test_task_single_shot_emits_single_attribute():
+    from universal_machinery.builders import task_spec
+    from universal_machinery.emitters.st import _fmt_task
+    t = task_spec("OnEStop", priority=0, single="emergency_btn")
+    assert "SINGLE := emergency_btn" in _fmt_task(t)
+    assert "PRIORITY := 0" in _fmt_task(t)
+
+
+def test_task_interrupt_driven_emits_interrupt_attribute():
+    from universal_machinery.builders import task_spec
+    from universal_machinery.emitters.st import _fmt_task
+    t = task_spec("OnTimer", priority=2, interrupt="INT_TIMER0")
+    assert "INTERRUPT := INT_TIMER0" in _fmt_task(t)
+
+
+def test_pou_instance_with_task_uses_WITH_syntax():
+    from universal_machinery.builders import pou_instance
+    from universal_machinery.emitters.st import _fmt_pou_instance
+    inst = pou_instance("MainProg", type_name="Main", task="Fast")
+    assert _fmt_pou_instance(inst) == "        PROGRAM MainProg WITH Fast : Main;"
+
+
+def test_pou_instance_without_task_omits_WITH():
+    from universal_machinery.builders import pou_instance
+    from universal_machinery.emitters.st import _fmt_pou_instance
+    inst = pou_instance("Helper", type_name="Helper")
+    assert _fmt_pou_instance(inst) == "        PROGRAM Helper : Helper;"
+
+
+def test_resource_block_full_structure():
+    from universal_machinery.builders import (
+        resource, task_spec, pou_instance,
+    )
+    from universal_machinery.emitters.st import _fmt_resource
+    r = resource(
+        "CPU1",
+        tasks=[task_spec("Fast", priority=1, interval="T#10ms")],
+        pou_instances=[pou_instance("Main1", type_name="Main", task="Fast")],
+        global_vars=[var("counter", TagType.INT)],
+    )
+    text = _fmt_resource(r)
+    assert text.startswith("    RESOURCE CPU1 ON PLC")
+    assert text.endswith("    END_RESOURCE")
+    assert "VAR_GLOBAL" in text
+    assert "counter : INT;" in text
+    assert "END_VAR" in text
+    assert "TASK Fast(INTERVAL := T#10ms, PRIORITY := 1);" in text
+    assert "PROGRAM Main1 WITH Fast : Main;" in text
+
+
+def test_configuration_block_full_structure():
+    from universal_machinery.builders import configuration, resource, task_spec
+    from universal_machinery.emitters.st import _fmt_configuration
+    cfg = configuration(
+        "Default",
+        global_vars=[var("system_state", TagType.INT)],
+        access_vars=[var("hmi_tag", TagType.INT)],
+        resources=[
+            resource("CPU1",
+                     tasks=[task_spec("Fast", priority=1, interval="T#10ms")]),
+        ],
+    )
+    text = _fmt_configuration(cfg)
+    assert text.startswith("CONFIGURATION Default")
+    assert text.endswith("END_CONFIGURATION")
+    assert "VAR_GLOBAL" in text
+    assert "system_state : INT;" in text
+    assert "VAR_ACCESS" in text
+    assert "hmi_tag : INT;" in text
+    assert "RESOURCE CPU1 ON PLC" in text
+
+
+def test_emit_program_emits_configurations_after_pous():
+    """POU type declarations come first so the Configuration's
+    PROGRAM bindings can reference them by name."""
+    from universal_machinery.builders import (
+        configuration, pou_instance, resource, task_spec,
+    )
+    p = program(
+        subroutines=[prog("Main", main=True)],
+        configurations=[configuration("Default", resources=[
+            resource("CPU1",
+                     tasks=[task_spec("Fast", priority=1, interval="T#10ms")],
+                     pou_instances=[pou_instance("MainProg",
+                                                 type_name="Main",
+                                                 task="Fast")]),
+        ])],
+    )
+    text = emit_program(p)
+    main_pos = text.index("PROGRAM Main")
+    cfg_pos  = text.index("CONFIGURATION Default")
+    assert main_pos < cfg_pos
+
+
+def test_emit_program_with_no_configurations_omits_block():
+    p = program(subroutines=[prog("Main", main=True)])
+    text = emit_program(p)
+    assert "CONFIGURATION" not in text
+    assert "END_CONFIGURATION" not in text
+
+
 def test_realistic_full_program_round_trips_to_ST():
     """End-to-end shape check: a non-trivial program emits as
     well-formed ST.  We don't try to parse it back (no ST parser

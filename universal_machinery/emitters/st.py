@@ -43,9 +43,9 @@ from __future__ import annotations
 from typing import Iterable, Optional, Sequence, Union
 
 from ..il import (
-    Address, AliasType, ArrayType, DataBlock, EnumType, NamedType, PouKind,
-    Program, Rung, StructType, Subroutine, Tag, TagRef, TagType,
-    Var, VarDirection, type_name,
+    Address, AliasType, ArrayType, Configuration, DataBlock, EnumType,
+    NamedType, PouInstance, PouKind, Program, Resource, Rung, StructType,
+    Subroutine, Tag, TagRef, TagType, TaskSpec, Var, VarDirection, type_name,
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -446,6 +446,108 @@ def _fmt_user_type_decl(ut) -> str:
     raise ValueError(f"unknown UserType: {type(ut).__name__}")
 
 
+def _fmt_task(task: TaskSpec) -> str:
+    """One IEC ``TASK Name(...);`` declaration."""
+    attrs: list[str] = []
+    if task.interval is not None:
+        attrs.append(f"INTERVAL := {task.interval}")
+    if task.single is not None:
+        attrs.append(f"SINGLE := {task.single}")
+    if task.interrupt is not None:
+        attrs.append(f"INTERRUPT := {task.interrupt}")
+    attrs.append(f"PRIORITY := {task.priority}")
+    return f"        TASK {task.name}({', '.join(attrs)});"
+
+
+def _fmt_pou_instance(inst: PouInstance) -> str:
+    """One IEC ``PROGRAM Name WITH Task : Type;`` declaration."""
+    bind = f" WITH {inst.task}" if inst.task else ""
+    return f"        PROGRAM {inst.name}{bind} : {inst.type_name};"
+
+
+def _fmt_resource(r: Resource) -> str:
+    """Emit one ``RESOURCE name ON PLC ... END_RESOURCE`` block.
+
+    Structure per IEC §2.7.1::
+
+        RESOURCE name ON PLC
+            VAR_GLOBAL
+                ...
+            END_VAR
+            TASK Fast(INTERVAL := T#10ms, PRIORITY := 1);
+            PROGRAM MainProg WITH Fast : Main;
+        END_RESOURCE
+    """
+    lines: list[str] = [f"    RESOURCE {r.name} ON PLC"]
+    if r.comment:
+        lines.append(f"        (* {r.comment} *)")
+
+    if r.global_vars:
+        lines.append("        VAR_GLOBAL")
+        for v in r.global_vars:
+            init = f" := {v.initial_value}" if v.initial_value else ""
+            comment = f"  (* {v.comment} *)" if v.comment else ""
+            lines.append(
+                f"            {v.name} : {_fmt_iec_type(v.data_type)}{init};{comment}"
+            )
+        lines.append("        END_VAR")
+
+    for t in r.tasks:
+        lines.append(_fmt_task(t))
+
+    for inst in r.pou_instances:
+        lines.append(_fmt_pou_instance(inst))
+
+    lines.append("    END_RESOURCE")
+    return "\n".join(lines)
+
+
+def _fmt_configuration(cfg: Configuration) -> str:
+    """Emit one ``CONFIGURATION ... END_CONFIGURATION`` block.
+
+    Structure::
+
+        CONFIGURATION name
+            VAR_GLOBAL
+                ...
+            END_VAR
+            VAR_ACCESS
+                ...
+            END_VAR
+            RESOURCE ... END_RESOURCE
+            ...
+        END_CONFIGURATION
+    """
+    lines: list[str] = [f"CONFIGURATION {cfg.name}"]
+    if cfg.comment:
+        lines.append(f"    (* {cfg.comment} *)")
+
+    if cfg.global_vars:
+        lines.append("    VAR_GLOBAL")
+        for v in cfg.global_vars:
+            init = f" := {v.initial_value}" if v.initial_value else ""
+            comment = f"  (* {v.comment} *)" if v.comment else ""
+            lines.append(
+                f"        {v.name} : {_fmt_iec_type(v.data_type)}{init};{comment}"
+            )
+        lines.append("    END_VAR")
+
+    if cfg.access_vars:
+        lines.append("    VAR_ACCESS")
+        for v in cfg.access_vars:
+            comment = f"  (* {v.comment} *)" if v.comment else ""
+            lines.append(
+                f"        {v.name} : {_fmt_iec_type(v.data_type)};{comment}"
+            )
+        lines.append("    END_VAR")
+
+    for r in cfg.resources:
+        lines.append(_fmt_resource(r))
+
+    lines.append("END_CONFIGURATION")
+    return "\n".join(lines)
+
+
 def emit_program(prog: Program) -> str:
     """Return the full ST text for a Program.
 
@@ -497,5 +599,10 @@ def emit_program(prog: Program) -> str:
 
     for sub in prog.subroutines:
         sections.append(emit_pou(sub))
+
+    # Configurations after POUs -- their PROGRAM declarations reference
+    # POUs by type name, so the POU declarations should appear first.
+    for cfg in prog.configurations:
+        sections.append(_fmt_configuration(cfg))
 
     return "\n\n".join(sections) + "\n"
