@@ -127,9 +127,24 @@ def _indent(text: str, prefix: str) -> str:
 
 
 def _emit_var(var: Var) -> str:
-    """One ``<variable>`` element with type + optional initial value."""
-    parts: list[str] = []
-    parts.append(f'<variable name={quoteattr(var.name)}>')
+    """One ``<variable>`` element with type + optional initial value.
+
+    When ``var.address`` is set:
+
+      - IEC direct-representation form (``%I0.0``, ``%MW5``, etc.)
+        renders as the standards-conformant ``address`` attribute
+        on the ``<variable>`` element -- consumed by every PLCopen
+        TC6 tool.
+      - Other address forms (CLICK-style ``X001``, vendor symbols)
+        emit as an XML comment alongside the variable.  The schema's
+        ``address`` attribute is a free-form xsd:string so these
+        could be carried there too, but the comment form keeps the
+        IEC-conformant attribute reserved for IEC-conformant syntax.
+    """
+    attrs = [f"name={quoteattr(var.name)}"]
+    if var.address is not None and var.address.raw.startswith("%"):
+        attrs.append(f"address={quoteattr(var.address.raw)}")
+    parts: list[str] = [f"<variable {' '.join(attrs)}>"]
     parts.append(f"  <type>{_iec_type_element(var.data_type)}</type>")
     if var.initial_value:
         parts.append(
@@ -137,7 +152,7 @@ def _emit_var(var: Var) -> str:
             f"<simpleValue value={quoteattr(var.initial_value)}/>"
             f"</initialValue>"
         )
-    if var.address is not None:
+    if var.address is not None and not var.address.raw.startswith("%"):
         parts.append(f"  <!-- AT {escape(var.address.raw)} -->")
     if var.comment:
         parts.append(
@@ -439,9 +454,15 @@ def _emit_globals_pou(tags: dict) -> Optional[str]:
         '    <localVars>',
     ]
     for tag in tags.values():
-        lines.append(f'      <variable name={quoteattr(tag.name)}>')
+        # IEC direct-representation addresses go in the schema's
+        # `address` attribute; vendor-style addresses (X001 etc.)
+        # remain as XML-comment annotations.
+        attrs = [f"name={quoteattr(tag.name)}"]
+        if tag.address is not None and tag.address.raw.startswith("%"):
+            attrs.append(f"address={quoteattr(tag.address.raw)}")
+        lines.append(f"      <variable {' '.join(attrs)}>")
         lines.append(f"        <type>{_iec_type_element(tag.data_type)}</type>")
-        if tag.address is not None:
+        if tag.address is not None and not tag.address.raw.startswith("%"):
             lines.append(f"        <!-- AT {escape(tag.address.raw)} -->")
         if tag.description:
             lines.append(

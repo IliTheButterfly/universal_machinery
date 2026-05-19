@@ -61,6 +61,61 @@ def test_explicit_loc_helper_forces_address():
     assert addr == Address("Custom.0")
 
 
+def test_iec_direct_representation_recognised_as_address():
+    """IEC §2.4.1.1 direct-representation syntax (``%I0.0``, ``%QB5``,
+    ``%MW10``) coerces to ``Address``, not ``TagRef``."""
+    r = rung(no("%I0.0"),                 # input bit, default X size
+             nc("%IX0.7"),                # explicit X size
+             coil("%Q5.7"))               # output bit
+    assert r.ops == [
+        ContactNO(Address("%I0.0")),
+        ContactNC(Address("%IX0.7")),
+        OutCoil(Address("%Q5.7")),
+    ]
+
+
+def test_iec_direct_rep_byte_word_dword_lword_sizes():
+    """All five size prefixes (X/B/W/D/L) over all three location
+    families (%I, %Q, %M) coerce to Address."""
+    cases = [
+        "%IX0.0", "%IB0", "%IW0", "%ID0", "%IL0",
+        "%QX0.0", "%QB0", "%QW0", "%QD0", "%QL0",
+        "%MX0",   "%MB0", "%MW0", "%MD0", "%ML0",
+    ]
+    for s in cases:
+        assert loc(s) == Address(s), f"{s!r} should coerce to Address"
+
+
+def test_iec_direct_rep_hierarchical_address():
+    """IEC allows dot-separated hierarchical indices for nested I/O
+    modules: ``%I0.0.0`` (slot 0, channel 0, bit 0)."""
+    assert loc("%I0.0.0") == Address("%I0.0.0")
+    assert loc("%QW2.4.1") == Address("%QW2.4.1")
+
+
+def test_iec_direct_rep_in_value_position():
+    """``Compare(lhs=%I0.0, rhs=...)`` -- direct-rep as a Value
+    operand, not just a Loc."""
+    op = eq("%I0.0", "%I0.1")
+    assert op.lhs == Address("%I0.0")
+    assert op.rhs == Address("%I0.1")
+
+
+def test_invalid_iec_prefix_becomes_tagref():
+    """Only %I / %Q / %M are valid IEC location prefixes.  Other
+    ``%``-prefixed strings should classify as ``TagRef`` so a typo
+    doesn't silently become a fake Address."""
+    op = no("%Z0.0")        # Z isn't a valid IEC location prefix
+    assert op == ContactNO(TagRef("%Z0.0"))
+
+
+def test_iec_direct_rep_requires_index():
+    """``%I`` alone -- no index -- is not a valid direct-rep address;
+    classify as TagRef."""
+    op = no("%I")
+    assert op == ContactNO(TagRef("%I"))
+
+
 def test_pre_built_address_and_tagref_pass_through():
     """Already-built Address / TagRef pass through unchanged."""
     a = Address("DS500")

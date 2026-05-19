@@ -87,23 +87,42 @@ ValueLike = Union[Address, TagRef, str, int, float]
 #: Anything that doesn't match is treated as a symbolic ``TagRef``.
 _ADDR_PATTERN = re.compile(r"^[A-Z]+\d+$")
 
+#: IEC 61131-3 §2.4.1.1 direct representation:
+#:   %  location-prefix  size-prefix?  index ('.' subindex)*
+#: where location-prefix is I (input), Q (output), or M (memory);
+#: size-prefix is X (bit, default), B (byte), W (word), D (dword), L
+#: (lword).  Examples: %I0.0  %IX0.0  %QB1  %MW5  %MD100  %I0.0.0
+#: (hierarchical addresses for nested I/O modules).
+_IEC_DIRECT_REP_PATTERN = re.compile(r"^%[IQM][XBWDL]?\d+(\.\d+)*$")
+
 #: Numeric literals: optional sign, digits, optional decimal.  When
 #: ``_value()`` sees a string matching this, it keeps it as a raw
 #: string literal (the on-wire form vendor backends consume).
 _NUMERIC_PATTERN = re.compile(r"^-?\d+(\.\d+)?$")
 
 
+def _is_address_string(s: str) -> bool:
+    """True iff ``s`` looks like an address rather than a tag name.
+
+    Recognises either CLICK-style vendor addresses (``X001``,
+    ``DS9000``, ``C2256``...) or IEC §2.4.1.1 direct-representation
+    addresses (``%I0.0``, ``%MW5``, ``%QX1.0``...).
+    """
+    return bool(_ADDR_PATTERN.match(s) or _IEC_DIRECT_REP_PATTERN.match(s))
+
+
 def _loc(x: LocLike) -> Union[Address, TagRef]:
     """Coerce a string / Address / TagRef into a Loc.
 
-    Strings matching ``[A-Z]+\\d+`` become ``Address``; everything
-    else becomes ``TagRef``.  Pre-built ``Address`` / ``TagRef``
-    values pass through unchanged.
+    Strings that look like an address (CLICK-style ``X001``,
+    ``DS9000`` OR IEC direct-rep ``%I0.0``, ``%MW5``) become
+    ``Address``; everything else becomes ``TagRef``.  Pre-built
+    ``Address`` / ``TagRef`` values pass through unchanged.
     """
     if isinstance(x, (Address, TagRef)):
         return x
     if isinstance(x, str):
-        if _ADDR_PATTERN.match(x):
+        if _is_address_string(x):
             return Address(x)
         return TagRef(x)
     raise TypeError(f"expected str / Address / TagRef, got {type(x).__name__}")
@@ -118,7 +137,8 @@ def _value(x: ValueLike) -> Union[Address, TagRef, str]:
         -- the literal form ops carry.
       - Strings matching ``_NUMERIC_PATTERN`` are literal numerics;
         kept as-is.
-      - Strings matching ``_ADDR_PATTERN`` become ``Address``.
+      - Strings that look like an address (CLICK-style ``[A-Z]+\\d+``
+        OR IEC direct-rep ``%[IQM]...``) become ``Address``.
       - All other strings become ``TagRef`` (symbolic reference).
 
     Use for fields like ``Compare.rhs`` / ``Move.src`` / ``BinaryMath.lhs``
@@ -131,7 +151,7 @@ def _value(x: ValueLike) -> Union[Address, TagRef, str]:
     if isinstance(x, str):
         if _NUMERIC_PATTERN.match(x):
             return x
-        if _ADDR_PATTERN.match(x):
+        if _is_address_string(x):
             return Address(x)
         return TagRef(x)
     raise TypeError(f"expected value, got {type(x).__name__}")

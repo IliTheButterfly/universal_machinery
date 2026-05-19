@@ -334,6 +334,69 @@ def test_subrange_of_unsigned_integer_validates():
     assert "<subrangeUnsigned>" in xml
 
 
+# -----------------------------------------------------------------------------
+# IEC §2.4.1 direct representation -- address="%I0.0" attribute
+# -----------------------------------------------------------------------------
+
+
+def test_tag_with_iec_direct_rep_address_validates():
+    """A Tag locked to %I0.0 emits as <variable name="..." address="%I0.0">
+    in the synthesised GlobalsHolder POU; XSD validates the address
+    attribute (declared as optional xsd:string)."""
+    p = program(
+        tags=[
+            tag_decl("estop", TagType.BOOL, "E-stop input",
+                     locked="%I0.0"),
+            tag_decl("running_lamp", TagType.BOOL, "",
+                     locked="%Q5.7"),
+            tag_decl("command_word", TagType.WORD, "",
+                     locked="%MW100"),
+        ],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # The address attribute appears on the synthesized globals holder.
+    assert 'address="%I0.0"' in xml
+    assert 'address="%Q5.7"' in xml
+    assert 'address="%MW100"' in xml
+
+
+def test_pou_var_with_iec_direct_rep_address_validates():
+    """A POU VAR declared with a direct-rep address emits as
+    <variable name="..." address="%MW5">."""
+    from universal_machinery.builders import loc
+    p = program(
+        subroutines=[
+            prog("Main", main=True, local_vars=[
+                var("level", TagType.WORD, address=loc("%MW5")),
+                var("ready", TagType.BOOL, address=loc("%IX0.0")),
+            ]),
+        ],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'address="%MW5"' in xml
+    assert 'address="%IX0.0"' in xml
+
+
+def test_click_style_address_falls_back_to_AT_comment():
+    """Non-IEC vendor-style addresses (X001, DS9000) preserve the
+    existing AT-comment annotation rather than the address
+    attribute -- the attribute is reserved for IEC-syntax addresses
+    so consumers can rely on its semantics."""
+    p = program(
+        tags=[tag_decl("legacy_estop", TagType.BOOL, "", locked="X101")],
+        subroutines=[prog("Main", main=True)],
+    )
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # CLICK-style address still works as a comment...
+    assert "AT X101" in xml
+    # ...and the IEC address attribute is NOT set for non-IEC syntax.
+    assert 'address="X101"' not in xml
+
+
 def test_subrange_typed_var_validates():
     """A POU local declared with a subrange UDT reference renders as
     <derived name="..."/> and validates."""
