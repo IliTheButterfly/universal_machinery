@@ -62,7 +62,12 @@ from .ast import (
     Var,
     VarDirection,
 )
-from . import ops, sfc, st
+from . import fbd, ops, sfc, st
+from .fbd import (
+    BlockPin, Connection, FbBlock, FbdElement, FbdJump, FbdLabel,
+    FbdNetwork, FbdReturn, InOutVariable, InVariable, OutVariable,
+    Position,
+)
 from .ops import (
     FTrig, Loc, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc, Value, VendorOp,
 )
@@ -94,9 +99,11 @@ __all__ = [
     "Assignment",
     "BinaryExpr",
     "BinaryOp",
+    "BlockPin",
     "CaseClause",
     "CaseStatement",
     "Configuration",
+    "Connection",
     "ContinueStatement",
     "DataBlock",
     "DataType",
@@ -104,19 +111,29 @@ __all__ = [
     "ExitStatement",
     "Expression",
     "FTrig",
+    "FbBlock",
+    "FbdElement",
+    "FbdJump",
+    "FbdLabel",
+    "FbdNetwork",
+    "FbdReturn",
     "FieldAccess",
     "ForStatement",
     "FunctionCallExpr",
     "FunctionCallStatement",
     "IfStatement",
+    "InOutVariable",
+    "InVariable",
     "IndexAccess",
     "Interface",
     "Literal",
     "Loc",
     "Method",
     "NamedType",
+    "OutVariable",
     "PouInstance",
     "PouKind",
+    "Position",
     "Program",
     "RS",
     "RTrig",
@@ -147,6 +164,7 @@ __all__ = [
     "VarRef",
     "VendorOp",
     "WhileStatement",
+    "fbd",
     "is_elementary",
     "is_lvalue",
     "is_signed_subrange",
@@ -158,4 +176,4 @@ __all__ = [
     "walk_expressions",
 ]
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
