@@ -128,7 +128,7 @@ signed/unsigned classification of the underlying integer base.
 | --- | --- | --- |
 | LD (Ladder Diagram) | ✅ | Modeled via `Rung` + LD-flavoured ops (Contact/Coil/Compare/etc.) |
 | SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py` |
-| ST (Structured Text) | ❌ | No AST yet.  Roadmap item; needs IEC-style statement modeling (assignment, IF/CASE/WHILE/FOR, function call, ...) |
+| ST (Structured Text) | ✅ | First-class AST in [`il/st.py`](../universal_machinery/il/st.py): expressions (Literal, VarRef, FieldAccess, IndexAccess, UnaryExpr, BinaryExpr, FunctionCallExpr), statements (Assignment, IF/CASE/FOR/WHILE/REPEAT, RETURN/EXIT/CONTINUE, function-call statement).  `Subroutine.st_body` / `Method.st_body` carry ST programs; ST emitter renders the AST directly with IEC §3.3.1 operator precedence and parenthesisation |
 | IL (Instruction List, aka STL) | ❌ | Deprecated in IEC 3rd ed. but still common in older systems |
 | FBD (Function Block Diagram) | ❌ | Could lower to LD; explicit FBD topology missing |
 
@@ -177,12 +177,24 @@ Concrete slices to close the larger conformance gaps, in priority order:
    Beremiz, OpenPLC editor) -- XSD validity is necessary but not
    sufficient for full cert.
 
-2. **ST AST**.  Add an alternative body type to `Subroutine` (next to
-   `rungs` and `sfc`): an ordered list of ST statements.  Needed for
-   any IEC FUNCTION/FB that's authored in ST rather than LD.
-   *Note*: the ST emitter (``universal_machinery.emitters.st``)
-   already translates rung bodies to ST text; a follow-up makes ST
-   first-class so users can author in ST directly.
+2. ✅ ~~**ST AST**.~~ *Done.*  First-class ST body in
+   [`il/st.py`](../universal_machinery/il/st.py).  ``Subroutine``
+   and ``Method`` gain a ``st_body: Optional[list[Statement]]``
+   field alongside ``rungs`` and ``sfc`` -- the three are mutually
+   exclusive, enforced by the validator.  The AST covers IEC §3
+   expressions (literal, variable, field/index access, unary/
+   binary operators with §3.3.1 precedence, function-call as
+   expression) and statements (assignment, IF/ELSIF/ELSE,
+   CASE/ELSE with multi-label clauses, FOR/BY, WHILE, REPEAT,
+   RETURN, EXIT, CONTINUE, function-call as statement).
+   Builder DSL helpers (``assign``, ``if_``, ``case_``,
+   ``while_``, ``repeat_``, ``for_``, ``add_e``/``sub_e``/...,
+   ``and_e``/``or_e``/...) and JSON round-trip are complete.
+   The ST emitter renders the AST directly when ``st_body`` is
+   set; otherwise it falls back to rung-to-ST translation.
+   PLCopen XML ``<ST>`` emission of authored ST is the follow-up
+   slice -- the XML emitter currently goes through rung
+   translation.
 
 3. ✅ ~~**Direct representation parser**.~~ *Done.*  IEC §2.4.1.1
    direct-representation addresses (``%I0.0``, ``%QB5``, ``%MW10``,
