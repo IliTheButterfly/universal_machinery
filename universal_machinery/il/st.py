@@ -337,12 +337,41 @@ class CommentStatement:
     text: str
 
 
+@dataclass(frozen=True)
+class GotoStatement:
+    """``GOTO label;`` -- unconditional jump to a labeled statement.
+
+    IEC §3.3.2.5 jump statement.  Often gated by an enclosing
+    ``IfStatement`` (the FBD lowering produces this pattern for
+    conditional jumps).  The label must name a ``LabelStatement``
+    in the same body; validation enforces this.
+
+    PLCopen TC6 v2.01 doesn't have a dedicated XSD element for ST
+    GOTO -- it's emitted as part of the ``<ST><pre>...`` textual
+    content like any other ST statement.
+    """
+    label: str
+
+
+@dataclass(frozen=True)
+class LabelStatement:
+    """A named jump target, rendered as ``name:``.
+
+    IEC §3.3.2.5 label declaration.  Sits in a statement list at
+    the position the jump should land; multiple ``GotoStatement``s
+    may target the same label.  Names must be unique within a
+    body (validation enforces).
+    """
+    name: str
+
+
 #: Union of every statement node.
 Statement = Union[
     Assignment, IfStatement, CaseStatement,
     WhileStatement, RepeatStatement, ForStatement,
     ReturnStatement, ExitStatement, ContinueStatement,
     FunctionCallStatement, CommentStatement,
+    GotoStatement, LabelStatement,
 ]
 
 

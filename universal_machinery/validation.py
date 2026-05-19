@@ -33,9 +33,9 @@ from typing import Optional
 
 from .il import (
     Assignment, Configuration, FbBlock, FbdJump, FbdLabel, FbdNetwork,
-    FbdReturn, ForStatement, InOutVariable, InVariable, Interface, Method,
-    NamedType, OutVariable, PouInstance, PouKind, Program, Resource,
-    Subroutine, TagRef,
+    FbdReturn, ForStatement, GotoStatement, InOutVariable, InVariable,
+    Interface, LabelStatement, Method, NamedType, OutVariable, PouInstance,
+    PouKind, Program, Resource, Subroutine, TagRef,
 )
 from .il.ast import VarDirection
 from .il.ops import Call, ParallelGroup, tags_of
@@ -487,6 +487,84 @@ def _check_body_kind_mutex(prog: Program) -> list[ValidationError]:
     return errors
 
 
+def _check_st_goto_labels(prog: Program) -> list[ValidationError]:
+    """Goto/Label well-formedness inside ST bodies.
+
+    Emits:
+      - st-duplicate-label    : two ``LabelStatement``s in the
+                                 same body share a name (jumps
+                                 would be ambiguous).
+      - st-unresolved-goto    : a ``GotoStatement.label`` doesn't
+                                 match any label declared in the
+                                 same body (forward + backward
+                                 references are both fine -- ST
+                                 doesn't require declare-before-use).
+    """
+    errors: list[ValidationError] = []
+
+    def _collect_labels_and_gotos(stmts, labels: list[str],
+                                    gotos: list[str]) -> None:
+        from .il import (
+            CaseStatement, ForStatement, IfStatement, RepeatStatement,
+            WhileStatement,
+        )
+        for s in stmts:
+            if isinstance(s, LabelStatement):
+                labels.append(s.name)
+            elif isinstance(s, GotoStatement):
+                gotos.append(s.label)
+            elif isinstance(s, IfStatement):
+                for _cond, body in s.branches:
+                    _collect_labels_and_gotos(body, labels, gotos)
+                if s.else_branch is not None:
+                    _collect_labels_and_gotos(s.else_branch, labels, gotos)
+            elif isinstance(s, CaseStatement):
+                for clause in s.clauses:
+                    _collect_labels_and_gotos(clause.body, labels, gotos)
+                if s.else_branch is not None:
+                    _collect_labels_and_gotos(s.else_branch, labels, gotos)
+            elif isinstance(s, (WhileStatement, RepeatStatement)):
+                _collect_labels_and_gotos(s.body, labels, gotos)
+            elif isinstance(s, ForStatement):
+                _collect_labels_and_gotos(s.body, labels, gotos)
+
+    def _check_body(stmts, where: str) -> None:
+        labels: list[str] = []
+        gotos:  list[str] = []
+        _collect_labels_and_gotos(stmts, labels, gotos)
+        # Duplicate labels
+        seen: set[str] = set()
+        for name in labels:
+            if name in seen:
+                errors.append(ValidationError(
+                    code="st-duplicate-label",
+                    message=(f"Label {name!r} declared more than "
+                             f"once in body"),
+                    location=where,
+                ))
+            seen.add(name)
+        # Unresolved gotos
+        label_set = set(labels)
+        for target in gotos:
+            if target not in label_set:
+                errors.append(ValidationError(
+                    code="st-unresolved-goto",
+                    message=(f"GOTO targets undeclared label "
+                             f"{target!r}"),
+                    location=where,
+                ))
+
+    for sub in prog.subroutines:
+        if sub.st_body is not None:
+            _check_body(sub.st_body, f"Subroutine '{sub.name}' / st_body")
+        for m in sub.methods:
+            if m.st_body is not None:
+                _check_body(m.st_body,
+                            f"Subroutine '{sub.name}' / Method "
+                            f"'{m.name}' / st_body")
+    return errors
+
+
 def _check_fbd_wellformedness(prog: Program) -> list[ValidationError]:
     """Structural checks on every ``FbdNetwork`` body in the program.
 
@@ -747,6 +825,8 @@ def validate(prog: Program) -> list[ValidationError]:
      11. ST FOR index variable is declared
      12. FBD well-formedness (local_id uniqueness, resolved
          connections, known source pins, known jump labels)
+     13. ST Goto/Label resolution (no duplicates, every GOTO has
+         a target in the same body)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -761,6 +841,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_st_lvalues(prog))
     errors.extend(_check_st_for_index_declared(prog))
     errors.extend(_check_fbd_wellformedness(prog))
+    errors.extend(_check_st_goto_labels(prog))
     return errors
 
 

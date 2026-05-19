@@ -52,12 +52,13 @@ from .il import (
     CommentStatement, Configuration, Connection, ContinueStatement,
     DataBlock, EnumType, ExitStatement, FbBlock, FbdJump, FbdLabel,
     FbdNetwork, FbdReturn, FieldAccess, ForStatement, FunctionCallExpr,
-    FunctionCallStatement, IfStatement, InOutVariable, InVariable,
-    IndexAccess, Interface, Literal, Method, NamedType, OutVariable,
-    PouInstance, PouKind, Position, Program, RepeatStatement, Resource,
-    ReturnStatement, Rung, SfcNetwork, Step, StructType, SubrangeType,
-    Subroutine, Tag, TagRef, TagType, TaskSpec, Transition, UnaryExpr,
-    UnaryOp, Var, VarDirection, VarRef, VendorOp, WhileStatement,
+    FunctionCallStatement, GotoStatement, IfStatement, InOutVariable,
+    InVariable, IndexAccess, Interface, LabelStatement, Literal, Method,
+    NamedType, OutVariable, PouInstance, PouKind, Position, Program,
+    RepeatStatement, Resource, ReturnStatement, Rung, SfcNetwork, Step,
+    StructType, SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec,
+    Transition, UnaryExpr, UnaryOp, Var, VarDirection, VarRef, VendorOp,
+    WhileStatement,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -98,6 +99,7 @@ _DATACLASSES: dict[str, type] = {
         WhileStatement, RepeatStatement, ForStatement,
         ReturnStatement, ExitStatement, ContinueStatement,
         FunctionCallStatement, CommentStatement,
+        GotoStatement, LabelStatement,
         # FBD (IEC §6.7 Function Block Diagram)
         Position, Connection, BlockPin,
         FbBlock, InVariable, OutVariable, InOutVariable,

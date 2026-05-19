@@ -301,16 +301,17 @@ def test_return_without_gate_lowers_to_unconditional_return():
     assert isinstance(result.statements[0], ReturnStatement)
 
 
-def test_jump_and_label_lower_to_comment_marker():
-    """Jumps/labels currently lower to ``CommentStatement`` markers
-    until the ST AST grows first-class Goto/Label statements."""
+def test_jump_and_label_lower_to_goto_and_label_statements():
+    """``FbdJump`` -> ``GotoStatement`` (gated via ``IfStatement``);
+    ``FbdLabel`` -> ``LabelStatement``.  Both are first-class IEC
+    ST syntax now."""
+    from universal_machinery.il import GotoStatement, LabelStatement
     net = fbd_network(
         in_var(0, "cond"),
         fbd_jump(1, "END_OK", source_id=0),
         fbd_label(2, "END_OK"),
     )
     result = lower_fbd_to_st(net)
-    # Find the CommentStatement markers in the lowered output
     flat: list = []
     def _walk(stmts):
         for s in stmts:
@@ -321,9 +322,10 @@ def test_jump_and_label_lower_to_comment_marker():
                 if s.else_branch is not None:
                     _walk(s.else_branch)
     _walk(result.statements)
-    comments = [s for s in flat if isinstance(s, CommentStatement)]
-    assert any("FBD jump" in c.text for c in comments)
-    assert any("FBD label" in c.text for c in comments)
+    assert any(isinstance(s, GotoStatement) and s.label == "END_OK"
+               for s in flat)
+    assert any(isinstance(s, LabelStatement) and s.name == "END_OK"
+               for s in flat)
 
 
 # -----------------------------------------------------------------------------
@@ -371,3 +373,20 @@ def test_emit_pou_injects_lowering_temps_as_var_block():
     assert "_t0" in txt  # temp name
     assert "END_VAR" in txt
     assert "SQRT(x)" in txt
+
+
+def test_emit_pou_renders_fbd_jump_label_as_iec_goto():
+    """End-to-end: an FBD network with a jump + label produces
+    real IEC ``GOTO`` / ``Label:`` syntax in the rendered POU."""
+    net = fbd_network(
+        in_var(0, "done"),
+        fbd_label(1, "END"),
+        fbd_jump(2, "END", source_id=0),
+    )
+    sub = prog("Main", main=True, fbd_body=net)
+    txt = emit_pou(sub)
+    assert "END:" in txt
+    assert "GOTO END;" in txt
+    # Old marker comment must be gone
+    assert "FBD jump" not in txt
+    assert "FBD label" not in txt
