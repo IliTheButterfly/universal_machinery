@@ -41,8 +41,11 @@ through the PLCopen TC6 XML schema.  Vendor-specific extensions
 | §2.2 | PROGRAM | ✅ | `Subroutine(kind=PouKind.PROGRAM)` | |
 | §2.2 | FUNCTION | ✅ | `Subroutine(kind=PouKind.FUNCTION, return_type=...)` | |
 | §2.2 | FUNCTION_BLOCK | ✅ | `Subroutine(kind=PouKind.FUNCTION_BLOCK)` + instance `DataBlock` | |
-| §2.5.1.5 | METHOD (3rd ed.) | ❌ | -- | Required for full 3rd-edition conformance |
-| §2.5.1.5 | INTERFACE (3rd ed.) | ❌ | -- | Pairs with METHOD |
+| §2.5.1.5 | METHOD (3rd ed.) | ⚠️ | `Method` declared inside `Subroutine.methods` (FB) or `Interface.methods` | ST emitter renders full `METHOD ... END_METHOD` with PUBLIC/PRIVATE/PROTECTED/INTERNAL access specifiers, ABSTRACT, OVERRIDE.  PLCopen TC6 v2.01 XSD predates the 3rd edition and has no `<method>` element; PLCopen XML emission is incomplete for methods until a v2.02+ schema upgrade lands |
+| §2.5.1.5 | INTERFACE (3rd ed.) | ⚠️ | `Interface` declared in `Program.interfaces`; FBs reference via `Subroutine.implements=[...]` | Multiple inheritance for interfaces supported; single inheritance for FBs (`Subroutine.extends`).  Same PLCopen XSD caveat as METHOD applies |
+| §2.5.1.5 | EXTENDS (3rd ed.) | ⚠️ | `Subroutine.extends: Optional[str]` (single inheritance) | ST emits `FUNCTION_BLOCK Child EXTENDS Parent`; PLCopen XML omits per XSD limitation |
+| §2.5.1.5 | IMPLEMENTS (3rd ed.) | ⚠️ | `Subroutine.implements: list[str]` | ST emits `FUNCTION_BLOCK Name IMPLEMENTS I1, I2`; PLCopen XML omits per XSD limitation |
+| §2.5.1.5 | ABSTRACT (3rd ed.) | ⚠️ | `Subroutine.abstract: bool`, `Method.abstract: bool` | ST emits `FUNCTION_BLOCK ABSTRACT Name`; PLCopen XML omits per XSD limitation |
 | (vendor) | SUBROUTINE | ✅ | `Subroutine(kind=PouKind.SUBROUTINE)` | Vendor-extension kind for CLICK-style unparameterized routines; outside IEC, but coexists |
 
 ## §2.4  Variables
@@ -189,9 +192,15 @@ Concrete slices to close the larger conformance gaps, in priority order:
    addresses (``X001``, ``DS9000``) continue to emit as AT-comment
    annotations.
 
-4. **METHOD / INTERFACE**.  IEC 3rd-edition OOP additions on FBs.
-   Add `Subroutine.methods: list[Subroutine]` and an `Interface`
-   declaration.  Required for 3rd-edition conformance.
+4. ⚠️ ~~**METHOD / INTERFACE**.~~ *Partial.*  IEC 3rd-edition OOP
+   (`il/oop.py`): `Method`, `Interface`, plus `Subroutine.methods` /
+   `extends` / `implements` / `abstract` fields.  Builder DSL
+   (`method`, `abstract_method`, `interface`), ST emission, JSON
+   serialisation, and validation are complete.  PLCopen TC6 v2.01
+   XSD predates the 3rd edition and has no `<method>` / `<interface>`
+   elements -- XML emission for OOP programs is incomplete until a
+   v2.02+ schema upgrade lands.  ST is the conformant-output path
+   for OOP IL today.
 
 5. ✅ ~~**CONFIGURATION / RESOURCE / TASK**.~~ *Done.*  IEC §2.7 system-
    organisation model lives in [`il/configuration.py`](../universal_machinery/il/configuration.py).

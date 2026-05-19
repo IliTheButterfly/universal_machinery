@@ -47,10 +47,11 @@ from typing import Any, Union, get_args, get_origin
 
 from . import il
 from .il import (
-    Action, Address, AliasType, ArrayType, Configuration, DataBlock,
-    EnumType, NamedType, PouInstance, PouKind, Program, Resource, Rung,
-    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagRef,
-    TagType, TaskSpec, Transition, Var, VarDirection, VendorOp,
+    AccessSpec, Action, Address, AliasType, ArrayType, Configuration,
+    DataBlock, EnumType, Interface, Method, NamedType, PouInstance,
+    PouKind, Program, Resource, Rung, SfcNetwork, Step, StructType,
+    SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec, Transition,
+    Var, VarDirection, VendorOp,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -82,6 +83,8 @@ _DATACLASSES: dict[str, type] = {
         StructType, ArrayType, EnumType, SubrangeType, AliasType, NamedType,
         # Configuration model
         Configuration, Resource, TaskSpec, PouInstance,
+        # IEC 3rd-edition OOP (METHOD / INTERFACE)
+        Method, Interface,
         # SFC
         SfcNetwork, Step, Transition, Action,
         # Ops
@@ -98,7 +101,7 @@ _DATACLASSES: dict[str, type] = {
 
 #: All enum types the serializer recognises.
 _ENUMS: dict[str, type[Enum]] = {
-    cls.__name__: cls for cls in (TagType, PouKind, VarDirection)
+    cls.__name__: cls for cls in (TagType, PouKind, VarDirection, AccessSpec)
 }
 
 

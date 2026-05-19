@@ -43,10 +43,10 @@ from __future__ import annotations
 from typing import Iterable, Optional, Sequence, Union
 
 from ..il import (
-    Address, AliasType, ArrayType, Configuration, DataBlock, EnumType,
-    NamedType, PouInstance, PouKind, Program, Resource, Rung, StructType,
-    SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec, Var,
-    VarDirection, type_name,
+    AccessSpec, Address, AliasType, ArrayType, Configuration, DataBlock,
+    EnumType, Interface, Method, NamedType, PouInstance, PouKind, Program,
+    Resource, Rung, StructType, SubrangeType, Subroutine, Tag, TagRef,
+    TagType, TaskSpec, Var, VarDirection, type_name,
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -356,10 +356,63 @@ def _pou_keyword(sub: Subroutine) -> str:
     return "PROGRAM" if sub.main else "FUNCTION_BLOCK"
 
 
+def _fmt_method(m: Method, indent: str = "    ") -> str:
+    """Render one ``METHOD ... END_METHOD`` block.
+
+    Layout::
+
+        METHOD [PUBLIC|PRIVATE|...] [ABSTRACT|OVERRIDE] name [: ReturnType]
+            VAR_INPUT ... END_VAR
+            ...
+            <body>
+        END_METHOD
+
+    Abstract methods omit the body (just the signature block).
+    """
+    parts: list[str] = []
+    qualifiers = [m.access.value]
+    if m.abstract:
+        qualifiers.append("ABSTRACT")
+    if m.override:
+        qualifiers.append("OVERRIDE")
+    header = f"METHOD {' '.join(qualifiers)} {m.name}"
+    if m.return_type is not None:
+        header += f" : {_fmt_iec_type(m.return_type)}"
+    if m.comment:
+        parts.append(f"(* {m.comment} *)")
+    parts.append(header)
+    parts.extend(_fmt_var_block("VAR_INPUT",  m.inputs))
+    parts.extend(_fmt_var_block("VAR_OUTPUT", m.outputs))
+    parts.extend(_fmt_var_block("VAR_IN_OUT", m.in_outs))
+    parts.extend(_fmt_var_block("VAR",        m.local_vars))
+    if not m.abstract:
+        for rung in m.rungs:
+            for stmt in emit_rung(rung):
+                parts.append(indent + stmt)
+    parts.append("END_METHOD")
+    return "\n".join(parts)
+
+
+def _fmt_interface_decl(iface: Interface) -> str:
+    """Render one ``INTERFACE ... END_INTERFACE`` declaration.
+
+    Interfaces contain only abstract method signatures (no bodies);
+    each method renders as a METHOD block whose ABSTRACT qualifier
+    is implicit at the interface level."""
+    parts: list[str] = []
+    if iface.comment:
+        parts.append(f"(* {iface.comment} *)")
+    parts.append(f"INTERFACE {iface.name}")
+    for m in iface.methods:
+        parts.append(_fmt_method(m))
+    parts.append("END_INTERFACE")
+    return "\n".join(parts)
+
+
 def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
     """Return the full ST text for one POU.
 
-    Output structure::
+    Output structure for a simple POU::
 
         PROGRAM Main
         VAR_INPUT
@@ -370,11 +423,25 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
         END_VAR
             <body statements indented by `indent`>
         END_PROGRAM
+
+    FUNCTION_BLOCK POUs additionally carry IEC 3rd-edition OOP
+    qualifiers in the header (``ABSTRACT``, ``EXTENDS Parent``,
+    ``IMPLEMENTS I1, I2``) and any declared ``METHOD ... END_METHOD``
+    blocks appear between the variable declarations and the body.
     """
     keyword = _pou_keyword(sub)
-    header = keyword + " " + sub.name
+    header = keyword
+    # IEC 3rd-edition OOP qualifiers on FUNCTION_BLOCK headers
+    if sub.kind is PouKind.FUNCTION_BLOCK and sub.abstract:
+        header += " ABSTRACT"
+    header += " " + sub.name
     if sub.kind is PouKind.FUNCTION and sub.return_type is not None:
         header += " : " + _fmt_iec_type(sub.return_type)
+    if sub.kind is PouKind.FUNCTION_BLOCK:
+        if sub.extends:
+            header += f" EXTENDS {sub.extends}"
+        if sub.implements:
+            header += f" IMPLEMENTS {', '.join(sub.implements)}"
 
     lines: list[str] = []
     if sub.comment:
@@ -385,6 +452,12 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
     lines.extend(_fmt_var_block("VAR_OUTPUT", sub.outputs))
     lines.extend(_fmt_var_block("VAR_IN_OUT", sub.in_outs))
     lines.extend(_fmt_var_block("VAR",        sub.local_vars))
+
+    # Methods (FUNCTION_BLOCKs only) sit between the interface
+    # declarations and the body proper, matching IEC 3rd-edition
+    # convention.
+    for m in sub.methods:
+        lines.append(_fmt_method(m, indent=indent))
 
     if sub.sfc is not None:
         lines.append(f"{indent}(* SFC body not emitted in ST -- "
@@ -575,6 +648,11 @@ def emit_program(prog: Program) -> str:
     # them by name.
     for ut in prog.user_types:
         sections.append(_fmt_user_type_decl(ut))
+
+    # IEC 3rd-edition INTERFACE declarations -- POUs that IMPLEMENT
+    # them appear afterwards.
+    for iface in prog.interfaces:
+        sections.append(_fmt_interface_decl(iface))
 
     if prog.tags:
         lines = ["VAR_GLOBAL"]
