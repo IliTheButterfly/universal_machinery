@@ -17,9 +17,9 @@ import pytest
 from universal_machinery.builders import (
     abstract_method, add_e, and_e, assign, call_stmt, case_, case_clause,
     coil, continue_st, eq_e, exit_st, fb, fcall_expr, field_, for_, ge_e,
-    gt_e, if_, index_, interface, le_e, lit, lt_e, method, mul_e, ne_e,
-    neg, not_e, or_e, prog, program, rung, ret_st, repeat_, sub_e, tag,
-    tag_decl, var, var_in, var_out, var_ref, while_, xor_e,
+    goto, gt_e, if_, index_, interface, label_st, le_e, lit, lt_e, method,
+    mul_e, ne_e, neg, not_e, or_e, prog, program, rung, ret_st, repeat_,
+    sub_e, tag, tag_decl, var, var_in, var_out, var_ref, while_, xor_e,
 )
 from universal_machinery.emitters.st import (
     emit_pou, emit_program, emit_st_body, emit_statement,
@@ -27,9 +27,10 @@ from universal_machinery.emitters.st import (
 from universal_machinery.il import (
     Assignment, BinaryExpr, BinaryOp, CaseClause, CaseStatement,
     ContinueStatement, ExitStatement, FieldAccess, ForStatement,
-    FunctionCallExpr, FunctionCallStatement, IfStatement, IndexAccess,
-    Literal, RepeatStatement, ReturnStatement, TagRef, TagType, UnaryExpr,
-    UnaryOp, VarRef, WhileStatement, is_lvalue, walk_expressions,
+    FunctionCallExpr, FunctionCallStatement, GotoStatement, IfStatement,
+    IndexAccess, LabelStatement, Literal, RepeatStatement, ReturnStatement,
+    TagRef, TagType, UnaryExpr, UnaryOp, VarRef, WhileStatement, is_lvalue,
+    walk_expressions,
 )
 from universal_machinery.serialisation import from_json, to_json
 from universal_machinery.validation import is_valid, validate
@@ -480,3 +481,109 @@ def test_method_for_index_uses_method_locals():
     ])
     codes = [e.code for e in validate(p)]
     assert "for-index-undeclared" not in codes
+
+
+# -----------------------------------------------------------------------------
+# Goto / Label statements (IEC §3.3.2.5)
+# -----------------------------------------------------------------------------
+
+
+def test_goto_and_label_builder_construction():
+    g = goto("END")
+    assert isinstance(g, GotoStatement)
+    assert g.label == "END"
+    l = label_st("START")
+    assert isinstance(l, LabelStatement)
+    assert l.name == "START"
+
+
+def test_emit_goto_statement():
+    assert emit_statement(goto("END"), level=0) == ["GOTO END;"]
+
+
+def test_emit_label_statement():
+    assert emit_statement(label_st("START"), level=0) == ["START:"]
+
+
+def test_goto_label_round_trips_through_json():
+    p = program(subroutines=[
+        prog("Main", main=True, st_body=[
+            label_st("LOOP"),
+            assign("x", lit(0)),
+            goto("LOOP"),
+        ]),
+    ])
+    p2 = from_json(to_json(p))
+    body = p2.subroutines[0].st_body
+    assert isinstance(body[0], LabelStatement)
+    assert body[0].name == "LOOP"
+    assert isinstance(body[2], GotoStatement)
+    assert body[2].label == "LOOP"
+
+
+def test_unresolved_goto_flagged():
+    p = program(subroutines=[
+        prog("Main", st_body=[goto("MISSING")]),
+    ])
+    codes = [e.code for e in validate(p)]
+    assert "st-unresolved-goto" in codes
+
+
+def test_resolved_goto_passes_validation():
+    p = program(subroutines=[
+        prog("Main", st_body=[
+            label_st("HERE"),
+            goto("HERE"),
+        ]),
+    ])
+    codes = [e.code for e in validate(p)]
+    assert "st-unresolved-goto" not in codes
+    assert "st-duplicate-label" not in codes
+
+
+def test_duplicate_label_flagged():
+    p = program(subroutines=[
+        prog("Main", st_body=[
+            label_st("HERE"),
+            assign("x", lit(0)),
+            label_st("HERE"),  # duplicate
+        ]),
+    ])
+    codes = [e.code for e in validate(p)]
+    assert "st-duplicate-label" in codes
+
+
+def test_goto_targets_label_inside_if_branch_resolves():
+    """Label declared inside a nested ``IfStatement`` branch is
+    visible to GOTOs in the same body."""
+    p = program(subroutines=[
+        prog("Main", st_body=[
+            if_((eq_e("x", lit(1)), [label_st("MID")])),
+            goto("MID"),
+        ]),
+    ])
+    codes = [e.code for e in validate(p)]
+    assert "st-unresolved-goto" not in codes
+
+
+def test_method_st_body_goto_validation():
+    p = program(subroutines=[
+        fb("Owner",
+           methods=[method("Bad",
+                           st_body=[goto("NOWHERE")])]),
+    ])
+    codes = [e.code for e in validate(p)]
+    assert "st-unresolved-goto" in codes
+
+
+def test_emit_program_with_goto_label_in_body():
+    p = program(subroutines=[
+        prog("Main", main=True, st_body=[
+            label_st("LOOP"),
+            assign("count", add_e("count", lit(1))),
+            if_((lt_e("count", lit(10)), [goto("LOOP")])),
+        ]),
+    ])
+    txt = emit_program(p)
+    assert "LOOP:" in txt
+    assert "GOTO LOOP;" in txt

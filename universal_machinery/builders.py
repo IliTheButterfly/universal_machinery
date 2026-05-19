@@ -55,12 +55,13 @@ from .il import (
     Connection, ContinueStatement, DataBlock, DataType, EnumType,
     ExitStatement, Expression, FbBlock, FbdJump, FbdLabel, FbdNetwork,
     FbdReturn, FieldAccess, ForStatement, FunctionCallExpr,
-    FunctionCallStatement, IfStatement, InOutVariable, InVariable,
-    IndexAccess, Interface, Literal, Method, NamedType, OutVariable,
-    PouInstance, PouKind, Position, Program, RepeatStatement, Resource,
-    ReturnStatement, Rung, Statement, StructType, SubrangeType, Subroutine,
-    Tag, TagRef, TagType, TaskSpec, UnaryExpr, UnaryOp, UserType, Var,
-    VarDirection, VarRef, WhileStatement,
+    FunctionCallStatement, GotoStatement, IfStatement, InOutVariable,
+    InVariable, IndexAccess, Interface, LabelStatement, Literal, Method,
+    NamedType, OutVariable, PouInstance, PouKind, Position, Program,
+    RepeatStatement, Resource, ReturnStatement, Rung, Statement,
+    StructType, SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec,
+    UnaryExpr, UnaryOp, UserType, Var, VarDirection, VarRef,
+    WhileStatement,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -866,6 +867,18 @@ def continue_st() -> ContinueStatement:
     return ContinueStatement()
 
 
+def goto(label: str) -> GotoStatement:
+    """``GOTO label;`` -- unconditional jump.  Often gated by an
+    enclosing ``if_(...)`` for conditional flow."""
+    return GotoStatement(label=label)
+
+
+def label_st(name: str) -> LabelStatement:
+    """``name:`` -- jump target.  Spelled ``label_st`` to avoid
+    clashing with ``label_`` (the LD label op)."""
+    return LabelStatement(name=name)
+
+
 # -----------------------------------------------------------------------------
 # Function Block Diagram builders (IEC §6.7)
 # -----------------------------------------------------------------------------
@@ -1429,6 +1442,7 @@ __all__ = [
     "if_", "case_clause", "case_",
     "while_", "repeat_", "for_",
     "call_stmt", "ret_st", "exit_st", "continue_st",
+    "goto", "label_st",
     # Program
     "program",
 ]

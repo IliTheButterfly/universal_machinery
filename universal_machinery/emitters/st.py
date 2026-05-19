@@ -46,11 +46,12 @@ from ..il import (
     AccessSpec, Address, AliasType, ArrayType, Assignment, BinaryExpr,
     CaseStatement, CommentStatement, Configuration, ContinueStatement,
     DataBlock, EnumType, ExitStatement, FieldAccess, ForStatement,
-    FunctionCallExpr, FunctionCallStatement, IfStatement, IndexAccess,
-    Interface, Literal, Method, NamedType, PouInstance, PouKind, Program,
-    RepeatStatement, Resource, ReturnStatement, Rung, Statement,
-    StructType, SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec,
-    UnaryExpr, Var, VarDirection, VarRef, WhileStatement, type_name,
+    FunctionCallExpr, FunctionCallStatement, GotoStatement, IfStatement,
+    IndexAccess, Interface, LabelStatement, Literal, Method, NamedType,
+    PouInstance, PouKind, Program, RepeatStatement, Resource,
+    ReturnStatement, Rung, Statement, StructType, SubrangeType, Subroutine,
+    Tag, TagRef, TagType, TaskSpec, UnaryExpr, Var, VarDirection, VarRef,
+    WhileStatement, type_name,
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -477,6 +478,15 @@ def emit_statement(stmt, indent: str = "    ", level: int = 0) -> list[str]:
 
     if isinstance(stmt, CommentStatement):
         return [f"{prefix}(* {stmt.text} *)"]
+
+    if isinstance(stmt, GotoStatement):
+        return [f"{prefix}GOTO {stmt.label};"]
+
+    if isinstance(stmt, LabelStatement):
+        # IEC labels sit at column zero per convention; emit at the
+        # caller's indent for readability and so the surrounding
+        # block structure stays visually aligned.
+        return [f"{prefix}{stmt.name}:"]
 
     raise TypeError(f"unknown Statement: {type(stmt).__name__}")
 

@@ -78,9 +78,10 @@ from typing import Optional, Sequence
 from ..il import (
     Assignment, BinaryExpr, BinaryOp, CommentStatement, FbBlock, FbdJump,
     FbdLabel, FbdNetwork, FbdReturn, FunctionCallExpr,
-    FunctionCallStatement, IfStatement, InOutVariable, InVariable, Literal,
-    OutVariable, ReturnStatement, Statement, TagType, TagRef, UnaryExpr,
-    UnaryOp, Var, VarDirection, VarRef,
+    FunctionCallStatement, GotoStatement, IfStatement, InOutVariable,
+    InVariable, LabelStatement, Literal, OutVariable, ReturnStatement,
+    Statement, TagType, TagRef, UnaryExpr, UnaryOp, Var, VarDirection,
+    VarRef,
 )
 from ..il.ast import Address
 
@@ -416,28 +417,16 @@ def lower_fbd_to_st(net: FbdNetwork, *,
             producer_expr[(e.local_id, "")] = out_expr
 
         elif isinstance(e, FbdLabel):
-            # The current ST AST has no first-class label statement.
-            # Emit a comment marker so the position is preserved in
-            # the lowered output; a follow-up slice (Label / Goto
-            # statements in il/st.py) will turn these into real IEC
-            # ``Label:`` syntax.
-            statements.append(CommentStatement(
-                text=f"FBD label '{e.label}' (no ST equivalent yet)",
-            ))
+            statements.append(LabelStatement(name=e.label))
 
         elif isinstance(e, FbdJump):
             gate = _get_source(e.connection)
-            # Same deferred-feature note as FbdLabel.  IfStatement
-            # branches require non-empty bodies, so the jump marker
-            # is wrapped in a comment regardless of gate.
-            marker = CommentStatement(
-                text=f"FBD jump -> '{e.label}' (no ST equivalent yet)",
-            )
+            jump = GotoStatement(label=e.label)
             if gate is None:
-                statements.append(marker)
+                statements.append(jump)
             else:
                 statements.append(IfStatement(
-                    branches=((gate, (marker,)),),
+                    branches=((gate, (jump,)),),
                     else_branch=None,
                 ))
 
