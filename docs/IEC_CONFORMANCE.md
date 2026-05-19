@@ -49,7 +49,7 @@ through the PLCopen TC6 XML schema.  Vendor-specific extensions
 
 | Section | Construct | Status | IL representation | Notes |
 | --- | --- | --- | --- | --- |
-| §2.4.1 | Direct representation (`%I`, `%Q`, `%M`, `%IX`, `%QX`, `%MX`, ...) | ❌ | -- | Currently use vendor-style addresses (`X001`, `DS9000`); a parallel IEC parser is a follow-up |
+| §2.4.1 | Direct representation (`%I`, `%Q`, `%M`, `%IX`, `%QX`, `%MX`, ...) | ✅ | `Address("%I0.0")` via smart builder coercion; PLCopen XML emits as the schema's optional ``address`` attribute on ``<variable>`` | All 5 size prefixes (X/B/W/D/L) × 3 location families (%I/%Q/%M) + hierarchical indices (`%I0.0.0`) recognised |
 | §2.4.3 | VAR_INPUT | ✅ | `Var(direction=VarDirection.INPUT)` | |
 | §2.4.3 | VAR_OUTPUT | ✅ | `Var(direction=VarDirection.OUTPUT)` | |
 | §2.4.3 | VAR_IN_OUT | ✅ | `Var(direction=VarDirection.IN_OUT)` | |
@@ -181,9 +181,13 @@ Concrete slices to close the larger conformance gaps, in priority order:
    already translates rung bodies to ST text; a follow-up makes ST
    first-class so users can author in ST directly.
 
-3. **Direct representation parser**.  Accept `%I0.0`, `%Q0.0`, `%MX5`,
-   etc. as input to `loc(...)` alongside vendor-style addresses.
-   Backends translate between the two as needed.
+3. ✅ ~~**Direct representation parser**.~~ *Done.*  IEC §2.4.1.1
+   direct-representation addresses (``%I0.0``, ``%QB5``, ``%MW10``,
+   ``%MX5``, hierarchical ``%I0.0.0``) are recognised by the smart
+   builder coercion and emit as the PLCopen schema's optional
+   ``address`` attribute on ``<variable>``.  CLICK-style vendor
+   addresses (``X001``, ``DS9000``) continue to emit as AT-comment
+   annotations.
 
 4. **METHOD / INTERFACE**.  IEC 3rd-edition OOP additions on FBs.
    Add `Subroutine.methods: list[Subroutine]` and an `Interface`
