@@ -344,9 +344,12 @@ class Program:
     tags: dict[str, Tag] = field(default_factory=dict)
     data_blocks: list[DataBlock] = field(default_factory=list)
     user_types: list[object] = field(default_factory=list)
-    # ``user_types`` is annotated ``list[object]`` to avoid a circular
-    # import (``types`` imports ``TagType`` from this module).  The
-    # runtime element type is ``il.types.UserType``.
+    configurations: list[object] = field(default_factory=list)
+    # ``user_types`` and ``configurations`` are annotated
+    # ``list[object]`` to avoid circular imports (the ``types`` and
+    # ``configuration`` modules import from this one).  The runtime
+    # element types are ``il.types.UserType`` and
+    # ``il.configuration.Configuration`` respectively.
 
     # Optional metadata that some backends consume
     cpu_model: str = ""            # e.g. "C2-01CPU" for CLICK
@@ -384,6 +387,13 @@ class Program:
         for ut in self.user_types:
             if getattr(ut, "name", None) == name:
                 return ut
+        return None
+
+    def find_configuration(self, name: str):
+        """Look up a Configuration by name."""
+        for cfg in self.configurations:
+            if getattr(cfg, "name", None) == name:
+                return cfg
         return None
 
     def find_tag(self, name: str) -> Optional[Tag]:

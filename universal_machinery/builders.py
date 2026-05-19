@@ -50,9 +50,10 @@ import re
 from typing import Optional, Sequence, Union
 
 from .il import (
-    Address, AliasType, ArrayType, DataBlock, DataType, EnumType, NamedType,
-    PouKind, Program, Rung, StructType, Subroutine, Tag, TagRef, TagType,
-    UserType, Var, VarDirection,
+    Address, AliasType, ArrayType, Configuration, DataBlock, DataType,
+    EnumType, NamedType, PouInstance, PouKind, Program, Resource, Rung,
+    StructType, Subroutine, Tag, TagRef, TagType, TaskSpec, UserType, Var,
+    VarDirection,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -704,6 +705,72 @@ def alias_type(name: str, base: DataType,
 
 
 # -----------------------------------------------------------------------------
+# CONFIGURATION / RESOURCE / TASK (IEC 61131-3 §2.7)
+# -----------------------------------------------------------------------------
+
+
+def task_spec(name: str, *,
+              priority: int = 1,
+              interval: Optional[str] = None,
+              single: Optional[str] = None,
+              interrupt: Optional[str] = None,
+              comment: str = "") -> TaskSpec:
+    """Build a ``TaskSpec`` for resource scheduling.
+
+    Exactly one of ``interval`` (cyclic), ``single`` (single-shot), or
+    ``interrupt`` (interrupt-driven) should be set per IEC §2.7.2.
+    The DSL doesn't enforce mutex -- callers and validation passes
+    do.
+    """
+    return TaskSpec(
+        name=name, priority=priority,
+        interval=interval, single=single, interrupt=interrupt,
+        comment=comment,
+    )
+
+
+def pou_instance(name: str, type_name: str, *,
+                 task: Optional[str] = None,
+                 comment: str = "") -> PouInstance:
+    """A runtime instance of a POU bound to a task."""
+    return PouInstance(name=name, type_name=type_name, task=task,
+                       comment=comment)
+
+
+def resource(name: str, *,
+             tasks: Optional[Sequence[TaskSpec]] = None,
+             pou_instances: Optional[Sequence[PouInstance]] = None,
+             global_vars: Optional[Sequence[Var]] = None,
+             comment: str = "") -> Resource:
+    """Build a ``Resource`` -- one PLC CPU / runtime."""
+    return Resource(
+        name=name,
+        tasks=list(tasks or []),
+        pou_instances=list(pou_instances or []),
+        global_vars=list(global_vars or []),
+        comment=comment,
+    )
+
+
+def configuration(name: str, *,
+                  resources: Optional[Sequence[Resource]] = None,
+                  global_vars: Optional[Sequence[Var]] = None,
+                  access_vars: Optional[Sequence[Var]] = None,
+                  comment: str = "") -> Configuration:
+    """Build a ``Configuration`` -- top-level system organisation.
+
+    Use one Configuration per project; multi-PLC projects use multiple
+    Resources inside the same Configuration."""
+    return Configuration(
+        name=name,
+        resources=list(resources or []),
+        global_vars=list(global_vars or []),
+        access_vars=list(access_vars or []),
+        comment=comment,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Top-level Program builder
 # -----------------------------------------------------------------------------
 
@@ -713,6 +780,7 @@ def program(*,
             tags: Optional[Sequence[Tag]] = None,
             data_blocks: Optional[Sequence[DataBlock]] = None,
             user_types: Optional[Sequence[UserType]] = None,
+            configurations: Optional[Sequence[Configuration]] = None,
             cpu_model: str = "",
             project_name: str = "",
             comment: str = "") -> Program:
@@ -726,12 +794,21 @@ def program(*,
     ``AliasType`` declarations; the constructor stores them on
     ``Program.user_types`` and emitters render them in IEC's
     ``TYPE ... END_TYPE`` block.
+
+    ``configurations`` collects IEC §2.7 system-organisation
+    Configuration objects -- each holds Resources, Tasks, POU
+    instances, and global variables.  When a Program declares
+    Configurations explicitly, the PLCopen XML emitter produces the
+    proper ``<instances><configurations>`` structure; without them,
+    a synthetic ``GlobalsHolder`` POU is used as a fallback for
+    Tag declarations.
     """
     return Program(
         subroutines=list(subroutines or []),
         tags={t.name: t for t in (tags or [])},
         data_blocks=list(data_blocks or []),
         user_types=list(user_types or []),
+        configurations=list(configurations or []),
         cpu_model=cpu_model,
         project_name=project_name,
         comment=comment,
@@ -774,6 +851,8 @@ __all__ = [
     "tag_decl", "data_block",
     # User-defined types
     "named_type", "struct_type", "array_type", "enum_type", "alias_type",
+    # Configuration / Resource / Task
+    "task_spec", "pou_instance", "resource", "configuration",
     # POUs
     "subroutine", "prog", "fn", "fb",
     # Program

@@ -71,22 +71,28 @@ from .types import (
     AliasType, ArrayType, DataType, EnumType, NamedType, StructType,
     UserType, is_elementary, is_user_type, type_name,
 )
+from .configuration import (
+    Configuration, PouInstance, Resource, TaskSpec,
+)
 
 __all__ = [
     "Action",
     "Address",
     "AliasType",
     "ArrayType",
+    "Configuration",
     "DataBlock",
     "DataType",
     "EnumType",
     "FTrig",
     "Loc",
     "NamedType",
+    "PouInstance",
     "PouKind",
     "Program",
     "RS",
     "RTrig",
+    "Resource",
     "Rung",
     "SR",
     "SfcNetwork",
@@ -98,6 +104,7 @@ __all__ = [
     "Tag",
     "TagRef",
     "TagType",
+    "TaskSpec",
     "Transition",
     "UserType",
     "Value",
@@ -111,4 +118,4 @@ __all__ = [
     "type_name",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
