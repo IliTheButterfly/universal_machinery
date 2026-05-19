@@ -55,6 +55,9 @@ Output is hand-rolled XML rather than using xml.etree because:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import lru_cache
+from importlib import resources
+from pathlib import Path
 from typing import Optional, Sequence
 from xml.sax.saxutils import escape, quoteattr
 
@@ -134,8 +137,10 @@ def _emit_var(var: Var) -> str:
     if var.address is not None:
         parts.append(f"  <!-- AT {escape(var.address.raw)} -->")
     if var.comment:
-        parts.append(f"  <documentation><xhtml>{escape(var.comment)}"
-                     f"</xhtml></documentation>")
+        parts.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(var.comment)}</p></documentation>'
+        )
     parts.append("</variable>")
     return "\n".join(parts)
 
@@ -179,13 +184,17 @@ def _emit_pou_body_st(sub: Subroutine) -> str:
             for stmt in emit_rung(rung):
                 lines.append(stmt)
     body_text = "\n".join(lines) if lines else "(* empty *)"
-    # PLCopen schema requires the textual content inside an <xhtml>
-    # element so it's well-formed XML even if the ST has special chars.
+    # PLCopen schema requires the textual content inside an element
+    # from the XHTML namespace (xsd:any namespace="..xhtml").  We use
+    # ``<pre>`` (preformatted text) so the ST source's whitespace +
+    # line breaks are preserved; ``xmlns`` declared inline so the
+    # output is self-contained even when ``emit_pou_xml`` is used
+    # standalone (not inside a full ``emit_xml`` document).
     return (
         "<body>\n"
         "  <ST>\n"
-        f"    <xhtml xmlns=\"http://www.w3.org/1999/xhtml\">"
-        f"{escape(body_text)}</xhtml>\n"
+        f'    <pre xmlns="http://www.w3.org/1999/xhtml">'
+        f'{escape(body_text)}</pre>\n'
         "  </ST>\n"
         "</body>"
     )
@@ -235,8 +244,10 @@ def emit_pou_xml(sub: Subroutine) -> str:
 
     # documentation
     if sub.comment:
-        parts.append(f"  <documentation><xhtml>{escape(sub.comment)}"
-                     f"</xhtml></documentation>")
+        parts.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(sub.comment)}</p></documentation>'
+        )
 
     parts.append("</pou>")
     return "\n".join(parts)
@@ -280,15 +291,15 @@ def _emit_globals_pou(tags: dict) -> Optional[str]:
             lines.append(f"        <!-- AT {escape(tag.address.raw)} -->")
         if tag.description:
             lines.append(
-                f"        <documentation><xhtml>"
-                f"{escape(tag.description)}</xhtml></documentation>"
+                f'        <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+                f'{escape(tag.description)}</p></documentation>'
             )
         lines.append('      </variable>')
     lines.extend([
         '    </localVars>',
         '  </interface>',
-        '  <body><ST><xhtml xmlns="http://www.w3.org/1999/xhtml">'
-        '(* synthesised globals holder *)</xhtml></ST></body>',
+        '  <body><ST><pre xmlns="http://www.w3.org/1999/xhtml">(* synthesised globals holder *)'
+        '</pre></ST></body>',
         '</pou>',
     ])
     return "\n".join(lines)
@@ -340,7 +351,7 @@ def emit_xml(prog: Program,
     )
     if content_description or prog.comment:
         desc = content_description or prog.comment
-        parts.append(f"    <comment>{escape(desc)}</comment>")
+        parts.append(f"    <Comment>{escape(desc)}</Comment>")
     parts.append('    <coordinateInfo>')
     # PLCopen schema requires page-size info even if we don't lay out
     # graphical bodies; sensible defaults.
@@ -367,3 +378,105 @@ def emit_xml(prog: Program,
     parts.append('  <instances><configurations/></instances>')
     parts.append('</project>')
     return "\n".join(parts) + "\n"
+
+
+# -----------------------------------------------------------------------------
+# Schema validation
+# -----------------------------------------------------------------------------
+
+
+#: Name of the bundled PLCopen TC6 v2.01 XSD file.
+_BUNDLED_XSD_NAME = "tc6_xml_v201.xsd"
+
+
+class XMLSchemaError(Exception):
+    """Raised by ``validate_plcopen_xml`` when the document doesn't
+    conform to the PLCopen TC6 schema, or when the validator
+    dependency (``xmlschema``) isn't installed.
+
+    Carries the underlying validator's diagnostic message verbatim so
+    callers can surface it as a compile error or CI failure.
+    """
+
+
+def bundled_xsd_path() -> Path:
+    """Return the filesystem path of the PLCopen TC6 XSD that ships
+    with this package.
+
+    The schema is installed as package data; resolved via
+    ``importlib.resources``.  Useful when integrating with external
+    XSD-validating tools that take a schema path argument.
+    """
+    pkg = "universal_machinery.emitters.schemas"
+    return Path(resources.files(pkg) / _BUNDLED_XSD_NAME)  # type: ignore[arg-type]
+
+
+def validate_plcopen_xml(xml_text: str,
+                         xsd_path: Optional[Path] = None) -> None:
+    """Validate ``xml_text`` against a PLCopen TC6 XSD.
+
+    On success, returns ``None``.  On failure, raises
+    ``XMLSchemaError`` carrying the underlying validator's message
+    (line/column/path of the offending element).
+
+    ``xsd_path`` defaults to the bundled v2.01 schema; pass an
+    explicit path when targeting a different schema version (e.g.
+    the user's own PLCopen-member-distributed copy).
+
+    Requires the ``xmlschema`` package -- install via the
+    ``[validation]`` extra (or ``[dev]``):
+
+        pip install universal_machinery[validation]
+
+    Raises ``XMLSchemaError`` if the dependency is missing.
+
+    Round-trip discipline -- this function is the cert verification
+    loop's first checkpoint.  A real cert claim additionally needs
+    a round-trip through PLCopen's reference tools (matiec,
+    Beremiz, OpenPLC editor, etc.) and ideally hardware behaviour
+    verification.  This XSD check is necessary but not sufficient.
+    """
+    try:
+        import xmlschema    # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise XMLSchemaError(
+            "xmlschema package is required for PLCopen XSD validation. "
+            "Install with: pip install universal_machinery[validation]"
+        ) from exc
+
+    if xsd_path is None:
+        xsd_path = bundled_xsd_path()
+
+    if not Path(xsd_path).exists():
+        raise XMLSchemaError(f"XSD schema file not found: {xsd_path}")
+
+    schema = _load_schema(str(xsd_path))
+    try:
+        schema.validate(xml_text)
+    except xmlschema.XMLSchemaException as exc:
+        raise XMLSchemaError(str(exc)) from exc
+
+
+@lru_cache(maxsize=8)
+def _load_schema(path: str):
+    """Cache parsed ``XMLSchema`` instances by path.
+
+    ``xmlschema.XMLSchema(...)`` is non-trivial -- parsing the
+    1700-line TC6 XSD takes ~1s.  Validation against multiple XML
+    documents in the same process (tests, CI, batch validation)
+    should reuse the parsed schema."""
+    import xmlschema    # imported lazily; presence already checked above
+    return xmlschema.XMLSchema(path)
+
+
+def is_valid_plcopen_xml(xml_text: str,
+                         xsd_path: Optional[Path] = None) -> bool:
+    """Convenience wrapper: return ``True``/``False`` instead of
+    raising.  Doesn't surface the validation message -- use
+    ``validate_plcopen_xml`` directly when you need diagnostics.
+    """
+    try:
+        validate_plcopen_xml(xml_text, xsd_path=xsd_path)
+    except XMLSchemaError:
+        return False
+    return True

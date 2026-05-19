@@ -174,7 +174,7 @@ def test_var_with_initial_value_emits_simpleValue():
 
 
 # -----------------------------------------------------------------------------
-# Body: ST text wrapped in <body><ST><xhtml>
+# Body: ST text wrapped in <body><ST><pre xmlns="..xhtml">...</pre></ST></body>
 # -----------------------------------------------------------------------------
 
 
@@ -187,11 +187,13 @@ def test_pou_body_contains_ST_element_with_emitted_statements():
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
     st = root.find(".//plc:body/plc:ST", _NS)
     assert st is not None
-    # The xhtml content carries the ST source text
-    xhtml = st.find("{http://www.w3.org/1999/xhtml}xhtml")
-    assert xhtml is not None
-    assert "Y1 := X1;" in xhtml.text
-    assert "Y2 := TRUE" in xhtml.text
+    # The ST source text lives inside an XHTML namespace element
+    # (PLCopen schema requires xsd:any namespace="..xhtml"); we use <pre>
+    # so whitespace + line breaks in the ST source are preserved.
+    pre = st.find("{http://www.w3.org/1999/xhtml}pre")
+    assert pre is not None
+    assert "Y1 := X1;" in pre.text
+    assert "Y2 := TRUE" in pre.text
 
 
 def test_st_body_escapes_xml_special_chars():
@@ -203,10 +205,10 @@ def test_st_body_escapes_xml_special_chars():
     xml = emit_pou_xml(p)
     # Parses cleanly == escaping worked
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
-    xhtml = root.find(".//{http://www.w3.org/1999/xhtml}xhtml")
-    assert xhtml is not None
+    pre = root.find(".//{http://www.w3.org/1999/xhtml}pre")
+    assert pre is not None
     # The > character survives as a logical > in the parsed text
-    assert ">" in xhtml.text
+    assert ">" in pre.text
 
 
 # -----------------------------------------------------------------------------
@@ -291,7 +293,8 @@ def test_realistic_program_round_trips_to_well_formed_xml():
     # Project metadata
     ch = root.find("plc:contentHeader", _NS)
     assert ch.attrib["name"] == "MotorControl"
-    comment = ch.find("plc:comment", _NS)
+    # PLCopen schema requires <Comment> (capital C) inside contentHeader.
+    comment = ch.find("plc:Comment", _NS)
     assert comment is not None and "Demo motor control" in comment.text
     # All three POUs present (Main, ClampSpeed, plus synthetic Globals)
     pou_names = sorted([p.attrib["name"]

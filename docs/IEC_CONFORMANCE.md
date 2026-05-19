@@ -145,14 +145,25 @@ declaration form is missing.
 
 Concrete slices to close the larger conformance gaps, in priority order:
 
-1. **PLCopen TC6 XML emitter**.  ⚠️ *Partial -- first cut landed.*
+1. **PLCopen TC6 XML emitter**.  ✅ *Validated against the
+   official PLCopen TC6 v2.01 XSD.*
    ``universal_machinery.emitters.plcopen_xml`` emits TC6 v2.01 XML
    with POU declarations, variable interfaces, return types, and ST
    bodies (built on the ST emitter).  Tags are exported as a
    synthetic ``GlobalsHolder`` POU's ``<localVars>`` until
-   ``<configurations><globalVars>`` lands.  Verified against ET XML
-   parser; the next step is a round-trip against PLCopen's
-   reference tools and the official XSD.
+   ``<configurations><globalVars>`` lands.
+
+   ``validate_plcopen_xml(xml)`` validates emitted output against
+   the bundled XSD (sourced from Beremiz's public mirror).
+   Schema-level conformance verified for: empty programs, single
+   POUs, FUNCTION with return type, FUNCTION_BLOCK with VAR_IN_OUT
+   + locals + initial values, programs with multi-op rungs
+   (contacts / coils / set/reset / parallel / compare / math /
+   call / stdlib / ret), and globals-tag export.
+
+   Next: round-trip against PLCopen reference tools (matiec,
+   Beremiz, OpenPLC editor) -- XSD validity is necessary but not
+   sufficient for full cert.
 
 2. **ST AST**.  Add an alternative body type to `Subroutine` (next to
    `rungs` and `sfc`): an ordered list of ST statements.  Needed for

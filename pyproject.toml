@@ -36,6 +36,10 @@ dependencies = []
 dev = [
     "pytest>=8",
     "pytest-cov",
+    "xmlschema>=4",      # XSD validation against the bundled PLCopen TC6 schema
+]
+validation = [
+    "xmlschema>=4",      # for runtime PLCopen TC6 XSD validation
 ]
 
 [project.urls]
@@ -49,6 +53,9 @@ um = "universal_machinery.cli:main"
 where = ["."]
 include = ["universal_machinery*"]
 exclude = ["tests*", "examples*", "demo*", "experiments*", "venv*"]
+
+[tool.setuptools.package-data]
+"universal_machinery.emitters" = ["schemas/*.xsd"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
