@@ -30,7 +30,9 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development :: Compilers",
 ]
-dependencies = []
+dependencies = [
+    "typer>=0.12",       # CLI framework -- `um inspect / validate / emit / diff`
+]
 
 [project.optional-dependencies]
 dev = [
