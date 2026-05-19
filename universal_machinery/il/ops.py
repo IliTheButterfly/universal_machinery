@@ -12,20 +12,35 @@ Categories:
   - Counters: CTU, CTD, CTUD
   - Compare: Eq, Ne, Lt, Le, Gt, Ge
   - Math: Move (Copy), Add, Sub, Mul, Div, Mod
-  - Control: Call, Return, End, Jump, Label
+  - Control: Call (POU invocation with optional arg/return/instance
+    bindings; covers both FUNCTION and FUNCTION_BLOCK calls), Return,
+    End, Jump, Label
   - Topology: ParallelGroup -- represents OR'd branches in LD
 
 Future:
-  - PID, FunctionBlockCall (for user-defined function blocks),
-    Shift/Rotate, Logical AND/OR/XOR, BCD/Hex conversion ops
+  - PID, Shift/Rotate, Logical AND/OR/XOR, BCD/Hex conversion ops
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Union
+from dataclasses import dataclass, field
+from typing import Optional, Union
 
-from .ast import Address
+from .ast import Address, TagRef
+
+
+#: A location reference inside an op -- either a concrete vendor
+#: ``Address`` or a symbolic ``TagRef``.  A resolver pass swaps each
+#: ``TagRef`` for an ``Address`` once tag allocation has bound names
+#: to slots; backends should never see an unresolved ``TagRef`` at
+#: emit time.
+Loc = Union[Address, TagRef]
+
+#: A value carried by an op: a ``Loc`` (location to read from) OR a
+#: string literal (a vendor-formatted constant like ``"100"`` or
+#: ``"1.5"``).  Used wherever an op accepts either an address or an
+#: immediate.
+Value = Union[Address, TagRef, str]
 
 
 # -----------------------------------------------------------------------------
@@ -36,25 +51,25 @@ from .ast import Address
 @dataclass(frozen=True)
 class ContactNO:
     """Normally-open contact: passes power when its address is TRUE."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class ContactNC:
     """Normally-closed contact: passes power when its address is FALSE."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class ContactRisingEdge:
     """One-shot rising-edge contact (also called Positive Transition / |P|)."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class ContactFallingEdge:
     """One-shot falling-edge contact (Negative Transition / |N|)."""
-    address: Address
+    address: Loc
 
 
 # -----------------------------------------------------------------------------
@@ -65,19 +80,19 @@ class ContactFallingEdge:
 @dataclass(frozen=True)
 class OutCoil:
     """Standard output coil: writes the rung's logic state to its address."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class OutSet:
     """Latch coil (S): sets the address to TRUE when energised, holds it."""
-    address: Address
+    address: Loc
 
 
 @dataclass(frozen=True)
 class OutReset:
     """Unlatch coil (R): clears the address to FALSE when energised, holds."""
-    address: Address
+    address: Loc
 
 
 # -----------------------------------------------------------------------------
@@ -88,28 +103,28 @@ class OutReset:
 @dataclass(frozen=True)
 class TON:
     """On-delay timer: output goes TRUE after `preset` time of input being TRUE."""
-    address: Address               # the timer's symbol (e.g. "T0")
+    address: Loc               # the timer's symbol (e.g. "T0")
     preset_ms: int                  # preset value in milliseconds
-    accumulator: Address | None = None
-    done_bit: Address | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None
 
 
 @dataclass(frozen=True)
 class TOF:
     """Off-delay timer: output goes FALSE after `preset` time of input being FALSE."""
-    address: Address
+    address: Loc
     preset_ms: int
-    accumulator: Address | None = None
-    done_bit: Address | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None
 
 
 @dataclass(frozen=True)
 class TP:
     """Pulse timer: output goes TRUE for exactly `preset` time on rising edge."""
-    address: Address
+    address: Loc
     preset_ms: int
-    accumulator: Address | None = None
-    done_bit: Address | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -120,35 +135,168 @@ class TP:
 @dataclass(frozen=True)
 class CTU:
     """Up-counter: increments accumulator on each rising edge of input."""
-    address: Address
+    address: Loc
     preset: int
-    reset: Address | None = None        # reset bit input
-    accumulator: Address | None = None  # current count storage
-    done_bit: Address | None = None     # done output (acc >= preset)
+    reset: Loc | None = None        # reset bit input
+    accumulator: Loc | None = None  # current count storage
+    done_bit: Loc | None = None     # done output (acc >= preset)
 
 
 @dataclass(frozen=True)
 class CTD:
     """Down-counter: decrements accumulator on each rising edge."""
-    address: Address
+    address: Loc
     preset: int
-    load: Address | None = None
-    accumulator: Address | None = None
-    done_bit: Address | None = None     # done output (acc <= 0)
+    load: Loc | None = None
+    accumulator: Loc | None = None
+    done_bit: Loc | None = None     # done output (acc <= 0)
 
 
 @dataclass(frozen=True)
 class CTUD:
     """Up/down counter: separate up and down inputs."""
-    address: Address
+    address: Loc
     preset: int
-    cu_input: Address                   # count-up input
-    cd_input: Address                   # count-down input
-    reset: Address | None = None
-    load: Address | None = None
-    accumulator: Address | None = None
-    qu: Address | None = None           # up done (acc >= preset)
-    qd: Address | None = None           # down done (acc <= 0)
+    cu_input: Loc                       # count-up input
+    cd_input: Loc                       # count-down input
+    reset: Loc | None = None
+    load: Loc | None = None
+    accumulator: Loc | None = None
+    qu: Loc | None = None           # up done (acc >= preset)
+    qd: Loc | None = None           # down done (acc <= 0)
+
+
+# -----------------------------------------------------------------------------
+# Bistables and edge triggers (IEC 61131-3 §2.5.2.3.3)
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RTrig:
+    """IEC 61131-3 rising-edge trigger (R_TRIG).
+
+    ``q`` is TRUE for exactly one scan when ``clk`` transitions
+    FALSE -> TRUE.  Equivalent to ``ContactRisingEdge(clk) -> Coil(q)``
+    but spelled as a single named FB instance per IEC conformance.
+
+    ``state`` is the memory bit that holds the previous CLK value
+    (the FB instance's hidden state).  Backends may collapse it
+    into the ``q`` output's storage where the runtime allows; the
+    IL keeps it explicit so the symbol table stays complete.
+    """
+    state: Loc           # previous CLK value (instance state)
+    clk:   Loc           # input
+    q:     Loc           # output (pulse on rising edge)
+
+
+@dataclass(frozen=True)
+class FTrig:
+    """IEC 61131-3 falling-edge trigger (F_TRIG).
+
+    Mirror of ``RTrig``: ``q`` pulses on TRUE -> FALSE transition
+    of ``clk``.
+    """
+    state: Loc
+    clk:   Loc
+    q:     Loc
+
+
+@dataclass(frozen=True)
+class SR:
+    """IEC 61131-3 set-dominant bistable (SR).
+
+    ``q1`` := ``s1`` OR (``q1`` AND NOT ``r``).
+    When both inputs fire simultaneously, **Set takes priority**
+    (``q1`` stays / becomes TRUE).
+
+    ``q1`` is both the output address and the FB instance's state
+    storage -- one memory bit serves both roles per IEC's model.
+    """
+    q1: Loc              # output AND state
+    s1: Loc              # set (dominant)
+    r:  Loc              # reset
+
+
+@dataclass(frozen=True)
+class RS:
+    """IEC 61131-3 reset-dominant bistable (RS).
+
+    ``q1`` := NOT ``r1`` AND (``s`` OR ``q1``).
+    When both inputs fire, **Reset takes priority** (``q1`` clears).
+    """
+    q1: Loc
+    r1: Loc              # reset (dominant)
+    s:  Loc              # set
+
+
+# -----------------------------------------------------------------------------
+# Generic IEC standard-library function call (§2.5.2)
+# -----------------------------------------------------------------------------
+
+
+#: The set of IEC 61131-3 §2.5.2 standard-function names this IL
+#: recognises by default.  Backends may emit any name they support;
+#: the registry exists for validation passes that want to flag
+#: unknown names early.  Names follow IEC conventions (uppercase
+#: ASCII, underscores).
+STD_FUNCTION_NAMES = frozenset({
+    # §2.5.2.1 Type conversion (selected; the full set is huge)
+    "BOOL_TO_INT", "BOOL_TO_DINT", "BOOL_TO_REAL",
+    "INT_TO_BOOL", "INT_TO_REAL", "INT_TO_DINT", "INT_TO_STRING",
+    "DINT_TO_INT", "DINT_TO_REAL", "DINT_TO_STRING",
+    "REAL_TO_INT", "REAL_TO_DINT", "REAL_TO_STRING",
+    "STRING_TO_INT", "STRING_TO_REAL",
+    "TIME_TO_DINT", "DINT_TO_TIME",
+    # §2.5.2.4 Numerical
+    "ABS", "SQRT", "LN", "LOG", "EXP",
+    "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN",
+    # §2.5.2.6 Bit-string
+    "SHL", "SHR", "ROR", "ROL",
+    # §2.5.2.7 Bitwise / logical
+    "AND", "OR", "XOR", "NOT",
+    # §2.5.2.8 Selection / comparison
+    "SEL", "MAX", "MIN", "LIMIT", "MUX",
+    # §2.5.2.9 Character-string
+    "LEN", "LEFT", "RIGHT", "MID",
+    "CONCAT", "INSERT", "DELETE", "REPLACE", "FIND",
+    # §2.5.2.10 Time / date
+    "ADD_DT_TIME", "SUB_DT_TIME", "SUB_DATE_DATE", "SUB_DT_DT",
+})
+
+
+@dataclass(frozen=True)
+class StdFunc:
+    """A call to an IEC 61131-3 §2.5.2 standard-library *function*
+    (stateless).
+
+    Why a single op rather than one dataclass per function?  IEC
+    defines ~100 standard functions and they share the same shape:
+    inputs -> single output.  A generic op keeps the IL compact;
+    backends dispatch on ``name`` to emit the right vendor call.
+
+    For *stateful* FBs (timers, counters, bistables, edge triggers),
+    use their dedicated ops (TON, CTU, RTrig, SR, ...) -- IEC defines
+    those as FUNCTION_BLOCKs with explicit instance state, and the
+    dedicated ops carry that state in their fields.
+
+    Examples::
+
+        StdFunc(name="ABS",         inputs=(Address("DS10"),),
+                                    output=Address("DS11"))
+        StdFunc(name="SEL",         inputs=(Address("X001"),
+                                            Address("DS10"),
+                                            Address("DS20")),
+                                    output=Address("DS30"))
+        StdFunc(name="INT_TO_REAL", inputs=(TagRef("count"),),
+                                    output=TagRef("count_real"))
+
+    ``name`` should normally be a member of ``STD_FUNCTION_NAMES``;
+    backends that recognise additional vendor extensions may accept
+    unknown names but should declare a corresponding capability.
+    """
+    name:    str
+    inputs:  tuple[Value, ...]
+    output:  Loc
 
 
 # -----------------------------------------------------------------------------
@@ -164,8 +312,8 @@ class Compare:
     `lhs` and `rhs` are addresses or numeric literals (as strings).
     """
     op: str
-    lhs: Address | str
-    rhs: Address | str
+    lhs: Value
+    rhs: Value
 
 
 # -----------------------------------------------------------------------------
@@ -176,8 +324,8 @@ class Compare:
 @dataclass(frozen=True)
 class Move:
     """Move/Copy: write `src` into `dst`.  CLICK calls this `Copy`."""
-    src: Address | str             # source address or literal
-    dst: Address                   # destination address
+    src: Value             # source address or literal
+    dst: Loc                       # destination location
 
 
 @dataclass(frozen=True)
@@ -187,9 +335,9 @@ class BinaryMath:
     `op` is one of "+", "-", "*", "/", "%".
     """
     op: str
-    lhs: Address | str
-    rhs: Address | str
-    dst: Address
+    lhs: Value
+    rhs: Value
+    dst: Loc
 
 
 # -----------------------------------------------------------------------------
@@ -197,10 +345,51 @@ class BinaryMath:
 # -----------------------------------------------------------------------------
 
 
+#: Argument binding at a call site: ``(formal_name, source)``.
+#: ``source`` is a ``Value`` (Address, TagRef, or string literal) to
+#: feed into the callee's VAR_INPUT slot named ``formal_name``.
+ArgIn  = tuple[str, "Value"]
+
+#: Output binding at a call site: ``(formal_name, destination)``.
+#: After the callee returns, its VAR_OUTPUT slot ``formal_name`` is
+#: copied into ``destination`` (a ``Loc``).
+ArgOut = tuple[str, "Loc"]
+
+
 @dataclass(frozen=True)
 class Call:
-    """Call a subroutine by name."""
+    """Invoke a POU by name.
+
+    Three usage modes, all covered by the same op:
+
+      * **Subroutine** (CLICK-style, no interface)::
+
+            Call(target="Sub1")
+
+      * **Function** (stateless, returns one value)::
+
+            Call(target="Average",
+                 inputs=(("a", Address("DS10")), ("b", Address("DS11"))),
+                 return_to=Address("DS12"))
+
+      * **Function block** (stateful instance)::
+
+            Call(target="PID",
+                 instance=Address("DB7"),       # the instance DB's base
+                 inputs=(("SP", Address("DS20")), ("PV", Address("DS21"))),
+                 outputs=(("OUT", Address("DS22")),))
+
+    ``inputs`` / ``outputs`` use formal-parameter names so reordering
+    declarations in the callee doesn't break call sites.  Backends
+    lower these into their native calling convention -- for CLICK
+    that's Move ops against per-POU reserved DS slots; see
+    ``docs/click_calling_convention.md``.
+    """
     target: str
+    inputs:  tuple[ArgIn, ...]  = field(default_factory=tuple)
+    outputs: tuple[ArgOut, ...] = field(default_factory=tuple)
+    instance:  Optional[Loc] = None
+    return_to: Optional[Loc] = None
 
 
 @dataclass(frozen=True)
@@ -252,62 +441,187 @@ class ParallelGroup:
 
 
 # -----------------------------------------------------------------------------
+# Vendor extension protocol
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VendorOp:
+    """A vendor-specific operation preserved verbatim through the IL.
+
+    ``VendorOp`` is the escape hatch for instructions a vendor's
+    runtime provides natively but the IL does not model as primitives.
+    Three uses:
+
+      1. **Round-trip preservation.**  A CLICK ``DRUM`` instruction
+         read by the decoder is stored as ``VendorOp(vendor="click",
+         name="DRUM", ...)`` and re-emitted on write -- the original
+         instruction identity is preserved instead of being
+         decomposed into primitives.
+
+      2. **Performance hand-optimisation.**  A vendor-specific
+         function block (Siemens ``SCL_S_LOOP``, Allen-Bradley
+         ``PIDE``, etc.) is more efficient than the synthesised
+         equivalent.  Users can invoke it explicitly when targeting
+         that vendor.
+
+      3. **Hardware-tied operations.**  Motion-control axis
+         instructions, drive-parameter writes, vendor-proprietary
+         comm blocks that don't have a meaningful IL primitive
+         equivalent.
+
+    Important framing -- ``VendorOp`` is **not** for things the IL
+    can't express.  The IL targets the union of all PLC features
+    via compilation (see ``docs/click_calling_convention.md`` for
+    the model: any feature can be lowered onto any target with
+    enough memory).  ``VendorOp`` is specifically for preserving
+    vendor instruction *identity*, not for adding missing IL
+    features.
+
+    Behaviour
+    ---------
+    A backend lowering a Program raises ``UnsupportedOpError`` when
+    it encounters a ``VendorOp`` whose ``vendor`` doesn't match its
+    own name.  It must never silently drop or attempt to synthesise
+    -- if the user authored a CLICK ``DRUM`` explicitly, they meant
+    that instruction; refusing to emit it is more honest than
+    emitting an approximation.
+
+    Subclassing
+    -----------
+    Backends may subclass ``VendorOp`` to give their instructions
+    stronger types::
+
+        @dataclass(frozen=True)
+        class ClickDrum(VendorOp):
+            vendor: str = "click"
+            name:   str = "DRUM"
+            preset: int = 0
+            steps:  tuple[Address, ...] = ()
+
+    Subclasses must populate ``addresses`` (or override
+    ``addresses_of`` behaviour) so the symbol-table walker sees the
+    op's address references.
+    """
+
+    vendor: str                    # short vendor id matching Backend.name
+    name: str                      # vendor's instruction name (DRUM, PIDE, ...)
+    operands: tuple[object, ...] = ()
+    attributes: tuple[tuple[str, object], ...] = ()
+    addresses: tuple[Address, ...] = ()
+    comment: str = ""
+
+
+# -----------------------------------------------------------------------------
 # Type aliases + helpers
 # -----------------------------------------------------------------------------
 
 #: Union of every concrete op type.  Backends typically dispatch on
 #: ``isinstance(op, X)``; static-type checkers see ``Op`` as the union.
+#: ``VendorOp`` is the open-extension hatch -- backend-specific subclasses
+#: of ``VendorOp`` are still ``Op`` via inheritance.
 Op = Union[
     ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
     OutCoil, OutSet, OutReset,
     TON, TOF, TP,
     CTU, CTD, CTUD,
+    RTrig, FTrig, SR, RS,
+    StdFunc,
     Compare,
     Move, BinaryMath,
     Call, Return, End, Jump, Label,
     ParallelGroup,
+    VendorOp,
 ]
 
 
-def addresses_of(op: object) -> set[Address]:
-    """Walk an op (recursively for ParallelGroup) and collect every Address it references."""
-    out: set[Address] = set()
+def _locs_of(op: object) -> list[Loc]:
+    """Internal: collect every ``Loc`` reference (Address or TagRef) an
+    op touches.  ``addresses_of`` and ``tags_of`` filter the result.
+
+    Recurses through ``ParallelGroup`` branches.  String literals
+    (``Move(src="5", ...)``) and POU/label names are not Locs and are
+    skipped.  ``Return`` / ``End`` / ``Jump`` / ``Label`` contribute none.
+    """
+    out: list[Loc] = []
     if isinstance(op, (ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
                        OutCoil, OutSet, OutReset)):
-        out.add(op.address)
+        out.append(op.address)
     elif isinstance(op, (TON, TOF, TP)):
-        out.add(op.address)
+        out.append(op.address)
         for a in (op.accumulator, op.done_bit):
             if a is not None:
-                out.add(a)
+                out.append(a)
     elif isinstance(op, (CTU, CTD)):
-        out.add(op.address)
+        out.append(op.address)
         for a in (op.reset if isinstance(op, CTU) else op.load,
                   op.accumulator, op.done_bit):
             if a is not None:
-                out.add(a)
+                out.append(a)
     elif isinstance(op, CTUD):
-        out.add(op.address)
+        out.append(op.address)
         for a in (op.cu_input, op.cd_input, op.reset, op.load,
                   op.accumulator, op.qu, op.qd):
             if a is not None:
-                out.add(a)
+                out.append(a)
+    elif isinstance(op, (RTrig, FTrig)):
+        out.extend([op.state, op.clk, op.q])
+    elif isinstance(op, SR):
+        out.extend([op.q1, op.s1, op.r])
+    elif isinstance(op, RS):
+        out.extend([op.q1, op.r1, op.s])
+    elif isinstance(op, StdFunc):
+        for v in op.inputs:
+            if isinstance(v, (Address, TagRef)):
+                out.append(v)
+        out.append(op.output)
     elif isinstance(op, Compare):
         for v in (op.lhs, op.rhs):
-            if isinstance(v, Address):
-                out.add(v)
+            if isinstance(v, (Address, TagRef)):
+                out.append(v)
     elif isinstance(op, Move):
-        if isinstance(op.src, Address):
-            out.add(op.src)
-        out.add(op.dst)
+        if isinstance(op.src, (Address, TagRef)):
+            out.append(op.src)
+        out.append(op.dst)
     elif isinstance(op, BinaryMath):
         for v in (op.lhs, op.rhs):
-            if isinstance(v, Address):
-                out.add(v)
-        out.add(op.dst)
+            if isinstance(v, (Address, TagRef)):
+                out.append(v)
+        out.append(op.dst)
     elif isinstance(op, ParallelGroup):
         for branch in op.branches:
             for inner in branch:
-                out.update(addresses_of(inner))
-    # Call / Return / End / Jump / Label have no addresses
+                out.extend(_locs_of(inner))
+    elif isinstance(op, Call):
+        for _, src in op.inputs:
+            if isinstance(src, (Address, TagRef)):
+                out.append(src)
+        for _, dst in op.outputs:
+            out.append(dst)
+        if op.instance is not None:
+            out.append(op.instance)
+        if op.return_to is not None:
+            out.append(op.return_to)
+    elif isinstance(op, VendorOp):
+        out.extend(op.addresses)
     return out
+
+
+def addresses_of(op: object) -> set[Address]:
+    """Walk an op and collect every concrete ``Address`` it references.
+
+    Symbolic ``TagRef`` references are skipped -- they're unresolved
+    until a tag-allocator pass binds them to addresses.  Use
+    ``tags_of`` for those.
+    """
+    return {loc for loc in _locs_of(op) if isinstance(loc, Address)}
+
+
+def tags_of(op: object) -> set[str]:
+    """Walk an op and collect every symbolic ``TagRef`` name it references.
+
+    Backends use this (via ``Program.referenced_tags``) to verify that
+    every symbolic reference has a corresponding ``Tag`` declaration
+    before running the TagRef → Address resolver.
+    """
+    return {loc.name for loc in _locs_of(op) if isinstance(loc, TagRef)}

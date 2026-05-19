@@ -49,17 +49,73 @@ Example::
     from universal_machinery.backends.click import ClickBackend  # via submodule
     ClickBackend().write(prog, "out.ckp")
 """
-from .ast import Address, Program, Rung, Subroutine, Tag, TagType
-from . import ops
+from .ast import (
+    Address,
+    DataBlock,
+    PouKind,
+    Program,
+    Rung,
+    Subroutine,
+    Tag,
+    TagRef,
+    TagType,
+    Var,
+    VarDirection,
+)
+from . import ops, sfc
+from .ops import (
+    FTrig, Loc, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc, Value, VendorOp,
+)
+from .sfc import Action, SfcNetwork, Step, Transition
+from .types import (
+    AliasType, ArrayType, DataType, EnumType, NamedType, StructType,
+    UserType, is_elementary, is_user_type, type_name,
+)
+from .configuration import (
+    Configuration, PouInstance, Resource, TaskSpec,
+)
 
 __all__ = [
+    "Action",
     "Address",
+    "AliasType",
+    "ArrayType",
+    "Configuration",
+    "DataBlock",
+    "DataType",
+    "EnumType",
+    "FTrig",
+    "Loc",
+    "NamedType",
+    "PouInstance",
+    "PouKind",
     "Program",
+    "RS",
+    "RTrig",
+    "Resource",
     "Rung",
+    "SR",
+    "SfcNetwork",
+    "STD_FUNCTION_NAMES",
+    "StdFunc",
+    "Step",
+    "StructType",
     "Subroutine",
     "Tag",
+    "TagRef",
     "TagType",
+    "TaskSpec",
+    "Transition",
+    "UserType",
+    "Value",
+    "Var",
+    "VarDirection",
+    "VendorOp",
+    "is_elementary",
+    "is_user_type",
     "ops",
+    "sfc",
+    "type_name",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.6.0"
