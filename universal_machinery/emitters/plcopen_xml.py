@@ -65,9 +65,11 @@ from typing import Optional, Sequence
 from xml.sax.saxutils import escape, quoteattr
 
 from ..il import (
-    Address, AliasType, ArrayType, Configuration, DataBlock, EnumType,
-    NamedType, PouInstance, PouKind, Program, Resource, StructType,
-    SubrangeType, Subroutine, Tag, TagType, TaskSpec, Var, VarDirection,
+    Address, AliasType, ArrayType, BlockPin, Configuration, Connection,
+    DataBlock, EnumType, FbBlock, FbdJump, FbdLabel, FbdNetwork, FbdReturn,
+    InOutVariable, InVariable, NamedType, OutVariable, PouInstance,
+    PouKind, Position, Program, Resource, StructType, SubrangeType,
+    Subroutine, Tag, TagType, TaskSpec, Var, VarDirection,
     is_signed_subrange,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
@@ -257,6 +259,259 @@ def _emit_pou_body_st(sub: Subroutine) -> str:
 
 
 # -----------------------------------------------------------------------------
+# POU body (FBD)
+# -----------------------------------------------------------------------------
+
+
+#: Layout grid for elements whose ``position`` is ``None``.  We
+#: sweep left-to-right, row-major; FbBlock columns are wider than
+#: variable connectors so the resulting XML is at least visually
+#: passable in a PLCopen-aware editor.  Values in pixels.
+_FBD_GRID_X = 200.0
+_FBD_GRID_Y = 100.0
+_FBD_GRID_COLS = 6
+
+
+def _auto_position(idx: int) -> Position:
+    """Row-major position when an element doesn't carry one.
+
+    Generates a (x, y) on a coarse grid so the XML is XSD-valid
+    (``<position>`` is required) and renderers don't pile every
+    element on top of each other.
+    """
+    col = idx % _FBD_GRID_COLS
+    row = idx // _FBD_GRID_COLS
+    return Position(x=20.0 + col * _FBD_GRID_X, y=20.0 + row * _FBD_GRID_Y)
+
+
+def _position_xml(pos: Position) -> str:
+    """``<position x= y=/>`` with PLCopen-conformant decimal formatting."""
+    return f'<position x="{pos.x:g}" y="{pos.y:g}"/>'
+
+
+def _connection_inner_xml(conn: Connection) -> str:
+    """Inner ``<connection refLocalId="..." [formalParameter="..."]/>``."""
+    if conn.source_pin is not None:
+        return (f'<connection refLocalId="{conn.source_id}" '
+                f'formalParameter={quoteattr(conn.source_pin)}/>')
+    return f'<connection refLocalId="{conn.source_id}"/>'
+
+
+def _connection_point_in_xml(conn: Optional[Connection]) -> str:
+    """``<connectionPointIn>`` element.
+
+    If ``conn`` is set, embeds the back-pointing ``<connection>``;
+    otherwise emits an empty point (PLCopen accepts that -- it
+    means the pin is unwired).
+    """
+    if conn is None:
+        return "<connectionPointIn/>"
+    inner = _connection_inner_xml(conn)
+    return f"<connectionPointIn>{inner}</connectionPointIn>"
+
+
+_PIN_OPT_ATTRS = ("negated", "edge", "storage")
+
+
+def _pin_modifiers(pin: BlockPin) -> str:
+    """Attribute fragment for a pin's negated / edge / storage flags.
+
+    Defaults (``negated=false``, ``edge="none"``, ``storage="none"``)
+    are omitted so the output stays clean."""
+    attrs: list[str] = []
+    if pin.negated:
+        attrs.append('negated="true"')
+    if pin.edge:
+        attrs.append(f"edge={quoteattr(pin.edge)}")
+    if pin.storage:
+        attrs.append(f"storage={quoteattr(pin.storage)}")
+    return (" " + " ".join(attrs)) if attrs else ""
+
+
+def _emit_block_xml(b: FbBlock, idx: int) -> str:
+    """Render one ``<block typeName=...>`` element from an ``FbBlock``."""
+    pos = b.position if b.position is not None else _auto_position(idx)
+    attrs = [
+        f'localId="{b.local_id}"',
+        f"typeName={quoteattr(b.type_name)}",
+    ]
+    if b.instance_name is not None:
+        attrs.append(f"instanceName={quoteattr(b.instance_name)}")
+    if b.execution_order is not None:
+        attrs.append(f'executionOrderId="{b.execution_order}"')
+    parts = [f"<block {' '.join(attrs)}>", f"  {_position_xml(pos)}"]
+
+    # <inputVariables>
+    parts.append("  <inputVariables>")
+    for p in b.inputs:
+        mods = _pin_modifiers(p)
+        cpoint = _connection_point_in_xml(p.connection)
+        parts.append(
+            f"    <variable formalParameter={quoteattr(p.formal_parameter)}"
+            f"{mods}>{cpoint}</variable>"
+        )
+    parts.append("  </inputVariables>")
+
+    # <inOutVariables>
+    parts.append("  <inOutVariables>")
+    for p in b.in_outs:
+        mods = _pin_modifiers(p)
+        cpoint = _connection_point_in_xml(p.connection)
+        parts.append(
+            f"    <variable formalParameter={quoteattr(p.formal_parameter)}"
+            f"{mods}>{cpoint}<connectionPointOut/></variable>"
+        )
+    parts.append("  </inOutVariables>")
+
+    # <outputVariables>
+    parts.append("  <outputVariables>")
+    for p in b.outputs:
+        mods = _pin_modifiers(p)
+        parts.append(
+            f"    <variable formalParameter={quoteattr(p.formal_parameter)}"
+            f"{mods}><connectionPointOut/></variable>"
+        )
+    parts.append("  </outputVariables>")
+
+    parts.append("</block>")
+    return "\n".join(parts)
+
+
+def _modifier_attrs_var(negated: bool, edge: str, storage: str) -> str:
+    attrs: list[str] = []
+    if negated:
+        attrs.append('negated="true"')
+    if edge:
+        attrs.append(f"edge={quoteattr(edge)}")
+    if storage:
+        attrs.append(f"storage={quoteattr(storage)}")
+    return (" " + " ".join(attrs)) if attrs else ""
+
+
+def _emit_in_variable_xml(v: InVariable, idx: int) -> str:
+    pos = v.position if v.position is not None else _auto_position(idx)
+    mods = _modifier_attrs_var(v.negated, v.edge, v.storage)
+    eo = (f' executionOrderId="{v.execution_order}"'
+          if v.execution_order is not None else "")
+    return (
+        f'<inVariable localId="{v.local_id}"{eo}{mods}>'
+        f"{_position_xml(pos)}"
+        f"<connectionPointOut/>"
+        f"<expression>{escape(v.expression)}</expression>"
+        f"</inVariable>"
+    )
+
+
+def _emit_out_variable_xml(v: OutVariable, idx: int) -> str:
+    pos = v.position if v.position is not None else _auto_position(idx)
+    mods = _modifier_attrs_var(v.negated, v.edge, v.storage)
+    eo = (f' executionOrderId="{v.execution_order}"'
+          if v.execution_order is not None else "")
+    cpoint = _connection_point_in_xml(v.connection)
+    return (
+        f'<outVariable localId="{v.local_id}"{eo}{mods}>'
+        f"{_position_xml(pos)}"
+        f"{cpoint}"
+        f"<expression>{escape(v.expression)}</expression>"
+        f"</outVariable>"
+    )
+
+
+def _emit_inout_variable_xml(v: InOutVariable, idx: int) -> str:
+    pos = v.position if v.position is not None else _auto_position(idx)
+    attrs: list[str] = []
+    if v.negated_in:
+        attrs.append('negatedIn="true"')
+    if v.negated_out:
+        attrs.append('negatedOut="true"')
+    if v.edge_in:
+        attrs.append(f"edgeIn={quoteattr(v.edge_in)}")
+    if v.edge_out:
+        attrs.append(f"edgeOut={quoteattr(v.edge_out)}")
+    if v.storage_in:
+        attrs.append(f"storageIn={quoteattr(v.storage_in)}")
+    if v.storage_out:
+        attrs.append(f"storageOut={quoteattr(v.storage_out)}")
+    mods = (" " + " ".join(attrs)) if attrs else ""
+    eo = (f' executionOrderId="{v.execution_order}"'
+          if v.execution_order is not None else "")
+    cpoint = _connection_point_in_xml(v.connection)
+    return (
+        f'<inOutVariable localId="{v.local_id}"{eo}{mods}>'
+        f"{_position_xml(pos)}"
+        f"{cpoint}"
+        f"<connectionPointOut/>"
+        f"<expression>{escape(v.expression)}</expression>"
+        f"</inOutVariable>"
+    )
+
+
+def _emit_fbd_label_xml(e: FbdLabel, idx: int) -> str:
+    pos = e.position if e.position is not None else _auto_position(idx)
+    eo = (f' executionOrderId="{e.execution_order}"'
+          if e.execution_order is not None else "")
+    return (
+        f'<label localId="{e.local_id}" label={quoteattr(e.label)}{eo}>'
+        f"{_position_xml(pos)}"
+        f"</label>"
+    )
+
+
+def _emit_fbd_jump_xml(e: FbdJump, idx: int) -> str:
+    pos = e.position if e.position is not None else _auto_position(idx)
+    eo = (f' executionOrderId="{e.execution_order}"'
+          if e.execution_order is not None else "")
+    cpoint = _connection_point_in_xml(e.connection)
+    return (
+        f'<jump localId="{e.local_id}" label={quoteattr(e.label)}{eo}>'
+        f"{_position_xml(pos)}"
+        f"{cpoint}"
+        f"</jump>"
+    )
+
+
+def _emit_fbd_return_xml(e: FbdReturn, idx: int) -> str:
+    pos = e.position if e.position is not None else _auto_position(idx)
+    eo = (f' executionOrderId="{e.execution_order}"'
+          if e.execution_order is not None else "")
+    cpoint = _connection_point_in_xml(e.connection)
+    return (
+        f'<return localId="{e.local_id}"{eo}>'
+        f"{_position_xml(pos)}"
+        f"{cpoint}"
+        f"</return>"
+    )
+
+
+def _emit_fbd_element_xml(e, idx: int) -> str:
+    """Dispatch on element kind to the right renderer."""
+    if isinstance(e, FbBlock):       return _emit_block_xml(e, idx)
+    if isinstance(e, InVariable):    return _emit_in_variable_xml(e, idx)
+    if isinstance(e, OutVariable):   return _emit_out_variable_xml(e, idx)
+    if isinstance(e, InOutVariable): return _emit_inout_variable_xml(e, idx)
+    if isinstance(e, FbdLabel):      return _emit_fbd_label_xml(e, idx)
+    if isinstance(e, FbdJump):       return _emit_fbd_jump_xml(e, idx)
+    if isinstance(e, FbdReturn):     return _emit_fbd_return_xml(e, idx)
+    raise TypeError(f"unknown FBD element: {type(e).__name__}")
+
+
+def _emit_pou_body_fbd(sub: Subroutine) -> str:
+    """Body XML for an FBD-bodied POU.
+
+    Wraps the network in ``<body><FBD>...</FBD></body>`` per the
+    PLCopen schema.  Elements without an explicit ``position`` get
+    auto-laid out on a coarse grid so the output is XSD-valid.
+    """
+    net = sub.fbd_body
+    if net is None or not net.elements:
+        return "<body>\n  <FBD/>\n</body>"
+    inner_parts = [_emit_fbd_element_xml(e, idx)
+                   for idx, e in enumerate(net.elements)]
+    inner = "\n".join(_indent(p, "    ") for p in inner_parts)
+    return f"<body>\n  <FBD>\n{inner}\n  </FBD>\n</body>"
+
+
+# -----------------------------------------------------------------------------
 # POU element
 # -----------------------------------------------------------------------------
 
@@ -295,8 +550,11 @@ def emit_pou_xml(sub: Subroutine) -> str:
         inner = "\n".join(_indent(s, "  ") for s in interface_inner)
         parts.append(f"  <interface>\n{inner}\n  </interface>")
 
-    # <body>
-    parts.append(_indent(_emit_pou_body_st(sub), "  "))
+    # <body> -- pick FBD when authored as FBD, ST otherwise
+    if sub.fbd_body is not None:
+        parts.append(_indent(_emit_pou_body_fbd(sub), "  "))
+    else:
+        parts.append(_indent(_emit_pou_body_st(sub), "  "))
 
     # documentation
     if sub.comment:

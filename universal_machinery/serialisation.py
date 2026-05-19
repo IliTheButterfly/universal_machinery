@@ -48,11 +48,13 @@ from typing import Any, Union, get_args, get_origin
 from . import il
 from .il import (
     AccessSpec, Action, Address, AliasType, ArrayType, Assignment,
-    BinaryExpr, BinaryOp, CaseClause, CaseStatement, Configuration,
-    ContinueStatement, DataBlock, EnumType, ExitStatement, FieldAccess,
-    ForStatement, FunctionCallExpr, FunctionCallStatement, IfStatement,
-    IndexAccess, Interface, Literal, Method, NamedType, PouInstance,
-    PouKind, Program, RepeatStatement, Resource, ReturnStatement, Rung,
+    BinaryExpr, BinaryOp, BlockPin, CaseClause, CaseStatement,
+    Configuration, Connection, ContinueStatement, DataBlock, EnumType,
+    ExitStatement, FbBlock, FbdJump, FbdLabel, FbdNetwork, FbdReturn,
+    FieldAccess, ForStatement, FunctionCallExpr, FunctionCallStatement,
+    IfStatement, InOutVariable, InVariable, IndexAccess, Interface,
+    Literal, Method, NamedType, OutVariable, PouInstance, PouKind,
+    Position, Program, RepeatStatement, Resource, ReturnStatement, Rung,
     SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagRef,
     TagType, TaskSpec, Transition, UnaryExpr, UnaryOp, Var, VarDirection,
     VarRef, VendorOp, WhileStatement,
@@ -96,6 +98,10 @@ _DATACLASSES: dict[str, type] = {
         WhileStatement, RepeatStatement, ForStatement,
         ReturnStatement, ExitStatement, ContinueStatement,
         FunctionCallStatement,
+        # FBD (IEC §6.7 Function Block Diagram)
+        Position, Connection, BlockPin,
+        FbBlock, InVariable, OutVariable, InOutVariable,
+        FbdLabel, FbdJump, FbdReturn, FbdNetwork,
         # SFC
         SfcNetwork, Step, Transition, Action,
         # Ops
@@ -234,7 +240,7 @@ def _resolved_hints(cls: type) -> dict[str, Any]:
     ``"SfcNetwork"`` and ``"DataType"``.
     """
     ns = {**vars(il), **vars(il.ops), **vars(il.sfc), **vars(il.st),
-          **vars(il.types), **vars(il.configuration)}
+          **vars(il.fbd), **vars(il.types), **vars(il.configuration)}
     return typing.get_type_hints(cls, globalns=ns, localns=ns)
 
 

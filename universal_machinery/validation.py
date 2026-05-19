@@ -32,8 +32,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .il import (
-    Assignment, Configuration, ForStatement, Interface, Method, NamedType,
-    PouInstance, PouKind, Program, Resource, Subroutine, TagRef,
+    Assignment, Configuration, FbBlock, FbdJump, FbdLabel, FbdNetwork,
+    FbdReturn, ForStatement, InOutVariable, InVariable, Interface, Method,
+    NamedType, OutVariable, PouInstance, PouKind, Program, Resource,
+    Subroutine, TagRef,
 )
 from .il.ast import VarDirection
 from .il.ops import Call, ParallelGroup, tags_of
@@ -450,7 +452,8 @@ def _check_oop_references(prog: Program) -> list[ValidationError]:
 
 
 def _check_body_kind_mutex(prog: Program) -> list[ValidationError]:
-    """A POU's body must be exactly one of ``rungs`` / ``sfc`` / ``st_body``.
+    """A POU's body must be exactly one of ``rungs`` / ``sfc`` /
+    ``st_body`` / ``fbd_body``.
 
     Declaring more than one is ambiguous (which one runs?); declaring
     none is fine for SUBROUTINE / abstract methods but produces a
@@ -459,26 +462,128 @@ def _check_body_kind_mutex(prog: Program) -> list[ValidationError]:
     """
     errors: list[ValidationError] = []
 
-    def _check_body(name: str, where: str, rungs, sfc, st_body) -> None:
-        kinds_set = sum(1 for x in (rungs, sfc, st_body) if x)
+    def _check_body(name: str, where: str,
+                    rungs, sfc, st_body, fbd_body) -> None:
+        kinds_set = sum(1 for x in (rungs, sfc, st_body, fbd_body) if x)
         if kinds_set > 1:
             errors.append(ValidationError(
                 code="multiple-body-kinds",
                 message=(f"{name!r} declares more than one body kind "
-                         f"(rungs / sfc / st_body); pick exactly one"),
+                         f"(rungs / sfc / st_body / fbd_body); "
+                         f"pick exactly one"),
                 location=where,
             ))
 
     for sub in prog.subroutines:
         _check_body(sub.name, f"Subroutine '{sub.name}'",
-                    sub.rungs, sub.sfc, sub.st_body)
+                    sub.rungs, sub.sfc, sub.st_body, sub.fbd_body)
         for m in sub.methods:
-            # Method's rungs default to [] (falsy); st_body defaults
-            # to None.  Only the abstract case both-empty is allowed
-            # without warning.
+            # Methods don't have sfc; rungs default to [] (falsy);
+            # st_body / fbd_body default to None.
             _check_body(m.name,
                         f"Subroutine '{sub.name}' / Method '{m.name}'",
-                        m.rungs, None, m.st_body)
+                        m.rungs, None, m.st_body, m.fbd_body)
+
+    return errors
+
+
+def _check_fbd_wellformedness(prog: Program) -> list[ValidationError]:
+    """Structural checks on every ``FbdNetwork`` body in the program.
+
+    Emits:
+
+      - fbd-duplicate-local-id     : two elements share the same
+                                      ``local_id``
+      - fbd-unresolved-connection  : ``Connection.source_id`` doesn't
+                                      match any element's ``local_id``
+      - fbd-unknown-source-pin     : ``Connection.source_pin`` names
+                                      a pin the source block doesn't
+                                      declare as an output (only
+                                      checked when the source is an
+                                      ``FbBlock``; in-/out-/inout-
+                                      variables have a single
+                                      implicit pin)
+      - fbd-unknown-jump-label     : ``FbdJump.label`` doesn't match
+                                      any ``FbdLabel`` in the network
+    """
+    errors: list[ValidationError] = []
+
+    def _check_network(net: FbdNetwork, where: str) -> None:
+        # local_id uniqueness
+        seen_ids: set[int] = set()
+        for e in net.elements:
+            if e.local_id in seen_ids:
+                errors.append(ValidationError(
+                    code="fbd-duplicate-local-id",
+                    message=(f"FBD element {e.local_id!r} appears "
+                             f"more than once in network"),
+                    location=where,
+                ))
+            seen_ids.add(e.local_id)
+
+        by_id = {e.local_id: e for e in net.elements}
+        label_names = {e.label for e in net.elements
+                        if isinstance(e, FbdLabel)}
+
+        # Every Connection.source_id must resolve; if the source is
+        # an FbBlock and source_pin is set, that pin must exist as
+        # an output (or in_out) formal-parameter.
+        def _check_conn(conn, where_inner: str) -> None:
+            if conn is None:
+                return
+            src = by_id.get(conn.source_id)
+            if src is None:
+                errors.append(ValidationError(
+                    code="fbd-unresolved-connection",
+                    message=(f"Connection references unknown "
+                             f"local_id {conn.source_id}"),
+                    location=where_inner,
+                ))
+                return
+            if isinstance(src, FbBlock) and conn.source_pin is not None:
+                produced = {p.formal_parameter for p in src.outputs}
+                produced |= {p.formal_parameter for p in src.in_outs}
+                if conn.source_pin not in produced:
+                    errors.append(ValidationError(
+                        code="fbd-unknown-source-pin",
+                        message=(f"Connection refers to pin "
+                                 f"{conn.source_pin!r} on block "
+                                 f"{src.type_name!r} (local_id "
+                                 f"{src.local_id}), which doesn't "
+                                 f"declare it as output or in_out"),
+                        location=where_inner,
+                    ))
+
+        for e in net.elements:
+            base = f"{where} / element local_id {e.local_id}"
+            if isinstance(e, FbBlock):
+                for p in e.inputs:
+                    _check_conn(p.connection,
+                                f"{base} / input '{p.formal_parameter}'")
+                for p in e.in_outs:
+                    _check_conn(p.connection,
+                                f"{base} / in_out '{p.formal_parameter}'")
+            elif isinstance(e, (OutVariable, InOutVariable, FbdJump,
+                                  FbdReturn)):
+                _check_conn(e.connection, base)
+            if isinstance(e, FbdJump):
+                if e.label not in label_names:
+                    errors.append(ValidationError(
+                        code="fbd-unknown-jump-label",
+                        message=(f"FbdJump targets unknown label "
+                                 f"{e.label!r}"),
+                        location=base,
+                    ))
+
+    for sub in prog.subroutines:
+        if sub.fbd_body is not None:
+            _check_network(sub.fbd_body,
+                           f"Subroutine '{sub.name}' / fbd_body")
+        for m in sub.methods:
+            if m.fbd_body is not None:
+                _check_network(m.fbd_body,
+                               f"Subroutine '{sub.name}' / Method "
+                               f"'{m.name}' / fbd_body")
 
     return errors
 
@@ -637,9 +742,11 @@ def validate(prog: Program) -> list[ValidationError]:
       7. IEC 3rd-edition OOP references (EXTENDS / IMPLEMENTS /
          ABSTRACT consistency, Interface method shape)
       8. SFC well-formedness (per POU's SFC body)
-      9. ST body kind mutex (rungs / sfc / st_body exactly one)
+      9. Body kind mutex (rungs / sfc / st_body / fbd_body exactly one)
      10. ST Assignment.target is an lvalue
      11. ST FOR index variable is declared
+     12. FBD well-formedness (local_id uniqueness, resolved
+         connections, known source pins, known jump labels)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -653,6 +760,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_body_kind_mutex(prog))
     errors.extend(_check_st_lvalues(prog))
     errors.extend(_check_st_for_index_declared(prog))
+    errors.extend(_check_fbd_wellformedness(prog))
     return errors
 
 

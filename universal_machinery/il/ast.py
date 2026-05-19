@@ -35,6 +35,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from .fbd import FbdNetwork
     from .sfc import SfcNetwork
     from .st import Statement
 
@@ -291,13 +292,14 @@ class Subroutine:
     ----
     A POU's body is exactly one of:
 
-      - ``rungs``    -- Ladder Diagram / IL (list of ``Rung``)
-      - ``sfc``      -- Sequential Function Chart (``SfcNetwork``)
-      - ``st_body``  -- Structured Text (list of ``Statement``)
+      - ``rungs``     -- Ladder Diagram / IL (list of ``Rung``)
+      - ``sfc``       -- Sequential Function Chart (``SfcNetwork``)
+      - ``st_body``   -- Structured Text (list of ``Statement``)
+      - ``fbd_body``  -- Function Block Diagram (``FbdNetwork``)
 
-    The three are mutually exclusive.  Backends that don't speak a
+    The four are mutually exclusive.  Backends that don't speak a
     given body kind either lower it to one they do speak (ST -> LD
-    via rung synthesis, SFC -> LD via step-bit assignment) or refuse
+    via rung synthesis, FBD -> ST via topological sort) or refuse
     with an ``Unsupported`` error.
     """
 
@@ -313,6 +315,7 @@ class Subroutine:
     return_type: Optional[TagType] = None
     sfc: Optional["SfcNetwork"] = None
     st_body: Optional[list["Statement"]] = None
+    fbd_body: Optional["FbdNetwork"] = None
     # IEC 61131-3 3rd-edition OOP additions (apply to FUNCTION_BLOCK
     # POUs only; ignored for other kinds).
     methods:    list[object] = field(default_factory=list)

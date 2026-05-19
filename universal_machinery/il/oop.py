@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from .ast import Rung, Var
+    from .fbd import FbdNetwork
     from .st import Statement
     from .types import DataType
 
@@ -84,12 +85,13 @@ class Method:
     override: bool = False
     comment: str = ""
     st_body: Optional[list["Statement"]] = None
+    fbd_body: Optional["FbdNetwork"] = None
 
     def is_signature_only(self) -> bool:
         """True iff this method has no body (abstract / interface decl)."""
         if self.abstract:
             return True
-        return not self.rungs and not self.st_body
+        return not self.rungs and not self.st_body and not self.fbd_body
 
 
 @dataclass

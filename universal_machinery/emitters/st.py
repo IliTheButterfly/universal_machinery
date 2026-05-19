@@ -637,6 +637,13 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
     elif sub.sfc is not None:
         lines.append(f"{indent}(* SFC body not emitted in ST -- "
                      f"see PLCopen XML <SFC> *)")
+    elif sub.fbd_body is not None:
+        # FBD-to-ST lowering needs topological sort + temp-var
+        # allocation; tracked as a separate slice.  Emit a marker
+        # so the output is well-formed ST and the body's intent
+        # is preserved verbatim in PLCopen XML's <FBD> element.
+        lines.append(f"{indent}(* FBD body not emitted in ST -- "
+                     f"see PLCopen XML <FBD> *)")
     else:
         for rung in sub.rungs:
             for stmt in emit_rung(rung):

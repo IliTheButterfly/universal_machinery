@@ -51,14 +51,16 @@ from typing import Optional, Sequence, Union
 
 from .il import (
     AccessSpec, Address, AliasType, ArrayType, Assignment, BinaryExpr,
-    BinaryOp, CaseClause, CaseStatement, Configuration, ContinueStatement,
-    DataBlock, DataType, EnumType, ExitStatement, Expression, FieldAccess,
-    ForStatement, FunctionCallExpr, FunctionCallStatement, IfStatement,
-    IndexAccess, Interface, Literal, Method, NamedType, PouInstance,
-    PouKind, Program, RepeatStatement, Resource, ReturnStatement, Rung,
-    Statement, StructType, SubrangeType, Subroutine, Tag, TagRef, TagType,
-    TaskSpec, UnaryExpr, UnaryOp, UserType, Var, VarDirection, VarRef,
-    WhileStatement,
+    BinaryOp, BlockPin, CaseClause, CaseStatement, Configuration,
+    Connection, ContinueStatement, DataBlock, DataType, EnumType,
+    ExitStatement, Expression, FbBlock, FbdJump, FbdLabel, FbdNetwork,
+    FbdReturn, FieldAccess, ForStatement, FunctionCallExpr,
+    FunctionCallStatement, IfStatement, InOutVariable, InVariable,
+    IndexAccess, Interface, Literal, Method, NamedType, OutVariable,
+    PouInstance, PouKind, Position, Program, RepeatStatement, Resource,
+    ReturnStatement, Rung, Statement, StructType, SubrangeType, Subroutine,
+    Tag, TagRef, TagType, TaskSpec, UnaryExpr, UnaryOp, UserType, Var,
+    VarDirection, VarRef, WhileStatement,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -865,6 +867,173 @@ def continue_st() -> ContinueStatement:
 
 
 # -----------------------------------------------------------------------------
+# Function Block Diagram builders (IEC §6.7)
+# -----------------------------------------------------------------------------
+
+
+def connection(source_id: int,
+               source_pin: Optional[str] = None) -> Connection:
+    """Build a sink-side wire reference.
+
+    ``source_id`` is the producing element's ``local_id``;
+    ``source_pin`` names the producer's output formal parameter
+    (omit for in-/out-/inOut-variable connectors whose single
+    output pin doesn't need naming).
+    """
+    return Connection(source_id=source_id, source_pin=source_pin)
+
+
+def pin(formal_parameter: str,
+        source_id: Optional[int] = None,
+        source_pin: Optional[str] = None,
+        *,
+        negated: bool = False,
+        edge: str = "",
+        storage: str = "") -> BlockPin:
+    """Build one named pin on a block.
+
+    Shortcut: pass ``source_id`` + ``source_pin`` to wire the pin
+    in one call; or build the ``Connection`` separately and assign
+    it to ``pin.connection``.
+    """
+    conn = (Connection(source_id=source_id, source_pin=source_pin)
+            if source_id is not None else None)
+    return BlockPin(
+        formal_parameter=formal_parameter,
+        connection=conn,
+        negated=negated,
+        edge=edge,
+        storage=storage,
+    )
+
+
+def fb_block(local_id: int,
+             type_name: str,
+             *,
+             instance_name: Optional[str] = None,
+             inputs: Optional[Sequence[BlockPin]] = None,
+             outputs: Optional[Sequence[BlockPin]] = None,
+             in_outs: Optional[Sequence[BlockPin]] = None,
+             position: Optional[Position] = None,
+             execution_order: Optional[int] = None,
+             comment: str = "") -> FbBlock:
+    """Build an ``FbBlock`` (function or function-block call site).
+
+    Pins are best constructed with ``pin(...)`` and listed in the
+    appropriate ``inputs`` / ``outputs`` / ``in_outs`` argument.
+    """
+    return FbBlock(
+        local_id=local_id,
+        type_name=type_name,
+        instance_name=instance_name,
+        inputs=list(inputs or []),
+        outputs=list(outputs or []),
+        in_outs=list(in_outs or []),
+        position=position,
+        execution_order=execution_order,
+        comment=comment,
+    )
+
+
+def in_var(local_id: int, expression: str, *,
+           position: Optional[Position] = None,
+           execution_order: Optional[int] = None,
+           negated: bool = False,
+           edge: str = "",
+           storage: str = "",
+           comment: str = "") -> InVariable:
+    """Build an ``InVariable`` (value-producer connector).
+
+    ``expression`` is the operand the variable cell shows --
+    typically a variable name (``"x"``, ``"axis.position"``) or a
+    constant (``"3.14"``, ``"TRUE"``).
+    """
+    return InVariable(
+        local_id=local_id, expression=expression,
+        position=position, execution_order=execution_order,
+        negated=negated, edge=edge, storage=storage, comment=comment,
+    )
+
+
+def out_var(local_id: int, expression: str, *,
+            source_id: Optional[int] = None,
+            source_pin: Optional[str] = None,
+            position: Optional[Position] = None,
+            execution_order: Optional[int] = None,
+            negated: bool = False,
+            edge: str = "",
+            storage: str = "",
+            comment: str = "") -> OutVariable:
+    """Build an ``OutVariable`` (value-consumer / assignment target).
+
+    Shortcut: pass ``source_id`` + ``source_pin`` to wire its single
+    input pin in one call.
+    """
+    conn = (Connection(source_id=source_id, source_pin=source_pin)
+            if source_id is not None else None)
+    return OutVariable(
+        local_id=local_id, expression=expression, connection=conn,
+        position=position, execution_order=execution_order,
+        negated=negated, edge=edge, storage=storage, comment=comment,
+    )
+
+
+def inout_var(local_id: int, expression: str, *,
+              source_id: Optional[int] = None,
+              source_pin: Optional[str] = None,
+              position: Optional[Position] = None,
+              execution_order: Optional[int] = None,
+              comment: str = "") -> InOutVariable:
+    """Build an ``InOutVariable`` (VAR_IN_OUT pattern; both source
+    and sink)."""
+    conn = (Connection(source_id=source_id, source_pin=source_pin)
+            if source_id is not None else None)
+    return InOutVariable(
+        local_id=local_id, expression=expression, connection=conn,
+        position=position, execution_order=execution_order, comment=comment,
+    )
+
+
+def fbd_label(local_id: int, label: str, *,
+              position: Optional[Position] = None,
+              comment: str = "") -> FbdLabel:
+    """Build an ``FbdLabel`` (jump target)."""
+    return FbdLabel(local_id=local_id, label=label,
+                    position=position, comment=comment)
+
+
+def fbd_jump(local_id: int, label: str, *,
+             source_id: Optional[int] = None,
+             source_pin: Optional[str] = None,
+             position: Optional[Position] = None,
+             comment: str = "") -> FbdJump:
+    """Build an ``FbdJump`` (conditional jump; fires when the gate
+    wire on ``source_id`` carries TRUE)."""
+    conn = (Connection(source_id=source_id, source_pin=source_pin)
+            if source_id is not None else None)
+    return FbdJump(local_id=local_id, label=label, connection=conn,
+                   position=position, comment=comment)
+
+
+def fbd_return(local_id: int, *,
+               source_id: Optional[int] = None,
+               source_pin: Optional[str] = None,
+               position: Optional[Position] = None,
+               comment: str = "") -> FbdReturn:
+    """Build an ``FbdReturn`` (conditional early return)."""
+    conn = (Connection(source_id=source_id, source_pin=source_pin)
+            if source_id is not None else None)
+    return FbdReturn(local_id=local_id, connection=conn,
+                     position=position, comment=comment)
+
+
+def fbd_network(*elements,
+                comment: str = "") -> FbdNetwork:
+    """Build a complete ``FbdNetwork`` from a sequence of FBD elements."""
+    return FbdNetwork(elements=list(elements), comment=comment)
+
+
+# -----------------------------------------------------------------------------
 # POU shortcuts
 # -----------------------------------------------------------------------------
 
@@ -879,6 +1048,7 @@ def _make_pou(kind: PouKind, name: str, *,
               return_type: Optional[DataType] = None,
               sfc=None,
               st_body: Optional[Sequence[Statement]] = None,
+              fbd_body: Optional[FbdNetwork] = None,
               methods: Optional[Sequence[Method]] = None,
               extends: Optional[str] = None,
               implements: Optional[Sequence[str]] = None,
@@ -894,6 +1064,7 @@ def _make_pou(kind: PouKind, name: str, *,
         return_type=return_type,
         sfc=sfc,
         st_body=list(st_body) if st_body is not None else None,
+        fbd_body=fbd_body,
         comment=comment,
         methods=list(methods or []),
         extends=extends,
@@ -942,6 +1113,7 @@ def fb(name: str, **kw) -> Subroutine:
 def method(name: str, *,
            rungs: Optional[Sequence[Rung]] = None,
            st_body: Optional[Sequence[Statement]] = None,
+           fbd_body: Optional[FbdNetwork] = None,
            inputs: Optional[Sequence[Var]] = None,
            outputs: Optional[Sequence[Var]] = None,
            in_outs: Optional[Sequence[Var]] = None,
@@ -962,6 +1134,7 @@ def method(name: str, *,
         name=name,
         rungs=list(rungs or []),
         st_body=list(st_body) if st_body is not None else None,
+        fbd_body=fbd_body,
         inputs=list(inputs or []),
         outputs=list(outputs or []),
         in_outs=list(in_outs or []),
@@ -1241,6 +1414,11 @@ __all__ = [
     "subroutine", "prog", "fn", "fb",
     # IEC 3rd-edition OOP
     "method", "abstract_method", "interface",
+    # FBD (IEC §6.7)
+    "connection", "pin", "fb_block",
+    "in_var", "out_var", "inout_var",
+    "fbd_label", "fbd_jump", "fbd_return",
+    "fbd_network",
     # ST expression / statement helpers (IEC §3)
     "lit", "var_ref", "field_", "index_",
     "neg", "not_e",
