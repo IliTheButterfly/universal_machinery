@@ -50,8 +50,9 @@ import re
 from typing import Optional, Sequence, Union
 
 from .il import (
-    Address, DataBlock, PouKind, Program, Rung, Subroutine, Tag, TagRef,
-    TagType, Var, VarDirection,
+    Address, AliasType, ArrayType, DataBlock, DataType, EnumType, NamedType,
+    PouKind, Program, Rung, StructType, Subroutine, Tag, TagRef, TagType,
+    UserType, Var, VarDirection,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -650,6 +651,59 @@ def fb(name: str, **kw) -> Subroutine:
 
 
 # -----------------------------------------------------------------------------
+# User-defined type helpers (IEC 61131-3 §2.3.3)
+# -----------------------------------------------------------------------------
+
+
+def named_type(name: str) -> NamedType:
+    """Reference an existing UDT by name (for use as a Var.data_type
+    or as a struct field type)."""
+    return NamedType(name=name)
+
+
+def struct_type(name: str, members: Sequence[Var],
+                comment: str = "") -> StructType:
+    """Declare a STRUCT user-defined type.
+
+    Members are ``Var`` instances -- typically created with ``var(...)``,
+    ``var_in(...)``, etc.  Direction defaults to LOCAL for struct
+    fields (the schema-level direction concept is for POU parameters,
+    not struct members)."""
+    return StructType(name=name, members=tuple(members), comment=comment)
+
+
+def array_type(name: str,
+               element_type: DataType,
+               bounds: Sequence[tuple[int, int]],
+               comment: str = "") -> ArrayType:
+    """Declare an ARRAY user-defined type.
+
+    ``bounds`` is a sequence of ``(lo, hi)`` pairs -- one per
+    dimension.  Single-dimensional: ``bounds=[(0, 9)]`` gives a
+    10-element array.  Multi-dimensional: ``bounds=[(0, 2), (0, 2)]``
+    gives a 3x3 array."""
+    return ArrayType(name=name, element_type=element_type,
+                     bounds=tuple(bounds), comment=comment)
+
+
+def enum_type(name: str, values: Sequence[str],
+              comment: str = "") -> EnumType:
+    """Declare an ENUM user-defined type with the given symbolic values."""
+    return EnumType(name=name, values=tuple(values), comment=comment)
+
+
+def alias_type(name: str, base: DataType,
+               comment: str = "") -> AliasType:
+    """Declare a SIMPLE / ALIAS user-defined type.
+
+    The alias renames an underlying ``DataType`` -- elementary or
+    user-defined -- without changing its runtime representation.
+    Useful for giving domain-meaningful names (``Distance``,
+    ``Velocity``)."""
+    return AliasType(name=name, base=base, comment=comment)
+
+
+# -----------------------------------------------------------------------------
 # Top-level Program builder
 # -----------------------------------------------------------------------------
 
@@ -658,6 +712,7 @@ def program(*,
             subroutines: Optional[Sequence[Subroutine]] = None,
             tags: Optional[Sequence[Tag]] = None,
             data_blocks: Optional[Sequence[DataBlock]] = None,
+            user_types: Optional[Sequence[UserType]] = None,
             cpu_model: str = "",
             project_name: str = "",
             comment: str = "") -> Program:
@@ -666,11 +721,17 @@ def program(*,
     ``tags`` is a flat list; the constructor keys them by name into
     ``Program.tags``.  Pass POUs in any order -- ``main_subroutine``
     discrimination is by ``Subroutine.main`` flag, not list position.
+
+    ``user_types`` collects ``StructType``/``ArrayType``/``EnumType``/
+    ``AliasType`` declarations; the constructor stores them on
+    ``Program.user_types`` and emitters render them in IEC's
+    ``TYPE ... END_TYPE`` block.
     """
     return Program(
         subroutines=list(subroutines or []),
         tags={t.name: t for t in (tags or [])},
         data_blocks=list(data_blocks or []),
+        user_types=list(user_types or []),
         cpu_model=cpu_model,
         project_name=project_name,
         comment=comment,
@@ -711,6 +772,8 @@ __all__ = [
     # Declarations
     "var", "var_in", "var_out", "var_inout",
     "tag_decl", "data_block",
+    # User-defined types
+    "named_type", "struct_type", "array_type", "enum_type", "alias_type",
     # POUs
     "subroutine", "prog", "fn", "fb",
     # Program

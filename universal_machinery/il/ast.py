@@ -195,6 +195,11 @@ class Var:
     """
 
     name: str
+    # ``data_type`` is a ``DataType`` (elementary ``TagType`` OR a
+    # reference / inline definition of a user-defined type from
+    # ``il/types.py``).  Annotated as ``TagType`` here for back-compat
+    # with existing code that imports only TagType; user-defined-type
+    # values are accepted at runtime via the union.
     data_type: TagType = TagType.INT
     direction: VarDirection = VarDirection.LOCAL
     initial_value: str = ""
@@ -313,7 +318,8 @@ class Subroutine:
 
 @dataclass
 class Program:
-    """The full PLC program: POUs, data blocks, and the tag table.
+    """The full PLC program: POUs, data blocks, user-defined types,
+    and the tag table.
 
     ``tags`` is the symbol table keyed by ``Tag.name``.  Tags may be
     static (``Tag.address`` set, the backend honours it verbatim) or
@@ -325,11 +331,22 @@ class Program:
     ``data_blocks`` holds typed memory aggregates (Siemens-style DBs /
     IEC global VAR blocks).  Each FUNCTION_BLOCK instance lives in its
     own ``DataBlock`` with ``fb_template`` set to the FB's name.
+
+    ``user_types`` is the program-level user-defined-type declaration
+    table -- IEC's ``TYPE ... END_TYPE`` block.  Holds ``StructType``,
+    ``ArrayType``, ``EnumType``, and ``AliasType`` declarations; ``Var``
+    instances and other ``UserType`` definitions reference them by name
+    via ``NamedType``.  See ``universal_machinery.il.types`` for the
+    type variants.
     """
 
     subroutines: list[Subroutine] = field(default_factory=list)
     tags: dict[str, Tag] = field(default_factory=dict)
     data_blocks: list[DataBlock] = field(default_factory=list)
+    user_types: list[object] = field(default_factory=list)
+    # ``user_types`` is annotated ``list[object]`` to avoid a circular
+    # import (``types`` imports ``TagType`` from this module).  The
+    # runtime element type is ``il.types.UserType``.
 
     # Optional metadata that some backends consume
     cpu_model: str = ""            # e.g. "C2-01CPU" for CLICK
@@ -354,6 +371,19 @@ class Program:
         for db in self.data_blocks:
             if db.name == name:
                 return db
+        return None
+
+    def find_user_type(self, name: str):
+        """Look up a user-defined type by name.
+
+        Returns the matching ``StructType`` / ``ArrayType`` /
+        ``EnumType`` / ``AliasType``, or ``None`` if no UDT with that
+        name has been declared.  Used by the resolver pass that
+        validates ``NamedType`` references.
+        """
+        for ut in self.user_types:
+            if getattr(ut, "name", None) == name:
+                return ut
         return None
 
     def find_tag(self, name: str) -> Optional[Tag]:

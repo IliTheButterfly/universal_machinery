@@ -67,34 +67,48 @@ from .ops import (
     FTrig, Loc, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc, Value, VendorOp,
 )
 from .sfc import Action, SfcNetwork, Step, Transition
+from .types import (
+    AliasType, ArrayType, DataType, EnumType, NamedType, StructType,
+    UserType, is_elementary, is_user_type, type_name,
+)
 
 __all__ = [
     "Action",
     "Address",
+    "AliasType",
+    "ArrayType",
     "DataBlock",
+    "DataType",
+    "EnumType",
     "FTrig",
     "Loc",
+    "NamedType",
     "PouKind",
     "Program",
     "RS",
     "RTrig",
     "Rung",
-    "SfcNetwork",
     "SR",
+    "SfcNetwork",
     "STD_FUNCTION_NAMES",
     "StdFunc",
     "Step",
+    "StructType",
     "Subroutine",
     "Tag",
     "TagRef",
     "TagType",
     "Transition",
+    "UserType",
     "Value",
     "Var",
     "VarDirection",
     "VendorOp",
+    "is_elementary",
+    "is_user_type",
     "ops",
     "sfc",
+    "type_name",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
