@@ -68,7 +68,7 @@ from ..il import (
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
     ContactRisingEdge, CTD, CTU, CTUD, Jump, Label, Move, OutCoil, OutReset,
-    OutSet, ParallelGroup, TOF, TON, TP, VendorOp,
+    OutSet, ParallelGroup, Return, TOF, TON, TP, VendorOp,
 )
 
 
@@ -880,3 +880,345 @@ def emit_resume_dispatch(resume_count: int,
         comment="body entry",
     ))
     return rungs
+
+
+# -----------------------------------------------------------------------------
+# Scheduled-call rewriter (commit B)
+# -----------------------------------------------------------------------------
+#
+# CLICK forbids any CALL inside a subroutine body, so every bare CLICK
+# CALL that ``lower_calls`` placed inside a non-Main POU body must be
+# transformed into a cooperative-yield sequence: marshal the inputs,
+# push the caller's (id, resume_id) onto the scheduler stack, set
+# sched_next_id to the callee's id, set the yield flag, and Return.
+# The trampoline (commit A) picks up sched_next_id on a later
+# dispatch cycle, runs the callee, then pops on the callee's return
+# and re-dispatches the caller with sched_resume_id set so the
+# caller's body resumes at the appropriate Label.
+#
+# Main is special.  Main is allowed to issue native CLICK CALLs, but
+# only to leaf POUs (POUs whose bodies contain no further bare
+# Calls).  Main's Call to a non-leaf POU is rewritten into a
+# scheduler-dispatch sequence: set sched_next_id = target.id, fall
+# through.  No push (Main is never on the scheduler stack); no yield
+# flag (Main isn't suspending, it's initiating dispatch).
+
+
+def _classify_leaves(prog: Program) -> set[str]:
+    """Return the set of POU names that are "leaves" -- POUs whose
+    body contains no bare CLICK ``Call`` ops.
+
+    A leaf POU can be invoked from Main via a native CLICK CALL.  A
+    non-leaf POU contains nested calls (after ``lower_calls`` runs)
+    that the scheduler must mediate; invoking it from Main therefore
+    has to go through the scheduler too.
+
+    Run AFTER ``lower_calls`` -- by that point every parameterized
+    Call has been expanded into Move-Call(bare)-Move, so "has a Call
+    op anywhere in the body" is the right leaf-vs-non-leaf signal.
+    """
+    leaves: set[str] = set()
+    for sub in prog.subroutines:
+        has_call = any(
+            isinstance(op, Call)
+            for rung in sub.rungs
+            for op in rung.ops
+        )
+        if not has_call:
+            leaves.add(sub.name)
+    return leaves
+
+
+def _gate_prefix(ops: list) -> list:
+    """Extract the leading contact / Compare prefix of a rung's ops.
+
+    The "gate" of a rung is the contact-like input network that
+    conducts to the rung's outputs.  When we split a rung at a Call,
+    each emitted rung needs the gate re-applied so its outputs only
+    fire under the same conditions as the original.
+
+    Contact-like ops are: ContactNO/NC/RisingEdge/FallingEdge,
+    Compare, ParallelGroup (which itself contains gate ops).
+    """
+    gate_types = (ContactNO, ContactNC, ContactRisingEdge,
+                  ContactFallingEdge, Compare, ParallelGroup)
+    prefix: list = []
+    for op in ops:
+        if isinstance(op, gate_types):
+            prefix.append(op)
+        else:
+            break
+    return prefix
+
+
+def _emit_yield_rungs(gate: list, caller_id: int, resume_id: int,
+                      callee_id: int, marshal_in: list,
+                      config: LoweringConfig) -> list[Rung]:
+    """Emit the yield rungs for one nested-call site.
+
+    Layout (depth+1 rungs total for depth=N):
+
+      Rung 0  : [gate, marshal_in...]                  -- runs unconditionally
+      Rung 1..N: [gate, Compare(sp==k), push-at-k,    -- only one fires
+                  Move(callee_id -> next_id),
+                  Set(yield_flag), Return]
+
+    CLICK lacks indirect indexed writes, so each push site is a
+    switch over the current sp value: at runtime exactly one rung
+    matches sp's current level and pushes at that index.  The other
+    branches don't conduct (their Compare fails) and produce no
+    side effects.
+
+    ``gate`` is the contact prefix from the original rung (the
+    conditions that gated the original Call); replicated on every
+    yield rung so the yield only fires under the original guard.
+
+    ``marshal_in`` is the list of Move ops ``lower_calls`` emitted
+    before the bare Call -- the caller-side input marshalling that
+    must happen before the yield (so the callee's VAR_INPUT slots
+    are populated when the trampoline dispatches it).
+    """
+    rungs: list[Rung] = []
+
+    if marshal_in:
+        rungs.append(Rung(
+            ops=list(gate) + list(marshal_in),
+            comment=f"marshal inputs for resume_{resume_id}",
+        ))
+
+    depth = config.sched_stack_depth
+    for k in range(depth):
+        rungs.append(Rung(
+            ops=list(gate) + [
+                Compare(op="==", lhs=config.sched_sp, rhs=str(k)),
+                Move(src=str(caller_id),
+                     dst=_offset(config.sched_stack_base, k)),
+                Move(src=str(resume_id),
+                     dst=_offset(config.sched_resume_base, k)),
+                Move(src=str(k + 1), dst=config.sched_sp),
+                Move(src=str(callee_id), dst=config.sched_next_id),
+                OutSet(config.sched_yield_flag),
+                Return(),
+            ],
+            comment=f"yield to id={callee_id} from id={caller_id} "
+                    f"(sp={k}, resume={resume_id})",
+        ))
+    return rungs
+
+
+def _emit_continuation_rung(gate: list, resume_id: int,
+                            tail_ops: list,
+                            resume_label_prefix: str = "resume_",
+                            ) -> Rung:
+    """Emit the continuation rung that the resume-dispatch header
+    jumps to after the called POU completes.
+
+    Layout: [Label(resume_K), gate..., tail_ops...]
+
+    ``tail_ops`` is everything that came after the bare Call in the
+    original rung -- the caller-side output marshalling Moves from
+    ``lower_calls``, plus any user-authored post-Call ops.  The
+    gate is re-applied so the tail only fires if the original
+    conditions are still true at resume time (this is the locked-in
+    "re-evaluate gate on resume" semantic).
+    """
+    return Rung(
+        ops=[Label(name=f"{resume_label_prefix}{resume_id}")] +
+            list(gate) + list(tail_ops),
+        comment=f"resume continuation: site {resume_id}",
+    )
+
+
+def _rewrite_pou_body(sub: Subroutine, alloc: SlotAllocation,
+                      config: LoweringConfig,
+                      leaves: set[str]) -> tuple[Subroutine, int]:
+    """Rewrite a non-Main POU's body, replacing each bare CLICK Call
+    with the corresponding yield sequence + continuation Label.
+
+    Returns the rewritten Subroutine and the number of resume sites
+    created (used by the caller to size the resume-dispatch header).
+
+    Every bare ``Call`` op in the body is treated as a nested call
+    (illegal CLICK natively).  The target may itself be a leaf or a
+    non-leaf -- doesn't matter; all nested calls go through the
+    scheduler.
+
+    The rewriter walks each rung looking for ``Call`` ops.  For each
+    Call found:
+
+      1. Split the rung at the Call's position.
+      2. Pre-Call ops = gate + marshal-in moves -> yield rungs.
+      3. Post-Call ops = marshal-out moves + user ops ->
+         continuation rung with Label(resume_K).
+      4. Allocate a fresh resume id K for this call site.
+
+    Rungs with no Calls pass through unchanged.
+
+    Limitation (for now): if a rung contains MULTIPLE Calls, only
+    the first is rewritten; the others are left for a future pass
+    to handle.  Most generated rungs from lower_calls contain at
+    most one Call.
+    """
+    caller_id = alloc.pou_id[sub.name]
+    new_rungs: list[Rung] = []
+    next_resume_id = 1
+
+    for rung in sub.rungs:
+        # Find the first Call op in this rung, if any.
+        call_idx = None
+        for i, op in enumerate(rung.ops):
+            if isinstance(op, Call):
+                call_idx = i
+                break
+
+        if call_idx is None:
+            new_rungs.append(rung)
+            continue
+
+        call_op = rung.ops[call_idx]
+        pre_ops = rung.ops[:call_idx]
+        post_ops = rung.ops[call_idx + 1:]
+
+        # Identify gate vs marshal-in within pre_ops.
+        gate = _gate_prefix(pre_ops)
+        marshal_in = pre_ops[len(gate):]
+
+        callee_id = alloc.pou_id.get(call_op.target)
+        if callee_id is None:
+            raise LoweringError(
+                f"POU {sub.name!r} contains Call to unknown target "
+                f"{call_op.target!r} (not in pou_id map)"
+            )
+
+        resume_id = next_resume_id
+        next_resume_id += 1
+
+        new_rungs.extend(_emit_yield_rungs(
+            gate=gate,
+            caller_id=caller_id,
+            resume_id=resume_id,
+            callee_id=callee_id,
+            marshal_in=marshal_in,
+            config=config,
+        ))
+        new_rungs.append(_emit_continuation_rung(
+            gate=gate,
+            resume_id=resume_id,
+            tail_ops=post_ops,
+        ))
+
+    resume_count = next_resume_id - 1
+    if resume_count == 0:
+        return sub, 0
+
+    # Prepend the resume-dispatch header so the body re-enters at
+    # the right continuation after each nested call returns.
+    header = emit_resume_dispatch(resume_count, config)
+    return dataclasses.replace(sub, rungs=header + new_rungs), resume_count
+
+
+def _rewrite_main_body(main: Subroutine, alloc: SlotAllocation,
+                       config: LoweringConfig,
+                       leaves: set[str]) -> Subroutine:
+    """Rewrite Main's body, replacing Call(non_leaf_pou) with a
+    scheduler-dispatch sequence.
+
+    Main may issue native CLICK CALLs to leaf POUs (those are legal
+    -- a non-yielding callee returns normally).  But Main's Call to
+    a non-leaf POU has to go through the scheduler, because the
+    non-leaf POU's body cannot be reached via a normal CALL chain
+    (its internal yields require trampoline mediation).
+
+    For each Call(P) in Main:
+      - P is a leaf  -> leave the Call op as-is (native CLICK CALL).
+      - P is non-leaf -> replace the Call op with:
+                          Move(P.id -> sched_next_id)
+                          Move("0"  -> sched_resume_id)
+                         (no push, no yield flag -- Main is the top
+                          of the call graph; the trampoline picks up
+                          sched_next_id on the next dispatch.)
+
+    The dispatch happens on the NEXT scan, not this one (the
+    trampoline ran at the top of this scan, before reaching Main's
+    user body).  Main's body continues with whatever rungs follow.
+
+    Known limitation: ``lower_calls`` emits Move-out ops AFTER the
+    bare Call (caller-side output demarshalling).  When this
+    rewriter replaces the Call with a scheduler-dispatch Move,
+    those Move-out ops remain in the rung -- but the callee hasn't
+    run yet (it'll dispatch on the next scan).  So Move-out reads
+    stale data on the current scan.  Workarounds: (a) check a
+    "result ready" flag the user authors; (b) gate Move-out on
+    ``ContactNC(C2000 + P.id)`` (POU-not-active).  A future pass
+    could auto-gate, but for now this is the user's responsibility.
+    Functions called from a non-Main body don't have this issue:
+    they go through the full yield/resume cycle which only reaches
+    the continuation rung after the callee has completed.
+    """
+    new_rungs: list[Rung] = []
+    for rung in main.rungs:
+        new_ops: list = []
+        for op in rung.ops:
+            if isinstance(op, Call) and op.target not in leaves:
+                # Rewrite to scheduler dispatch.
+                callee_id = alloc.pou_id.get(op.target)
+                if callee_id is None:
+                    raise LoweringError(
+                        f"Main contains Call to unknown target "
+                        f"{op.target!r}"
+                    )
+                new_ops.append(Move(src=str(callee_id),
+                                    dst=config.sched_next_id))
+                new_ops.append(Move(src="0",
+                                    dst=config.sched_resume_id))
+            else:
+                new_ops.append(op)
+        new_rungs.append(Rung(ops=new_ops, comment=rung.comment))
+    return dataclasses.replace(main, rungs=new_rungs)
+
+
+def lower_scheduled_calls(prog: Program,
+                          alloc: Optional[SlotAllocation] = None,
+                          config: Optional[LoweringConfig] = None,
+                          ) -> tuple[Program, SlotAllocation]:
+    """Apply the scheduled-call rewriter across a Program.
+
+    For each non-Main POU body: rewrite every bare Call into the
+    yield + continuation form, prepending a resume-dispatch header
+    that routes re-entry to the right continuation.
+
+    For Main: rewrite each Call(non-leaf) into a scheduler dispatch
+    (set ``sched_next_id``, clear ``sched_resume_id``).  Calls to
+    leaf POUs remain native CLICK CALLs.
+
+    Pipeline placement: run AFTER ``lower_calls`` (which expanded
+    parameterized Calls into Move-Call-Move sequences) and BEFORE
+    ``prepend_trampoline_to_main`` (which assumes the program's
+    final dispatch-time shape).  Composing them::
+
+        prog, alloc = lower_pou_bodies(prog)
+        prog, _     = lower_calls(prog, alloc=alloc)
+        prog, _     = lower_scheduled_calls(prog, alloc=alloc)
+        prog        = prepend_trampoline_to_main(prog, alloc)
+
+    Returns the rewritten Program + the allocation used.  Input is
+    not mutated.
+    """
+    if alloc is None:
+        alloc = allocate_slots(prog, config)
+    if config is None:
+        config = alloc.config
+
+    leaves = _classify_leaves(prog)
+    main = prog.main_subroutine()
+    main_name = main.name if main is not None else None
+
+    new_subs: list[Subroutine] = []
+    for sub in prog.subroutines:
+        if sub.name == main_name:
+            new_subs.append(_rewrite_main_body(sub, alloc, config, leaves))
+        else:
+            rewritten, _ = _rewrite_pou_body(sub, alloc, config, leaves)
+            new_subs.append(rewritten)
+
+    return dataclasses.replace(prog, subroutines=new_subs), alloc
