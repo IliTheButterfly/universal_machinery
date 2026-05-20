@@ -157,13 +157,23 @@ signed/unsigned classification of the underlying integer base.
 
 Concrete slices to close the larger conformance gaps, in priority order:
 
-1. **PLCopen TC6 XML emitter**.  ✅ *Validated against the
+1. **PLCopen TC6 XML emitter + reader**.  ✅ *Validated against the
    official PLCopen TC6 v2.01 XSD.*
    ``universal_machinery.emitters.plcopen_xml`` emits TC6 v2.01 XML
-   with POU declarations, variable interfaces, return types, and ST
-   bodies (built on the ST emitter).  Tags are exported as a
-   synthetic ``GlobalsHolder`` POU's ``<localVars>`` until
-   ``<configurations><globalVars>`` lands.
+   with POU declarations, variable interfaces, return types, ST /
+   FBD bodies, configurations (resources, tasks, pouInstances,
+   globalVars, accessVars, configVars), and Tag declarations
+   exported as a synthetic ``GlobalsHolder`` POU.
+
+   ``universal_machinery.parsers.plcopen_xml`` reads those documents
+   back into IL ``Program``s, closing the round-trip loop and
+   unlocking the cross-vendor migration use case (import a program
+   authored in matiec / Beremiz / OpenPLC editor → modify in IL →
+   re-emit to another vendor).  V1 covers POU interfaces + ST
+   bodies (captured verbatim as ``CommentStatement`` until the
+   ST text parser lands) + the full Configuration model
+   including accessVars / configVars / per-task pouInstance
+   binding.
 
    ``validate_plcopen_xml(xml)`` validates emitted output against
    the bundled XSD (sourced from Beremiz's public mirror).
@@ -171,11 +181,15 @@ Concrete slices to close the larger conformance gaps, in priority order:
    POUs, FUNCTION with return type, FUNCTION_BLOCK with VAR_IN_OUT
    + locals + initial values, programs with multi-op rungs
    (contacts / coils / set/reset / parallel / compare / math /
-   call / stdlib / ret), and globals-tag export.
+   call / stdlib / ret), FBD bodies, accessVars + configVars,
+   and globals-tag export.
 
-   Next: round-trip against PLCopen reference tools (matiec,
-   Beremiz, OpenPLC editor) -- XSD validity is necessary but not
-   sufficient for full cert.
+   Next:
+     - ST text parser (so XML ``<ST><pre>`` round-trips back into
+       structured ST AST, not just text).
+     - Reader coverage for graphical bodies (LD / FBD / SFC).
+     - Round-trip against PLCopen reference tools -- XSD validity
+       is necessary but not sufficient for full cert.
 
 2. ✅ ~~**ST AST**.~~ *Done.*  First-class ST body in
    [`il/st.py`](../universal_machinery/il/st.py).  ``Subroutine``
