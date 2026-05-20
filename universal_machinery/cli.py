@@ -6,6 +6,7 @@ A thin Typer wrapper over the library's existing entry points:
   ``um validate <file>``  run the structural validator; exit non-zero on errors
   ``um emit <file> -f st|xml``  emit Structured Text or PLCopen TC6 XML
   ``um diff <a> <b>``     line-diff two IL programs (JSON form)
+  ``um import <file.xml>``  parse a PLCopen TC6 XML doc into IL JSON
 
 The CLI takes IL programs in their JSON form (the
 ``universal_machinery.serialisation`` format).  Vendor-format
@@ -257,6 +258,43 @@ def diff(
         else:
             out.print(line, end="")
     raise typer.Exit(code=1)
+
+
+# -----------------------------------------------------------------------------
+# `um import`: PLCopen XML -> IL JSON
+# -----------------------------------------------------------------------------
+
+
+@app.command(name="import")
+def import_(
+    file: Path = typer.Argument(..., help="PLCopen TC6 XML file to parse"),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o",
+        help="Write to file (default: stdout).  Use '-' for stdout.",
+    ),
+) -> None:
+    """Parse a PLCopen TC6 XML document into IL JSON.
+
+    Closes the round-trip loop: ``um emit f.json -f xml`` produces a
+    document this command can read back into the equivalent IL.
+    Useful for importing programs authored in PLCopen-conformant
+    tools (matiec, Beremiz, OpenPLC editor) into the IL for
+    cross-vendor migration.
+    """
+    from .parsers.plcopen_xml import (
+        PlcopenParseError, parse_plcopen_xml_file,
+    )
+
+    try:
+        prog = parse_plcopen_xml_file(file)
+    except FileNotFoundError:
+        err.print(f"[red]error[/red]: file not found: {file}")
+        raise typer.Exit(code=2)
+    except PlcopenParseError as exc:
+        err.print(f"[red]error[/red]: PLCopen parse failed: {exc}")
+        raise typer.Exit(code=2)
+
+    _write_output(to_json(prog, indent=2), output)
 
 
 # -----------------------------------------------------------------------------

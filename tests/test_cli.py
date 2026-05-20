@@ -251,3 +251,48 @@ def test_diff_preserves_filenames_in_header(tmp_path):
     assert result.exit_code == 1
     assert str(a) in result.output
     assert str(b) in result.output
+
+
+# -----------------------------------------------------------------------------
+# ``um import``
+# -----------------------------------------------------------------------------
+
+
+def test_import_round_trips_through_json(tmp_path):
+    """`um import f.xml` parses a PLCopen XML doc back into IL JSON
+    that `um inspect` can read."""
+    from universal_machinery.emitters.plcopen_xml import emit_xml
+    p = program(
+        project_name="ImportDemo",
+        subroutines=[prog("Main", main=True,
+                            inputs=[var_in("a", TagType.INT)],
+                            outputs=[var_out("done", TagType.BOOL)])],
+    )
+    xml_path = tmp_path / "demo.xml"
+    xml_path.write_text(emit_xml(p))
+
+    json_path = tmp_path / "imported.json"
+    result = runner.invoke(app, ["import", str(xml_path),
+                                   "-o", str(json_path)])
+    assert result.exit_code == 0, result.output
+
+    # The output JSON must round-trip through `um inspect`
+    result2 = runner.invoke(app, ["inspect", str(json_path)])
+    assert result2.exit_code == 0, result2.output
+    assert "Main" in result2.output
+    assert "ImportDemo" in result2.output
+
+
+def test_import_missing_file_exits_2(tmp_path):
+    missing = tmp_path / "does_not_exist.xml"
+    result = runner.invoke(app, ["import", str(missing)])
+    assert result.exit_code == 2
+    assert "file not found" in result.output.lower()
+
+
+def test_import_malformed_xml_exits_2(tmp_path):
+    bad = tmp_path / "bad.xml"
+    bad.write_text("<<<not xml>>>")
+    result = runner.invoke(app, ["import", str(bad)])
+    assert result.exit_code == 2
+    assert "PLCopen parse failed" in result.output
