@@ -87,12 +87,13 @@ from .types import (
     is_user_type, type_name,
 )
 from .configuration import (
-    Configuration, PouInstance, Resource, TaskSpec,
+    AccessVar, ConfigVar, Configuration, PouInstance, Resource, TaskSpec,
 )
 from .oop import AccessSpec, Interface, Method
 
 __all__ = [
     "AccessSpec",
+    "AccessVar",
     "Action",
     "Address",
     "AliasType",
@@ -104,6 +105,7 @@ __all__ = [
     "CaseClause",
     "CaseStatement",
     "CommentStatement",
+    "ConfigVar",
     "Configuration",
     "Connection",
     "ContinueStatement",

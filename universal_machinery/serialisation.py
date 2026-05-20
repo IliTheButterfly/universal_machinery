@@ -47,18 +47,18 @@ from typing import Any, Union, get_args, get_origin
 
 from . import il
 from .il import (
-    AccessSpec, Action, Address, AliasType, ArrayType, Assignment,
-    BinaryExpr, BinaryOp, BlockPin, CaseClause, CaseStatement,
-    CommentStatement, Configuration, Connection, ContinueStatement,
-    DataBlock, EnumType, ExitStatement, FbBlock, FbdJump, FbdLabel,
-    FbdNetwork, FbdReturn, FieldAccess, ForStatement, FunctionCallExpr,
-    FunctionCallStatement, GotoStatement, IfStatement, InOutVariable,
-    InVariable, IndexAccess, Interface, LabelStatement, Literal, Method,
-    NamedType, OutVariable, PouInstance, PouKind, Position, Program,
-    RepeatStatement, Resource, ReturnStatement, Rung, SfcNetwork, Step,
-    StructType, SubrangeType, Subroutine, Tag, TagRef, TagType, TaskSpec,
-    Transition, UnaryExpr, UnaryOp, Var, VarDirection, VarRef, VendorOp,
-    WhileStatement,
+    AccessSpec, AccessVar, Action, Address, AliasType, ArrayType,
+    Assignment, BinaryExpr, BinaryOp, BlockPin, CaseClause, CaseStatement,
+    CommentStatement, ConfigVar, Configuration, Connection,
+    ContinueStatement, DataBlock, EnumType, ExitStatement, FbBlock,
+    FbdJump, FbdLabel, FbdNetwork, FbdReturn, FieldAccess, ForStatement,
+    FunctionCallExpr, FunctionCallStatement, GotoStatement, IfStatement,
+    InOutVariable, InVariable, IndexAccess, Interface, LabelStatement,
+    Literal, Method, NamedType, OutVariable, PouInstance, PouKind,
+    Position, Program, RepeatStatement, Resource, ReturnStatement, Rung,
+    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagRef,
+    TagType, TaskSpec, Transition, UnaryExpr, UnaryOp, Var, VarDirection,
+    VarRef, VendorOp, WhileStatement,
 )
 from .il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
@@ -90,6 +90,7 @@ _DATACLASSES: dict[str, type] = {
         StructType, ArrayType, EnumType, SubrangeType, AliasType, NamedType,
         # Configuration model
         Configuration, Resource, TaskSpec, PouInstance,
+        AccessVar, ConfigVar,
         # IEC 3rd-edition OOP (METHOD / INTERFACE)
         Method, Interface,
         # ST AST (IEC §3 Structured Text -- expressions + statements)

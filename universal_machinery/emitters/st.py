@@ -824,11 +824,28 @@ def _fmt_configuration(cfg: Configuration) -> str:
         lines.append("    END_VAR")
 
     if cfg.access_vars:
+        # IEC §2.7.1: ``alias : instance_path : type direction;``
+        # Direction is optional in IEC syntax (READ_WRITE is implied
+        # if omitted); we emit it explicitly so the binding intent
+        # is visible.
         lines.append("    VAR_ACCESS")
         for v in cfg.access_vars:
             comment = f"  (* {v.comment} *)" if v.comment else ""
             lines.append(
-                f"        {v.name} : {_fmt_iec_type(v.data_type)};{comment}"
+                f"        {v.alias} : {v.instance_path} : "
+                f"{_fmt_iec_type(v.data_type)} {v.direction};{comment}"
+            )
+        lines.append("    END_VAR")
+
+    if cfg.config_vars:
+        # IEC §2.4.3.2: ``instance_path : type := initial_value;``
+        lines.append("    VAR_CONFIG")
+        for v in cfg.config_vars:
+            init = f" := {v.initial_value}" if v.initial_value else ""
+            comment = f"  (* {v.comment} *)" if v.comment else ""
+            lines.append(
+                f"        {v.instance_path} : "
+                f"{_fmt_iec_type(v.data_type)}{init};{comment}"
             )
         lines.append("    END_VAR")
 

@@ -59,9 +59,9 @@ through the PLCopen TC6 XML schema.  Vendor-specific extensions
 | §2.4.3 | VAR (local) | ✅ | `Var(direction=VarDirection.LOCAL)` | |
 | §2.4.3 | VAR_EXTERNAL | ✅ | `Var(direction=VarDirection.EXTERNAL)` | |
 | §2.4.3 | VAR_TEMP | ✅ | `Var(direction=VarDirection.TEMP)` | |
-| §2.4.3 | VAR_ACCESS | ❌ | -- | Resource-level access; pairs with §2.7 |
+| §2.4.3 | VAR_ACCESS | ✅ | `AccessVar(alias, instance_path, data_type, direction)` on `Configuration.access_vars` | Externally-visible aliases for HMI / OPC UA / fieldbus exposure.  ST emits `alias : instance_path : type direction;` per §2.7.1; PLCopen XML emits `<accessVariable alias= instancePathAndName= direction=>` with `direction` mapped to the XSD's `readOnly`/`readWrite` enum.  Validation: direction enum, alias uniqueness, instance-path syntax |
 | §2.4.3 | VAR_GLOBAL | ⚠️ | `Tag` + (locked) `address` | Modeled as program-level Tag rather than IEC's VAR_GLOBAL block; semantics line up |
-| §2.4.3 | VAR_CONFIG | ❌ | -- | Configuration-level vars; pairs with §2.7 |
+| §2.4.3 | VAR_CONFIG | ✅ | `ConfigVar(instance_path, data_type, initial_value)` on `Configuration.config_vars` | Pins per-instance parameter values at config-link time per §2.4.3.2.  ST emits `instance_path : type := initial_value;` inside `VAR_CONFIG ... END_VAR`; PLCopen XML emits `<configVars><configVariable .../></configVars>` with `<initialValue><simpleValue value=.../></initialValue>` body.  Validation: instance-path syntax, duplicate binding detection |
 
 ## §6.4  Data types
 
@@ -139,10 +139,10 @@ signed/unsigned classification of the underlying integer base.
 | §2.7.1 | CONFIGURATION | ✅ | ``Configuration`` in [`il/configuration.py`](../universal_machinery/il/configuration.py); ST emits ``CONFIGURATION ... END_CONFIGURATION``; PLCopen XML emits ``<instances><configurations><configuration>`` with XSD validation |
 | §2.7.1 | RESOURCE | ✅ | ``Resource`` -- one PLC CPU; multi-PLC = multi-resource within one Configuration |
 | §2.7.2 | TASK | ✅ | ``TaskSpec`` with cyclic/single-shot/interrupt triggering + priority; PLCopen XML nests bound POU instances under their task element per the schema |
-| §2.7.1 | VAR_ACCESS / accessVariable | ✅ | ``Configuration.access_vars``; XML emits ``<accessVariable alias="..." instancePathAndName="..."/>`` per the TC6 schema |
+| §2.7.1 | VAR_ACCESS / accessVariable | ✅ | ``Configuration.access_vars: list[AccessVar]``; XML emits ``<accessVariable alias="..." instancePathAndName="..." direction="readOnly|readWrite">`` per the TC6 schema |
 | §2.7.1 | VAR_GLOBAL (config-scope) | ✅ | ``Configuration.global_vars`` -- system-wide globals |
 | §2.7.1 | VAR_GLOBAL (resource-scope) | ✅ | ``Resource.global_vars`` -- per-CPU globals |
-| §2.7.1 | configVars | ⚠️ | Schema has ``<configVars>`` for configuration-scoped parameter inits; not yet modeled in the IL (rare in practice) |
+| §2.7.1 | configVars | ✅ | ``Configuration.config_vars: list[ConfigVar]``; XML emits ``<configVars><configVariable instancePathAndName="..."><type>.../<initialValue><simpleValue value=.../></initialValue></configVariable></configVars>`` per the TC6 ``varListConfig`` type |
 
 ## §3  Common elements (extension hatches)
 

@@ -208,6 +208,7 @@ def test_resource_round_trips():
 
 
 def test_configuration_with_resources_round_trips():
+    from universal_machinery.builders import access_var
     cfg = configuration("Default",
                         resources=[
                             resource("CPU1",
@@ -215,7 +216,9 @@ def test_configuration_with_resources_round_trips():
                                                       interval="T#10ms")]),
                         ],
                         global_vars=[var("sys_state", TagType.INT)],
-                        access_vars=[var("hmi_tag", TagType.INT)])
+                        access_vars=[access_var(
+                            "hmi_tag",
+                            "CPU1.Main.tag", TagType.INT)])
     assert from_dict(to_dict(cfg)) == cfg
 
 
