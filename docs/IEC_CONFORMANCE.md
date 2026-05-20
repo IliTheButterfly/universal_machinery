@@ -169,11 +169,18 @@ Concrete slices to close the larger conformance gaps, in priority order:
    back into IL ``Program``s, closing the round-trip loop and
    unlocking the cross-vendor migration use case (import a program
    authored in matiec / Beremiz / OpenPLC editor → modify in IL →
-   re-emit to another vendor).  V1 covers POU interfaces + ST
-   bodies (captured verbatim as ``CommentStatement`` until the
-   ST text parser lands) + the full Configuration model
-   including accessVars / configVars / per-task pouInstance
-   binding.
+   re-emit to another vendor).  V1 covers POU interfaces +
+   the full Configuration model including accessVars / configVars
+   / per-task pouInstance binding.  ST bodies are parsed back
+   into structured AST via
+   [`parsers.st_text`](../universal_machinery/parsers/st_text.py)
+   (hand-rolled recursive-descent + Pratt expression parser per
+   IEC §3.3.1 precedence): assignments, IF/ELSIF/ELSE, CASE with
+   multi-label clauses + ELSE, FOR/BY, WHILE, REPEAT/UNTIL,
+   RETURN/EXIT/CONTINUE, GOTO + labels, function-call statements,
+   and the full expression grammar including field/index access
+   and named-arg calls.  Parse failures degrade to a single
+   ``CommentStatement`` so a partial import stays usable.
 
    ``validate_plcopen_xml(xml)`` validates emitted output against
    the bundled XSD (sourced from Beremiz's public mirror).
@@ -185,9 +192,10 @@ Concrete slices to close the larger conformance gaps, in priority order:
    and globals-tag export.
 
    Next:
-     - ST text parser (so XML ``<ST><pre>`` round-trips back into
-       structured ST AST, not just text).
      - Reader coverage for graphical bodies (LD / FBD / SFC).
+     - User-defined-type registry plumbing (so
+       ``<derived name=>`` references resolve back to STRUCT /
+       ARRAY / ENUM / SUBRANGE / ALIAS declarations).
      - Round-trip against PLCopen reference tools -- XSD validity
        is necessary but not sufficient for full cert.
 
