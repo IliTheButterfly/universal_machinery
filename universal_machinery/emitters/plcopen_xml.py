@@ -748,6 +748,27 @@ def _emit_selection_divergence_xml(local_id: int, source_id: int,
     return "\n".join(parts)
 
 
+def _emit_sfc_jump_step_xml(local_id: int, source_id: int,
+                              target_name: str) -> str:
+    """``<jumpStep>`` -- a named jump target on an SFC back-edge.
+
+    The XSD models jumpStep as "acts like a step" with a single
+    ``<connectionPointIn>`` (where the upstream transition lands)
+    and a required ``targetName=`` naming the actual destination
+    step.  Note: there is no ``<connectionPointOut>`` -- the
+    semantic linkage to the target is by name, not by wire.
+    """
+    return "\n".join([
+        f'<jumpStep localId="{local_id}" '
+        f'targetName={quoteattr(target_name)}>',
+        f"  {_position_xml(_sfc_divergence_position(local_id))}",
+        "  <connectionPointIn>",
+        f'    <connection refLocalId="{source_id}"/>',
+        "  </connectionPointIn>",
+        "</jumpStep>",
+    ])
+
+
 def _emit_selection_convergence_xml(local_id: int,
                                       source_ids: list[int]) -> str:
     """``<selectionConvergence>`` -- multiple transitions any one
@@ -925,6 +946,32 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
             sel_conv_for_step[s.name] = next_local_id
             next_local_id += 1
 
+    # ----- Phase 2b: detect back-edge transitions for jumpStep emit.
+    # A back-edge is a single-to transition whose target was declared
+    # before the transition's from_step in net.steps order -- the
+    # classic "loop back to an earlier step" pattern.  We promote
+    # these to ``<jumpStep>`` markers so the rendered ladder doesn't
+    # carry a long backward wire.  Skipped if the transition is
+    # already part of any other marker (selection conv would have
+    # claimed it; simultaneous div/conv have multi-to/multi-from
+    # which definitionally excludes back-edge promotion).
+    jump_step_for_trans: dict[int, int] = {}  # trans_index -> jumpStep_id
+    for ti, tr in enumerate(net.transitions):
+        if ti in sim_conv_for_trans or ti in sim_div_for_trans:
+            continue
+        if len(tr.to_steps) != 1 or len(tr.from_steps) != 1:
+            continue
+        to_name = tr.to_steps[0]
+        from_name = tr.from_steps[0]
+        if to_name in sel_conv_for_step:
+            continue
+        if to_name not in step_id_by_name or from_name not in step_id_by_name:
+            continue
+        # A back-edge: target declared strictly earlier than source.
+        if step_id_by_name[to_name] < step_id_by_name[from_name]:
+            jump_step_for_trans[ti] = next_local_id
+            next_local_id += 1
+
     # ----- Phase 3: compute connectionPointIn refs for steps + transitions.
     # The presence of a marker reroutes the wiring through it:
     # a step "downstream" of a sim_div sees the marker (with
@@ -957,6 +1004,12 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
     for ti, tr in enumerate(net.transitions):
         # ---- transition's outgoing side: feeds each to_step
         # (possibly through a sim_div, then possibly through a sel_conv).
+        # Back-edge transitions route through a jumpStep instead --
+        # the target step's connectionPointIn doesn't include this
+        # transition's id at all (the jumpStep terminates the wire
+        # visually; the semantic link is by name).
+        if ti in jump_step_for_trans:
+            continue
         for to_idx, to_name in enumerate(tr.to_steps):
             if to_name not in step_sources:
                 continue
@@ -1043,6 +1096,17 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
             inner_parts.append(_emit_selection_convergence_xml(
                 marker_id, sel_conv_inputs[marker_id]
             ))
+
+    # jumpStep emission: one per back-edge transition.  The
+    # jumpStep "consumes" the transition's outgoing wire and names
+    # the target step textually -- the target step's
+    # connectionPointIn does NOT reference this transition.
+    for ti in sorted(jump_step_for_trans):
+        jump_id = jump_step_for_trans[ti]
+        inner_parts.append(_emit_sfc_jump_step_xml(
+            jump_id, trans_id_by_index[ti],
+            net.transitions[ti].to_steps[0]
+        ))
 
     # Action blocks: allocated after all markers so IDs stay unique.
     for s in net.steps:

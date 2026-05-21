@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1095 tests**.
+counts are snapshotted; the current passing total is **1104 tests**.
 
 ## Reading this document
 
@@ -120,7 +120,8 @@ Status legend:
 | Named-reference cond.  | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_named_reference_condition_round_trips_as_textual_name |
 | Explicit `<selectionDivergence>` / `<simultaneousDivergence>` / `<selectionConvergence>` / `<simultaneousConvergence>` markers | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all four shapes emit + read with formalParameter pin wiring; reader traces through chained markers; combined diamond + fork-join networks round-trip |
 | Action blocks (`<actionBlock>` with `connectionPointOutAction`) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all 12 IEC §2.6.4.4 qualifiers (N/R/S/L/D/P/P0/P1/DS/DL/SD/SL), `duration=` time literal round-trip, multi-action blocks |
-| `<macroStep>` / `<jumpStep>` | ❌ | Deferred |
+| `<jumpStep targetName=...>` | ✅ | tests/emitters/test_plcopen_xml_sfc.py — back-edge transitions auto-promote to `<jumpStep>` on emit; reader resolves `targetName` (incl. through marker indirection) into the transition's `to_steps`; dangling targets drop gracefully |
+| `<macroStep>` (hierarchical sub-networks) | ❌ | Deferred |
 
 ## §4 Languages
 
@@ -244,4 +245,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1095 / 1095 passing**.
+status: **1104 / 1104 passing**.
