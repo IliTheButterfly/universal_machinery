@@ -21,14 +21,21 @@ Modules
     bodies (LD / FBD / SFC) and user-defined-type declarations
     are explicit follow-up slices.
 """
-from . import plcopen_xml
+from . import plcopen_xml, st_text
 from .plcopen_xml import (
     PlcopenParseError, parse_plcopen_xml, parse_plcopen_xml_file,
+)
+from .st_text import (
+    StParseError, parse_st_body, parse_st_expression,
 )
 
 __all__ = [
     "PlcopenParseError",
+    "StParseError",
     "parse_plcopen_xml",
     "parse_plcopen_xml_file",
+    "parse_st_body",
+    "parse_st_expression",
     "plcopen_xml",
+    "st_text",
 ]

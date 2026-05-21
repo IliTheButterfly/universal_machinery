@@ -185,10 +185,12 @@ def test_round_trip_access_vars_and_config_vars():
     assert cfg.config_vars[0].initial_value == "100"
 
 
-def test_round_trip_st_body_captured_as_comment_statement():
-    """V1 stores ST body verbatim as a single CommentStatement
-    holding the raw source text.  A follow-up slice adds the real
-    ST parser."""
+def test_round_trip_st_body_parsed_to_structured_ast():
+    """ST bodies round-trip back into structured AST via the ST
+    text parser -- the emit/parse pair preserves the statement
+    list shape.  An ``Assignment`` should re-emerge as an
+    ``Assignment``, not as a ``CommentStatement``."""
+    from universal_machinery.il import Assignment as _Assignment
     p = program(subroutines=[
         prog("Main", main=True,
               local_vars=[var("count", TagType.INT)],
@@ -198,8 +200,9 @@ def test_round_trip_st_body_captured_as_comment_statement():
     sub = p2.find_subroutine("Main")
     assert sub.st_body is not None
     assert len(sub.st_body) == 1
-    assert isinstance(sub.st_body[0], CommentStatement)
-    assert "count := 42" in sub.st_body[0].text
+    assert isinstance(sub.st_body[0], _Assignment)
+    assert sub.st_body[0].target.ref.name == "count"
+    assert sub.st_body[0].value.value == "42"
 
 
 def test_round_trip_pou_comment_preserved():

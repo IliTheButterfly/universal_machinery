@@ -293,12 +293,13 @@ def _parse_body_text(body_elem: ET.Element) -> Optional[list]:
     """Return a ``Subroutine.st_body``-shaped list from a ``<body>``
     element, or ``None`` if the body kind isn't ST.
 
-    V1 stores the ST source verbatim as a single
-    :class:`il.CommentStatement` -- the round-trip is byte-stable
-    on the source text but the structured ST AST is not
-    reconstructed.  A follow-up slice adds the real ST text
-    parser; until then, callers that want the AST should re-author
-    the body in the builder DSL.
+    Routes the textual ST content through :func:`parse_st_body` so
+    the resulting body is a fully structured AST (Assignment,
+    IfStatement, ForStatement, ...).  If parsing fails -- which
+    can happen for hand-rolled documents that use non-standard
+    extensions -- we fall back to wrapping the raw text in a
+    single :class:`il.CommentStatement` so the source survives
+    the round-trip without crashing the import.
     """
     st_elem = _child(body_elem, "ST")
     if st_elem is None:
@@ -312,7 +313,13 @@ def _parse_body_text(body_elem: ET.Element) -> Optional[list]:
     text = "".join(st_elem.itertext()).strip()
     if not text:
         return []
-    return [CommentStatement(text=text)]
+    # Try the structured parser first; on failure, preserve the
+    # source as a comment so a partial-import path stays usable.
+    from .st_text import StParseError, parse_st_body
+    try:
+        return parse_st_body(text)
+    except StParseError:
+        return [CommentStatement(text=text)]
 
 
 # -----------------------------------------------------------------------------
