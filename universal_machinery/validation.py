@@ -1155,14 +1155,100 @@ _LITERAL_KIND_TO_TYPE = {
 }
 
 
+def _root_var_datatype(expr, sub: Subroutine, prog: Program):
+    """Walk a chained FieldAccess / IndexAccess expression back to
+    its root ``VarRef``, then look up the variable's full
+    ``DataType`` (not just type-name string).
+
+    Returns the resolved ``DataType`` (with ``NamedType`` /
+    ``AliasType`` chains followed via ``_resolve_named_type``), or
+    ``None`` if the chain doesn't bottom out at a known variable.
+    """
+    from .il import FieldAccess, IndexAccess, TagRef, VarRef
+    # Drill to the leaf VarRef
+    cur = expr
+    while isinstance(cur, (FieldAccess, IndexAccess)):
+        cur = cur.base
+    if not isinstance(cur, VarRef):
+        return None
+    if not isinstance(cur.ref, TagRef):
+        return None  # Address-targeted struct access is unusual; skip
+    name = cur.ref.name
+
+    # Find the declared variable, preferring locals over globals.
+    for v in (sub.inputs + sub.outputs + sub.in_outs + sub.local_vars):
+        if v.name == name:
+            return _resolve_named_type(prog, v.data_type)
+    tag = prog.tags.get(name)
+    if tag is not None:
+        return tag.data_type
+    return None
+
+
+def _resolve_chain_type(expr, sub: Subroutine,
+                        prog: Program) -> Optional[str]:
+    """Resolve a chained ``FieldAccess`` / ``IndexAccess`` expression
+    through ``Program.user_types`` and return the leaf type-name.
+
+    Walks ``.field`` steps as StructType member lookups, ``[idx]``
+    steps as ArrayType element accesses.  Each step resolves
+    ``NamedType`` / ``AliasType`` chains.  ``None`` on any failure
+    (unknown root, missing member, non-struct field access, etc.)
+    so callers treat the operand as "type unknown" instead of
+    raising false positives.
+    """
+    from .il import (
+        ArrayType, FieldAccess, IndexAccess, StructType, VarRef,
+    )
+    # Collect the chain of steps from leaf-up, in source order
+    steps: list = []
+    cur = expr
+    while isinstance(cur, (FieldAccess, IndexAccess)):
+        steps.append(cur)
+        cur = cur.base
+    steps.reverse()  # now in apply order: outermost-first to innermost-last? No -- want innermost first.
+    # Actually we built leaf-to-root, then reversed: that's root-to-leaf.
+    # Apply each step in document order (root . step1 . step2 . ...).
+
+    cur_type = _root_var_datatype(expr, sub, prog)
+    if cur_type is None:
+        return None
+
+    for step in steps:
+        cur_type = _resolve_named_type(prog, cur_type)
+        if isinstance(step, FieldAccess):
+            if not isinstance(cur_type, StructType):
+                return None
+            member = None
+            for m in cur_type.members:
+                if m.name == step.field:
+                    member = m
+                    break
+            if member is None:
+                return None
+            cur_type = _resolve_named_type(prog, member.data_type)
+        elif isinstance(step, IndexAccess):
+            if not isinstance(cur_type, ArrayType):
+                return None
+            cur_type = _resolve_named_type(prog, cur_type.element_type)
+
+    return _tagtype_name(cur_type)
+
+
 def _infer_st_expr_type(expr, env: dict[str, str],
-                         prog: Program) -> Optional[str]:
+                         prog: Program,
+                         sub: Optional[Subroutine] = None) -> Optional[str]:
     """Best-effort IEC type-name inference for an ST Expression.
 
     Returns ``None`` when the type can't be determined (function
-    calls, field access, index access, unknown literal forms).
-    Callers treat ``None`` as "skip the check" -- a missed
-    diagnosis beats a false positive.
+    calls, unknown literal forms, unresolved chains).  Callers
+    treat ``None`` as "skip the check" -- a missed diagnosis
+    beats a false positive.
+
+    ``sub`` is required to resolve ``FieldAccess`` / ``IndexAccess``
+    chains through the POU's variable interface and the
+    ``Program.user_types`` registry.  When omitted, those
+    expression kinds return ``None`` (legacy behaviour).
     """
     from .il import (
         BinaryExpr, BinaryOp, FieldAccess, FunctionCallExpr, IndexAccess,
@@ -1172,8 +1258,12 @@ def _infer_st_expr_type(expr, env: dict[str, str],
         return _LITERAL_KIND_TO_TYPE.get(expr.kind)
     if isinstance(expr, VarRef):
         return _operand_type(prog, env, expr.ref)
+    if isinstance(expr, (FieldAccess, IndexAccess)):
+        if sub is None:
+            return None
+        return _resolve_chain_type(expr, sub, prog)
     if isinstance(expr, UnaryExpr):
-        operand_t = _infer_st_expr_type(expr.operand, env, prog)
+        operand_t = _infer_st_expr_type(expr.operand, env, prog, sub)
         if expr.op is UnaryOp.NOT:
             # NOT preserves the family: BOOL stays BOOL, integers
             # behave as bitwise-NOT.
@@ -1181,8 +1271,8 @@ def _infer_st_expr_type(expr, env: dict[str, str],
         # NEG preserves numeric type
         return operand_t
     if isinstance(expr, BinaryExpr):
-        lhs_t = _infer_st_expr_type(expr.lhs, env, prog)
-        rhs_t = _infer_st_expr_type(expr.rhs, env, prog)
+        lhs_t = _infer_st_expr_type(expr.lhs, env, prog, sub)
+        rhs_t = _infer_st_expr_type(expr.rhs, env, prog, sub)
         # Comparison operators yield BOOL regardless of operand
         # types (subject to operand-compatibility, which the
         # check pass enforces separately).
@@ -1195,9 +1285,8 @@ def _infer_st_expr_type(expr, env: dict[str, str],
         # Logical operators take BOOL inputs (or bit-strings) and
         # produce the same family.  Preserve lhs type.
         return lhs_t or rhs_t
-    # FieldAccess, IndexAccess, FunctionCallExpr: skip -- a deeper
-    # resolver (struct member lookup, function signature
-    # database) would land in a follow-up slice.
+    # FunctionCallExpr: skip -- a return-type database would land
+    # in a follow-up slice.
     return None
 
 
@@ -1229,11 +1318,12 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
     )
     errors: list[ValidationError] = []
 
-    def _check_block(stmts, env: dict[str, str], where: str) -> None:
+    def _check_block(stmts, env: dict[str, str],
+                       sub: Subroutine, where: str) -> None:
         for s in stmts:
             if isinstance(s, Assignment):
-                target_t = _lvalue_type(s.target, env, prog)
-                value_t = _infer_st_expr_type(s.value, env, prog)
+                target_t = _lvalue_type(s.target, env, prog, sub)
+                value_t = _infer_st_expr_type(s.value, env, prog, sub)
                 if (target_t is not None and value_t is not None
                         and not _are_types_compatible(target_t, value_t)):
                     errors.append(ValidationError(
@@ -1245,7 +1335,7 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
                     ))
             elif isinstance(s, IfStatement):
                 for cond, body in s.branches:
-                    cond_t = _infer_st_expr_type(cond, env, prog)
+                    cond_t = _infer_st_expr_type(cond, env, prog, sub)
                     if cond_t is not None and not _is_bool(cond_t):
                         errors.append(ValidationError(
                             code="st-condition-not-bool",
@@ -1253,11 +1343,11 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
                                      f"type {cond_t!r}"),
                             location=where,
                         ))
-                    _check_block(body, env, where)
+                    _check_block(body, env, sub, where)
                 if s.else_branch is not None:
-                    _check_block(s.else_branch, env, where)
+                    _check_block(s.else_branch, env, sub, where)
             elif isinstance(s, WhileStatement):
-                cond_t = _infer_st_expr_type(s.condition, env, prog)
+                cond_t = _infer_st_expr_type(s.condition, env, prog, sub)
                 if cond_t is not None and not _is_bool(cond_t):
                     errors.append(ValidationError(
                         code="st-condition-not-bool",
@@ -1265,10 +1355,10 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
                                  f"type {cond_t!r}"),
                         location=where,
                     ))
-                _check_block(s.body, env, where)
+                _check_block(s.body, env, sub, where)
             elif isinstance(s, RepeatStatement):
-                _check_block(s.body, env, where)
-                cond_t = _infer_st_expr_type(s.until, env, prog)
+                _check_block(s.body, env, sub, where)
+                cond_t = _infer_st_expr_type(s.until, env, prog, sub)
                 if cond_t is not None and not _is_bool(cond_t):
                     errors.append(ValidationError(
                         code="st-condition-not-bool",
@@ -1294,7 +1384,7 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
                 ):
                     if bound is None:
                         continue
-                    bt = _infer_st_expr_type(bound, env, prog)
+                    bt = _infer_st_expr_type(bound, env, prog, sub)
                     if bt is not None and not _is_numeric(bt):
                         errors.append(ValidationError(
                             code="st-for-bound-not-numeric",
@@ -1302,32 +1392,44 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
                                      f"non-numeric type {bt!r}"),
                             location=where,
                         ))
-                _check_block(s.body, env, where)
+                _check_block(s.body, env, sub, where)
             elif isinstance(s, CaseStatement):
                 # Descend into clause bodies + else; selector /
                 # label type checks are deferred (literal labels
                 # often use typed-prefix forms whose types are
                 # only loosely modelled).
                 for clause in s.clauses:
-                    _check_block(clause.body, env, where)
+                    _check_block(clause.body, env, sub, where)
                 if s.else_branch is not None:
-                    _check_block(s.else_branch, env, where)
+                    _check_block(s.else_branch, env, sub, where)
 
     for sub in prog.subroutines:
         env = _build_type_env(prog, sub)
         if sub.st_body is not None:
-            _check_block(sub.st_body, env,
+            _check_block(sub.st_body, env, sub,
                           f"Subroutine '{sub.name}' / st_body")
         for m in sub.methods:
             if m.st_body is None:
                 continue
+            # Build a synthetic Subroutine that exposes the
+            # method's variable interface to the chain resolver.
+            # We union the enclosing FB's vars with the method's
+            # locals so both are in scope.
+            method_sub = Subroutine(
+                name=f"{sub.name}.{m.name}",
+                kind=sub.kind,
+                inputs=list(sub.inputs) + list(m.inputs),
+                outputs=list(sub.outputs) + list(m.outputs),
+                in_outs=list(sub.in_outs) + list(m.in_outs),
+                local_vars=list(sub.local_vars) + list(m.local_vars),
+            )
             method_env = dict(env)
             for v in (m.inputs + m.outputs + m.in_outs + m.local_vars):
                 resolved = _resolve_named_type(prog, v.data_type)
                 name = _tagtype_name(resolved)
                 if name is not None:
                     method_env[v.name] = name
-            _check_block(m.st_body, method_env,
+            _check_block(m.st_body, method_env, method_sub,
                           f"Subroutine '{sub.name}' / Method "
                           f"'{m.name}' / st_body")
 
@@ -1335,19 +1437,24 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
 
 
 def _lvalue_type(target, env: dict[str, str],
-                 prog: Program) -> Optional[str]:
+                 prog: Program,
+                 sub: Optional[Subroutine] = None) -> Optional[str]:
     """Resolve an Assignment.target's type-name.
 
     Targets per ``il.st.is_lvalue``:
       - ``VarRef(addr)``    : look up in env / Program.tags
-      - ``FieldAccess``     : skip -- struct member lookup TBD
-      - ``IndexAccess``     : skip -- array element-type lookup TBD
+      - ``FieldAccess``     : walk through StructType members via
+                              ``_resolve_chain_type``
+      - ``IndexAccess``     : walk through ArrayType element type
+                              via ``_resolve_chain_type``
     """
     from .il import FieldAccess, IndexAccess, VarRef
     if isinstance(target, VarRef):
         return _operand_type(prog, env, target.ref)
     if isinstance(target, (FieldAccess, IndexAccess)):
-        return None
+        if sub is None:
+            return None
+        return _resolve_chain_type(target, sub, prog)
     return None
 
 
