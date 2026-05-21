@@ -723,6 +723,83 @@ def _parse_fbd_body(fbd_elem: ET.Element) -> FbdNetwork:
 # -----------------------------------------------------------------------------
 
 
+def _expression_to_ld_ops(expr) -> Optional[tuple]:
+    """Lower an ST ``Expression`` to a tuple of IL LD-style ops.
+
+    Recognises the common subset of boolean expressions that
+    transition conditions use:
+
+      - ``VarRef(name)``                       -> ``(ContactNO(name),)``
+      - ``UnaryExpr(NOT, VarRef(name))``       -> ``(ContactNC(name),)``
+      - ``BinaryExpr(AND, left, right)``       -> left_ops + right_ops
+      - ``BinaryExpr(OR, left, right)``        -> ``(ParallelGroup(left, right),)``
+
+    Returns ``None`` when the expression doesn't fit -- caller
+    should fall back to the textual placeholder.  The function is
+    intentionally conservative: anything outside the AND/OR/NOT
+    subset (literals, arithmetic, function calls, comparisons,
+    field/index access) is rejected rather than misrendered.
+    """
+    from ..il import (
+        BinaryExpr, BinaryOp, FieldAccess, IndexAccess, Literal,
+        TagRef, UnaryExpr, UnaryOp, VarRef,
+    )
+    from ..il.ast import Address
+    from ..il.ops import ContactNO, ContactNC, ParallelGroup
+
+    def _operand(addr_expr) -> Optional[object]:
+        """Pull the IL operand (Address|TagRef) out of a VarRef."""
+        if isinstance(addr_expr, VarRef):
+            ref = addr_expr.ref
+            if isinstance(ref, (Address, TagRef)):
+                return ref
+        return None
+
+    if isinstance(expr, VarRef):
+        op_addr = _operand(expr)
+        if op_addr is None:
+            return None
+        return (ContactNO(op_addr),)
+
+    if isinstance(expr, UnaryExpr) and expr.op is UnaryOp.NOT:
+        operand = expr.operand
+        # ``NOT a`` -> ContactNC; ``NOT NOT a`` collapses to NO
+        inner = _expression_to_ld_ops(operand)
+        if inner is None:
+            return None
+        # If inner was a single ContactNO, flip it; otherwise we
+        # can't represent the negation inside the LD-op grammar.
+        if len(inner) == 1 and isinstance(inner[0], ContactNO):
+            return (ContactNC(inner[0].address),)
+        if len(inner) == 1 and isinstance(inner[0], ContactNC):
+            return (ContactNO(inner[0].address),)
+        return None
+
+    if isinstance(expr, BinaryExpr):
+        if expr.op is BinaryOp.AND:
+            lhs_ops = _expression_to_ld_ops(expr.lhs)
+            rhs_ops = _expression_to_ld_ops(expr.rhs)
+            if lhs_ops is None or rhs_ops is None:
+                return None
+            return lhs_ops + rhs_ops
+        if expr.op is BinaryOp.OR:
+            lhs_ops = _expression_to_ld_ops(expr.lhs)
+            rhs_ops = _expression_to_ld_ops(expr.rhs)
+            if lhs_ops is None or rhs_ops is None:
+                return None
+            # Flatten chained ORs: an OR whose own operands are
+            # already ParallelGroups should merge their branches.
+            def _branches(ops):
+                if (len(ops) == 1
+                        and isinstance(ops[0], ParallelGroup)):
+                    return list(ops[0].branches)
+                return [tuple(ops)]
+            branches = tuple(_branches(lhs_ops) + _branches(rhs_ops))
+            return (ParallelGroup(branches=branches),)
+
+    return None
+
+
 def _parse_sfc_condition(cond_elem: ET.Element) -> str:
     """Extract a transition's condition as a textual ST
     expression.
@@ -851,15 +928,30 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
         for sid, sname, _i, _c, s_incoming in steps_raw:
             if tid in s_incoming:
                 to_steps.append(sname)
-        # Render the textual condition as a single bare TagRef so
-        # the IL Transition.condition slot is non-empty -- the ST
-        # emitter's gate formatter renders it back to the same
-        # text.  Empty / "TRUE" conditions stay as empty tuples.
+        # Lower the textual condition to structured IL LD ops:
+        # parse via the ST expression parser, then convert the
+        # resulting Expression tree to a tuple of contacts / NOTs /
+        # ParallelGroups.  If the expression doesn't match the
+        # supported subset (anything outside AND / OR / NOT over
+        # bare variable refs), fall back to a single placeholder
+        # ContactNO carrying the raw text so the emitter's gate
+        # formatter renders it back verbatim.  Empty / "TRUE"
+        # conditions stay as empty tuples.
         condition_ops: tuple = ()
         if cond_text and cond_text.upper() != "TRUE":
             from ..il.ops import ContactNO
             from ..il import TagRef
-            condition_ops = (ContactNO(TagRef(name=cond_text)),)
+            from .st_text import StParseError, parse_st_expression
+            try:
+                expr = parse_st_expression(cond_text)
+            except StParseError:
+                expr = None
+            lowered = (_expression_to_ld_ops(expr)
+                        if expr is not None else None)
+            if lowered is not None:
+                condition_ops = lowered
+            else:
+                condition_ops = (ContactNO(TagRef(name=cond_text)),)
         transitions.append(Transition(
             from_steps=tuple(from_steps),
             to_steps=tuple(to_steps),
