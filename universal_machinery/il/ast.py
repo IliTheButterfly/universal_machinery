@@ -56,6 +56,7 @@ class TagType(Enum):
     BYTE       = "BYTE"          # 8-bit, treated as bit string
     WORD       = "WORD"          # 16-bit bit string
     DWORD      = "DWORD"         # 32-bit bit string
+    LWORD      = "LWORD"         # 64-bit bit string
     SINT       = "SINT"          # signed 8-bit
     INT        = "INT"           # signed 16-bit
     DINT       = "DINT"          # signed 32-bit
@@ -67,7 +68,11 @@ class TagType(Enum):
     REAL       = "REAL"          # 32-bit float
     LREAL      = "LREAL"         # 64-bit float
     TIME       = "TIME"          # time duration
-    STRING     = "STRING"        # variable-length string
+    DATE       = "DATE"          # calendar date
+    TOD        = "TOD"           # time-of-day (IEC TIME_OF_DAY)
+    DT         = "DT"            # date and time (IEC DATE_AND_TIME)
+    STRING     = "STRING"        # variable-length single-byte string
+    WSTRING    = "WSTRING"       # variable-length wide-character string
 
 
 @dataclass(frozen=True)

@@ -895,9 +895,14 @@ _INT_TYPES = frozenset({
     "USINT", "UINT", "UDINT", "ULINT",
 })
 _REAL_TYPES = frozenset({"REAL", "LREAL"})
-_BIT_STRING_TYPES = frozenset({"BYTE", "WORD", "DWORD"})  # LWORD per IEC; absent from TagType
-_TIME_TYPES = frozenset({"TIME"})                          # DATE/TOD/DT absent from TagType today
-_STRING_TYPES = frozenset({"STRING"})
+_BIT_STRING_TYPES = frozenset({"BYTE", "WORD", "DWORD", "LWORD"})
+#: IEC §6.5: TIME / DATE / TOD / DT cross-bucket only via
+#: explicit conversion functions; we keep all four in one
+#: "time-family" bucket so e.g. ``Move(time_var, date_var)``
+#: doesn't raise (the conversion-name resolver handles
+#: ``TIME_TO_DT`` / etc. through ``<SRC>_TO_<DST>``).
+_TIME_TYPES = frozenset({"TIME", "DATE", "TOD", "DT"})
+_STRING_TYPES = frozenset({"STRING", "WSTRING"})
 
 
 def _tagtype_name(t) -> Optional[str]:
@@ -980,6 +985,10 @@ def _are_types_compatible(a_name: Optional[str],
     if (a_name in _REAL_TYPES and b_name in _REAL_TYPES):
         return True
     if (a_name in _BIT_STRING_TYPES and b_name in _BIT_STRING_TYPES):
+        return True
+    if (a_name in _TIME_TYPES and b_name in _TIME_TYPES):
+        return True
+    if (a_name in _STRING_TYPES and b_name in _STRING_TYPES):
         return True
     # Integer <-> bit-string: permissive
     if ((a_name in _INT_TYPES and b_name in _BIT_STRING_TYPES)
