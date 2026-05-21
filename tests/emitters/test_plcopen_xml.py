@@ -174,26 +174,50 @@ def test_var_with_initial_value_emits_simpleValue():
 
 
 # -----------------------------------------------------------------------------
-# Body: ST text wrapped in <body><ST><pre xmlns="..xhtml">...</pre></ST></body>
+# Body: pure-LD rungs lower to native <LD>; mixed rungs go through ST text
 # -----------------------------------------------------------------------------
 
 
-def test_pou_body_contains_ST_element_with_emitted_statements():
+def test_pou_body_pure_ld_rungs_lower_to_LD_element():
+    """Rungs that contain only contacts + coils emit as native
+    PLCopen ``<LD>`` (left rail → contact(s) → coil → right rail).
+    """
     p = prog("Main", main=True, rungs=[
         rung(no("X1"), coil("Y1")),
         rung(no("X2"), set_("Y2")),
     ])
     xml = emit_pou_xml(p)
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
+    ld = root.find(".//plc:body/plc:LD", _NS)
+    assert ld is not None
+    # Each rung produces left rail + contact + coil + right rail.
+    rails_l = ld.findall("plc:leftPowerRail", _NS)
+    rails_r = ld.findall("plc:rightPowerRail", _NS)
+    contacts = ld.findall("plc:contact", _NS)
+    coils = ld.findall("plc:coil", _NS)
+    assert len(rails_l) == 2
+    assert len(rails_r) == 2
+    assert len(contacts) == 2
+    assert len(coils) == 2
+    # The SET coil keeps its storage modifier.
+    assert any(c.get("storage") == "set" for c in coils)
+
+
+def test_pou_body_mixed_rungs_still_lower_to_ST_text():
+    """Rungs that contain non-LD ops (math / calls / etc.) keep
+    going through the ST translator until the mixed LD+FBD slice
+    lands."""
+    from universal_machinery.builders import add, tag
+    p = prog("Main", main=True, rungs=[
+        rung(add(tag("a"), tag("b"), tag("r"))),
+    ])
+    xml = emit_pou_xml(p)
+    root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
     st = root.find(".//plc:body/plc:ST", _NS)
     assert st is not None
-    # The ST source text lives inside an XHTML namespace element
-    # (PLCopen schema requires xsd:any namespace="..xhtml"); we use <pre>
-    # so whitespace + line breaks in the ST source are preserved.
     pre = st.find("{http://www.w3.org/1999/xhtml}pre")
     assert pre is not None
-    assert "Y1 := X1;" in pre.text
-    assert "Y2 := TRUE" in pre.text
+    assert "r := a + b;" in pre.text
 
 
 def test_st_body_escapes_xml_special_chars():

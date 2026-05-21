@@ -67,10 +67,11 @@ from ..il import (
     AccessVar, Address, AliasType, ArrayType, BlockPin, CommentStatement,
     ConfigVar, Configuration, Connection, EnumType, FbBlock, FbdJump,
     FbdLabel, FbdNetwork, FbdReturn, InOutVariable, InVariable, NamedType,
-    OutVariable, PouInstance, PouKind, Position, Program, Resource,
-    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagType,
-    TaskSpec, Transition, Var, VarDirection,
+    OutVariable, PouInstance, PouKind, Position, Program, Resource, Rung,
+    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagRef,
+    TagType, TaskSpec, Transition, Var, VarDirection,
 )
+from ..il.ops import ContactNC, ContactNO, OutCoil, OutReset, OutSet
 
 
 #: PLCopen TC6 XML namespace (v2.01 schema).
@@ -868,6 +869,136 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     return SfcNetwork(steps=steps, transitions=transitions)
 
 
+# -----------------------------------------------------------------------------
+# LD body parsing (IEC §6.6 / PLCopen <LD>)
+# -----------------------------------------------------------------------------
+
+
+def _parse_ld_variable_operand(elem: ET.Element):
+    """``<variable>X001</variable>`` text body -> ``Address`` or
+    ``TagRef`` matching the builder's smart-string coercion.
+
+    Returns ``TagRef`` for symbolic names, ``Address`` for CLICK-
+    style (``X001``) or IEC direct-rep (``%I0.0``) operands.
+    """
+    var_elem = _child(elem, "variable")
+    text = (var_elem.text or "").strip() if var_elem is not None else ""
+    if not text:
+        return TagRef(name="")
+    if text.startswith("%"):
+        return Address(text)
+    # CLICK-style: uppercase letters followed by digits, no dots
+    head = text.rstrip("0123456789")
+    if head.isalpha() and head.isupper() and head != text:
+        return Address(text)
+    return TagRef(name=text)
+
+
+def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
+    """Walk an ``<LD>`` body and group its elements into ``Rung``s.
+
+    Algorithm:
+
+      1. First pass: index every element by ``localId`` and
+         record its kind (left-rail, contact, coil, right-rail).
+         Capture each element's incoming-connection localIds
+         (sink-side wires).
+      2. For each ``<leftPowerRail>``, walk forward through the
+         sink-side graph until reaching a ``<rightPowerRail>``.
+         The walk visits each chained contact / coil in order;
+         the resulting list becomes one ``Rung``.
+
+    Mixed-language bodies (LD with embedded ``<block>`` elements
+    from the ``fbdObjects`` group) are not supported in V1 --
+    such elements are silently skipped, which produces a partial
+    but well-formed rung.  A future slice routes ``<block>``
+    inside LD through the FBD primitive reader.
+
+    Elements that don't link back to any ``<leftPowerRail>`` (e.g.
+    orphan coils a hand-rolled tool emitted) are skipped.
+    """
+    elements_by_id: dict[int, ET.Element] = {}
+    kind_by_id: dict[int, str] = {}
+    incoming_by_id: dict[int, list[int]] = {}
+
+    for child in ld_elem:
+        local = _strip_ns(child.tag)
+        if local not in ("leftPowerRail", "rightPowerRail",
+                         "contact", "coil"):
+            continue
+        lid = _parse_local_id(child)
+        elements_by_id[lid] = child
+        kind_by_id[lid] = local
+        incoming_by_id[lid] = _collect_refs(_child(child, "connectionPointIn"))
+
+    # Inverse adjacency: producer localId -> list of consumer ids.
+    consumers: dict[int, list[int]] = {lid: [] for lid in elements_by_id}
+    for lid, sources in incoming_by_id.items():
+        for src in sources:
+            if src in consumers:
+                consumers[src].append(lid)
+
+    rungs: list[Rung] = []
+    visited: set[int] = set()
+
+    for lid, kind in kind_by_id.items():
+        if kind != "leftPowerRail":
+            continue
+        # Walk the rail's downstream chain.  PLCopen rungs are
+        # linear in the common case; we follow the first
+        # consumer at each step.
+        ops: list = []
+        cursor = lid
+        while True:
+            if cursor in visited:
+                break
+            visited.add(cursor)
+            nxts = consumers.get(cursor, [])
+            if not nxts:
+                break
+            # Prefer the unvisited next consumer that isn't a
+            # rightPowerRail (rails are terminators, not links).
+            chosen: Optional[int] = None
+            for n in nxts:
+                if n in visited:
+                    continue
+                if kind_by_id.get(n) == "rightPowerRail":
+                    # Terminator -- record but don't follow further.
+                    chosen = n
+                    break
+                chosen = n
+                break
+            if chosen is None:
+                break
+            kind = kind_by_id[chosen]
+            elem = elements_by_id[chosen]
+            if kind == "contact":
+                addr = _parse_ld_variable_operand(elem)
+                negated = _parse_bool_attr(elem, "negated")
+                ops.append(ContactNC(addr) if negated else ContactNO(addr))
+                cursor = chosen
+                continue
+            if kind == "coil":
+                addr = _parse_ld_variable_operand(elem)
+                storage = elem.get("storage") or ""
+                if storage == "set":
+                    ops.append(OutSet(addr))
+                elif storage == "reset":
+                    ops.append(OutReset(addr))
+                else:
+                    ops.append(OutCoil(addr))
+                cursor = chosen
+                continue
+            if kind == "rightPowerRail":
+                visited.add(chosen)
+                break
+            break
+        if ops:
+            rungs.append(Rung(ops=ops))
+
+    return rungs
+
+
 def _parse_body_text(body_elem: ET.Element) -> Optional[list]:
     """Return a ``Subroutine.st_body``-shaped list from a ``<body>``
     element, or ``None`` if the body kind isn't ST.
@@ -974,18 +1105,21 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
     st_body: Optional[list] = None
     fbd_body: Optional[FbdNetwork] = None
     sfc_body: Optional[SfcNetwork] = None
+    rungs: list[Rung] = []
     body_elem = _child(pou_elem, "body")
     if body_elem is not None:
         # Body-kind dispatch: prefer the structured form when the
-        # inner element identifies it.  Order: FBD, SFC, then ST
-        # as the textual fallback.  LD reader coverage is still
-        # deferred; LD bodies leave all three slots as None.
+        # inner element identifies it.  Order: FBD, SFC, LD, then
+        # ST as the textual fallback.
         fbd_elem = _child(body_elem, "FBD")
         sfc_elem = _child(body_elem, "SFC")
+        ld_elem  = _child(body_elem, "LD")
         if fbd_elem is not None:
             fbd_body = _parse_fbd_body(fbd_elem)
         elif sfc_elem is not None:
             sfc_body = _parse_sfc_body(sfc_elem)
+        elif ld_elem is not None:
+            rungs = _parse_ld_body(ld_elem)
         else:
             st_body = _parse_body_text(body_elem)
 
@@ -995,6 +1129,7 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
         name=name, kind=kind, main=main, comment=comment,
         inputs=inputs, outputs=outputs, in_outs=in_outs,
         local_vars=local_vars, return_type=return_type,
+        rungs=rungs,
         st_body=st_body, fbd_body=fbd_body, sfc=sfc_body,
     )
 
