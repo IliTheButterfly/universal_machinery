@@ -247,28 +247,47 @@ def test_trunc_returns_dint():
 
 
 # -----------------------------------------------------------------------------
-# Polymorphic functions skip silently
+# Polymorphic builtins -- handled in the next slice, but earlier
+# slices left them in "skip" mode.  These tests now verify the
+# operand-aware behaviour: ABS(INT-lit) -> INT, so a BOOL target
+# raises.
 # -----------------------------------------------------------------------------
 
 
-def test_abs_skips_silently():
-    """``ABS`` is polymorphic -- type depends on input.  V1
-    leaves it None so we don't raise false positives on
-    ``flag := ABS(x)``."""
+def test_abs_returns_operand_type():
+    """``ABS`` returns its operand's type -- ABS of an INT
+    literal yields INT, which doesn't match a BOOL target."""
     p = program(subroutines=[prog("Main", main=True,
         local_vars=[var("flag", TagType.BOOL)],
         st_body=[assign("flag", fcall_expr("ABS", lit(0)))],
     )])
-    assert "st-assignment-type-mismatch" not in _codes(p)
+    assert "st-assignment-type-mismatch" in _codes(p)
 
 
-def test_min_max_sel_skip_silently():
-    for name in ("MIN", "MAX", "SEL", "LIMIT", "MUX"):
+def test_min_max_pick_first_arg_type():
+    """``MIN`` / ``MAX`` pick their controlling arg's type
+    (the first input).  ``flag := MIN(int_lit, int_lit)``
+    therefore raises against a BOOL target."""
+    for name in ("MIN", "MAX"):
         p = program(subroutines=[prog("Main", main=True,
             local_vars=[var("flag", TagType.BOOL)],
             st_body=[assign("flag", fcall_expr(name, lit(0), lit(1)))],
         )])
-        assert "st-assignment-type-mismatch" not in _codes(p), name
+        assert "st-assignment-type-mismatch" in _codes(p), name
+
+
+def test_sel_limit_mux_pick_value_arg_type():
+    """``SEL(g, in0, in1)``, ``LIMIT(lo, value, hi)``,
+    ``MUX(k, in0, ...)`` pick the controlling-arg type
+    (index 1 -- in0 / value / in0).  ``flag := SEL(g, 0, 1)``
+    raises since in0 (INT lit) doesn't match BOOL flag."""
+    for name in ("SEL", "LIMIT", "MUX"):
+        p = program(subroutines=[prog("Main", main=True,
+            local_vars=[var("flag", TagType.BOOL)],
+            st_body=[assign("flag",
+                              fcall_expr(name, lit(0), lit(1), lit(2)))],
+        )])
+        assert "st-assignment-type-mismatch" in _codes(p), name
 
 
 # -----------------------------------------------------------------------------
