@@ -1137,6 +1137,220 @@ def _check_op_types(prog: Program) -> list[ValidationError]:
     return errors
 
 
+# -----------------------------------------------------------------------------
+# Semantic type checking on ST AST (IEC §3)
+# -----------------------------------------------------------------------------
+
+
+#: Map from ST ``Literal.kind`` -> IEC type-name string.  Used by
+#: the ST type inferrer; covers the literal kinds the builder
+#: produces and the parser emits.  Unknown kinds (typed literals
+#: like ``T#100ms``, ``16#FF``) fall through to None -- the type
+#: check skips comparisons that involve them.
+_LITERAL_KIND_TO_TYPE = {
+    "bool":   "BOOL",
+    "int":    "INT",
+    "real":   "REAL",
+    "string": "STRING",
+}
+
+
+def _infer_st_expr_type(expr, env: dict[str, str],
+                         prog: Program) -> Optional[str]:
+    """Best-effort IEC type-name inference for an ST Expression.
+
+    Returns ``None`` when the type can't be determined (function
+    calls, field access, index access, unknown literal forms).
+    Callers treat ``None`` as "skip the check" -- a missed
+    diagnosis beats a false positive.
+    """
+    from .il import (
+        BinaryExpr, BinaryOp, FieldAccess, FunctionCallExpr, IndexAccess,
+        Literal, UnaryExpr, UnaryOp, VarRef,
+    )
+    if isinstance(expr, Literal):
+        return _LITERAL_KIND_TO_TYPE.get(expr.kind)
+    if isinstance(expr, VarRef):
+        return _operand_type(prog, env, expr.ref)
+    if isinstance(expr, UnaryExpr):
+        operand_t = _infer_st_expr_type(expr.operand, env, prog)
+        if expr.op is UnaryOp.NOT:
+            # NOT preserves the family: BOOL stays BOOL, integers
+            # behave as bitwise-NOT.
+            return operand_t
+        # NEG preserves numeric type
+        return operand_t
+    if isinstance(expr, BinaryExpr):
+        lhs_t = _infer_st_expr_type(expr.lhs, env, prog)
+        rhs_t = _infer_st_expr_type(expr.rhs, env, prog)
+        # Comparison operators yield BOOL regardless of operand
+        # types (subject to operand-compatibility, which the
+        # check pass enforces separately).
+        comparison_ops = {
+            BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.LE,
+            BinaryOp.GT, BinaryOp.GE,
+        }
+        if expr.op in comparison_ops:
+            return "BOOL"
+        # Logical operators take BOOL inputs (or bit-strings) and
+        # produce the same family.  Preserve lhs type.
+        return lhs_t or rhs_t
+    # FieldAccess, IndexAccess, FunctionCallExpr: skip -- a deeper
+    # resolver (struct member lookup, function signature
+    # database) would land in a follow-up slice.
+    return None
+
+
+def _check_st_types(prog: Program) -> list[ValidationError]:
+    """Type-check ST AST statements in every POU's ``st_body``.
+
+    Emits:
+
+      - st-assignment-type-mismatch  : Assignment.target and
+                                        Assignment.value live in
+                                        different IEC §6.5 buckets.
+      - st-condition-not-bool        : IF / WHILE / REPEAT
+                                        condition isn't BOOL.
+      - st-for-index-not-numeric     : FOR loop's index variable
+                                        isn't in the integer
+                                        family (REAL not allowed
+                                        per IEC §3.3.2.4).
+      - st-for-bound-not-numeric     : FOR start/end/step isn't
+                                        numeric.
+
+    Method bodies (``Subroutine.methods[*].st_body``) get checked
+    too, using the method's variable interface unioned with the
+    enclosing FB's locals.
+    """
+    from .il import (
+        Assignment, CaseStatement, FieldAccess, ForStatement,
+        IfStatement, IndexAccess, RepeatStatement, VarRef,
+        WhileStatement,
+    )
+    errors: list[ValidationError] = []
+
+    def _check_block(stmts, env: dict[str, str], where: str) -> None:
+        for s in stmts:
+            if isinstance(s, Assignment):
+                target_t = _lvalue_type(s.target, env, prog)
+                value_t = _infer_st_expr_type(s.value, env, prog)
+                if (target_t is not None and value_t is not None
+                        and not _are_types_compatible(target_t, value_t)):
+                    errors.append(ValidationError(
+                        code="st-assignment-type-mismatch",
+                        message=(f"ST assignment target type "
+                                 f"{target_t!r} not compatible with "
+                                 f"value type {value_t!r}"),
+                        location=where,
+                    ))
+            elif isinstance(s, IfStatement):
+                for cond, body in s.branches:
+                    cond_t = _infer_st_expr_type(cond, env, prog)
+                    if cond_t is not None and not _is_bool(cond_t):
+                        errors.append(ValidationError(
+                            code="st-condition-not-bool",
+                            message=(f"IF condition has non-BOOL "
+                                     f"type {cond_t!r}"),
+                            location=where,
+                        ))
+                    _check_block(body, env, where)
+                if s.else_branch is not None:
+                    _check_block(s.else_branch, env, where)
+            elif isinstance(s, WhileStatement):
+                cond_t = _infer_st_expr_type(s.condition, env, prog)
+                if cond_t is not None and not _is_bool(cond_t):
+                    errors.append(ValidationError(
+                        code="st-condition-not-bool",
+                        message=(f"WHILE condition has non-BOOL "
+                                 f"type {cond_t!r}"),
+                        location=where,
+                    ))
+                _check_block(s.body, env, where)
+            elif isinstance(s, RepeatStatement):
+                _check_block(s.body, env, where)
+                cond_t = _infer_st_expr_type(s.until, env, prog)
+                if cond_t is not None and not _is_bool(cond_t):
+                    errors.append(ValidationError(
+                        code="st-condition-not-bool",
+                        message=(f"REPEAT UNTIL condition has "
+                                 f"non-BOOL type {cond_t!r}"),
+                        location=where,
+                    ))
+            elif isinstance(s, ForStatement):
+                # IEC §3.3.2.4: index var must be an integer
+                # type specifically (REAL not allowed).
+                idx_t = env.get(s.index_var)
+                if idx_t is not None and idx_t not in _INT_TYPES:
+                    errors.append(ValidationError(
+                        code="st-for-index-not-numeric",
+                        message=(f"FOR index {s.index_var!r} has "
+                                 f"non-integer type {idx_t!r}"),
+                        location=where,
+                    ))
+                for bound, label in (
+                    (s.start, "start"),
+                    (s.end,   "end"),
+                    (s.step,  "step"),
+                ):
+                    if bound is None:
+                        continue
+                    bt = _infer_st_expr_type(bound, env, prog)
+                    if bt is not None and not _is_numeric(bt):
+                        errors.append(ValidationError(
+                            code="st-for-bound-not-numeric",
+                            message=(f"FOR {label} bound has "
+                                     f"non-numeric type {bt!r}"),
+                            location=where,
+                        ))
+                _check_block(s.body, env, where)
+            elif isinstance(s, CaseStatement):
+                # Descend into clause bodies + else; selector /
+                # label type checks are deferred (literal labels
+                # often use typed-prefix forms whose types are
+                # only loosely modelled).
+                for clause in s.clauses:
+                    _check_block(clause.body, env, where)
+                if s.else_branch is not None:
+                    _check_block(s.else_branch, env, where)
+
+    for sub in prog.subroutines:
+        env = _build_type_env(prog, sub)
+        if sub.st_body is not None:
+            _check_block(sub.st_body, env,
+                          f"Subroutine '{sub.name}' / st_body")
+        for m in sub.methods:
+            if m.st_body is None:
+                continue
+            method_env = dict(env)
+            for v in (m.inputs + m.outputs + m.in_outs + m.local_vars):
+                resolved = _resolve_named_type(prog, v.data_type)
+                name = _tagtype_name(resolved)
+                if name is not None:
+                    method_env[v.name] = name
+            _check_block(m.st_body, method_env,
+                          f"Subroutine '{sub.name}' / Method "
+                          f"'{m.name}' / st_body")
+
+    return errors
+
+
+def _lvalue_type(target, env: dict[str, str],
+                 prog: Program) -> Optional[str]:
+    """Resolve an Assignment.target's type-name.
+
+    Targets per ``il.st.is_lvalue``:
+      - ``VarRef(addr)``    : look up in env / Program.tags
+      - ``FieldAccess``     : skip -- struct member lookup TBD
+      - ``IndexAccess``     : skip -- array element-type lookup TBD
+    """
+    from .il import FieldAccess, IndexAccess, VarRef
+    if isinstance(target, VarRef):
+        return _operand_type(prog, env, target.ref)
+    if isinstance(target, (FieldAccess, IndexAccess)):
+        return None
+    return None
+
+
 def _check_sfc_wellformedness(prog: Program) -> list[ValidationError]:
     """Delegate to ``SfcNetwork.validate()`` for each POU's SFC body."""
     errors: list[ValidationError] = []
@@ -1186,6 +1400,9 @@ def validate(prog: Program) -> list[ValidationError]:
      15. Semantic type checking on rung ops (IEC §6.5
          compatibility: Move src/dst, BinaryMath numericity,
          Compare operand symmetry, coil targets are BOOL)
+     16. Semantic type checking on ST AST bodies (Assignment
+         target↔value compat, IF/WHILE/REPEAT condition is BOOL,
+         FOR index numericity)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -1203,6 +1420,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_st_goto_labels(prog))
     errors.extend(_check_access_and_config_vars(prog))
     errors.extend(_check_op_types(prog))
+    errors.extend(_check_st_types(prog))
     return errors
 
 
