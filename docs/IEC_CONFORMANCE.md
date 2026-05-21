@@ -169,10 +169,14 @@ Concrete slices to close the larger conformance gaps, in priority order:
    back into IL ``Program``s, closing the round-trip loop and
    unlocking the cross-vendor migration use case (import a program
    authored in matiec / Beremiz / OpenPLC editor → modify in IL →
-   re-emit to another vendor).  V1 covers POU interfaces +
+   re-emit to another vendor).  Covers POU interfaces +
    the full Configuration model including accessVars / configVars
-   / per-task pouInstance binding.  ST bodies are parsed back
-   into structured AST via
+   / per-task pouInstance binding; plus user-defined types
+   (``<dataTypes>`` block) for all five IEC §2.3.3 variants
+   (STRUCT, ARRAY, ENUM, SUBRANGE signed/unsigned, ALIAS),
+   resolved on variable interfaces via ``<derived name=>`` →
+   ``NamedType``.  ST bodies are parsed back into structured AST
+   via
    [`parsers.st_text`](../universal_machinery/parsers/st_text.py)
    (hand-rolled recursive-descent + Pratt expression parser per
    IEC §3.3.1 precedence): assignments, IF/ELSIF/ELSE, CASE with
@@ -193,9 +197,6 @@ Concrete slices to close the larger conformance gaps, in priority order:
 
    Next:
      - Reader coverage for graphical bodies (LD / FBD / SFC).
-     - User-defined-type registry plumbing (so
-       ``<derived name=>`` references resolve back to STRUCT /
-       ARRAY / ENUM / SUBRANGE / ALIAS declarations).
      - Round-trip against PLCopen reference tools -- XSD validity
        is necessary but not sufficient for full cert.
 
