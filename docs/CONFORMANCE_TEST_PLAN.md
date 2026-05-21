@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1131 tests**.
+counts are snapshotted; the current passing total is **1139 tests**.
 
 ## Reading this document
 
@@ -120,6 +120,7 @@ Status legend:
 | Named-reference cond.  | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_named_reference_condition_round_trips_as_textual_name |
 | Explicit `<selectionDivergence>` / `<simultaneousDivergence>` / `<selectionConvergence>` / `<simultaneousConvergence>` markers | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all four shapes emit + read with formalParameter pin wiring; reader traces through chained markers; combined diamond + fork-join networks round-trip |
 | Action blocks (`<actionBlock>` with `connectionPointOutAction`) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all 12 IEC §2.6.4.4 qualifiers (N/R/S/L/D/P/P0/P1/DS/DL/SD/SL), `duration=` time literal round-trip, multi-action blocks |
+| Inline action bodies (`<action><inline><ST>...</ST></inline></action>`) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — `Action.inline_body: tuple[Statement, ...]` carries embedded ST AST; emit writes the body as ST text inside `<inline><ST><xhtml:pre>`, reader parses it back via `parse_st_body`; mixed inline + reference actions in one block round-trip; unparseable inline ST drops to empty rather than failing the read |
 | `<jumpStep targetName=...>` | ✅ | tests/emitters/test_plcopen_xml_sfc.py — back-edge transitions auto-promote to `<jumpStep>` on emit; reader resolves `targetName` (incl. through marker indirection) into the transition's `to_steps`; dangling targets drop gracefully |
 | `<macroStep>` (hierarchical sub-networks) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — `Step.macro: Optional[SfcNetwork]` carries the nested network; emit wraps it in `<body><SFC>...</SFC></body>` with fresh per-body localId scope; reader recurses; arbitrary-depth nesting + mixed step/macroStep networks + JSON serialization all round-trip |
 
@@ -246,4 +247,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1131 / 1131 passing**.
+status: **1139 / 1139 passing**.

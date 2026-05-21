@@ -684,9 +684,36 @@ def _emit_sfc_action_block_xml(actions, local_id: int,
         # position, the action's relPosition is its offset from
         # that anchor.
         action_parts = [f"  <action {' '.join(attrs)}>",
-                         f'    <relPosition x="0" y="{(next_action_id - local_id - 1) * 20}"/>',
-                         f'    <reference name='
-                         f'{quoteattr(_action_target_text(action.target))}/>']
+                         f'    <relPosition x="0" y="{(next_action_id - local_id - 1) * 20}"/>']
+        # Body is a choice: <inline> wins over <reference> when the
+        # IL Action carries an ``inline_body`` (a list of ST AST
+        # statements).  Otherwise we render <reference name=> per
+        # the target text.
+        if action.inline_body:
+            # The XSD's <action><inline> element has type ppx:body
+            # WITHOUT the name=... attribute that transition's
+            # condition <inline> requires (the two elements are
+            # named the same but are different complexType
+            # definitions).  Body content is a choice of IL / ST /
+            # LD / FBD / SFC; we emit ST since the IL inline_body
+            # is a list of ST AST statements.
+            body_text = "\n".join(
+                emit_st_body(list(action.inline_body),
+                                indent="    ", level=0)
+            )
+            action_parts.append('    <inline>')
+            action_parts.append('      <ST>')
+            action_parts.append(
+                f'        <xhtml:pre xmlns:xhtml="http://www.w3.org/1999/xhtml">'
+                f'{escape(body_text)}</xhtml:pre>'
+            )
+            action_parts.append('      </ST>')
+            action_parts.append('    </inline>')
+        else:
+            action_parts.append(
+                f'    <reference name='
+                f'{quoteattr(_action_target_text(action.target))}/>'
+            )
         if action.comment:
             action_parts.append(
                 f'    <documentation><p xmlns="http://www.w3.org/1999/xhtml">'

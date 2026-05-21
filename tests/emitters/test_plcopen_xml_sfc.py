@@ -479,11 +479,12 @@ def test_reader_tolerates_unknown_qualifier_by_falling_back_to_N():
     assert a.qualifier == "N"
 
 
-def test_reader_drops_inline_action_body_until_we_model_them():
-    """``<action><inline>...</inline></action>`` is XSD-valid but
-    we don't yet model inline action bodies on the IL side -- the
-    reader silently drops them so the rest of the document still
-    parses."""
+def test_reader_parses_inline_action_body_as_st_statements():
+    """``<action><inline>...</inline></action>`` carries an
+    embedded ST body per IEC §2.6.4.4.  The reader now parses
+    the body's ``<ST><xhtml:pre>...</pre></ST>`` content via the
+    ST text parser and stores the resulting statement list in
+    ``Action.inline_body``."""
     inline_xml = '''<?xml version="1.0"?>
 <project xmlns="http://www.plcopen.org/xml/tc6_0201">
   <contentHeader name="T"/>
@@ -503,7 +504,7 @@ def test_reader_drops_inline_action_body_until_we_model_them():
             </connectionPointIn>
             <action localId="2" qualifier="N">
               <relPosition x="0" y="0"/>
-              <inline name="inner"><ST><xhtml:pre xmlns:xhtml="http://www.w3.org/1999/xhtml">x := 1;</xhtml:pre></ST></inline>
+              <inline><ST><xhtml:pre xmlns:xhtml="http://www.w3.org/1999/xhtml">x := 1;</xhtml:pre></ST></inline>
             </action>
             <action localId="3" qualifier="S">
               <relPosition x="0" y="20"/>
@@ -517,11 +518,17 @@ def test_reader_drops_inline_action_body_until_we_model_them():
 </project>'''
     p = parse_plcopen_xml(inline_xml)
     actions = p.find_subroutine("Main").sfc.steps[0].actions
-    # Only the <reference>-based action survives; the inline one
-    # is dropped pending a future slice that models inline bodies.
-    assert len(actions) == 1
-    assert actions[0].qualifier == "S"
-    assert str(actions[0].target) == "Lamp"
+    # Both actions survive: the first has inline_body (with one
+    # Assignment statement), the second is a <reference>-bodied
+    # action targeting "Lamp".
+    assert len(actions) == 2
+    inline_action = actions[0]
+    assert inline_action.qualifier == "N"
+    assert inline_action.target == ""
+    assert len(inline_action.inline_body) == 1
+    ref_action = actions[1]
+    assert ref_action.qualifier == "S"
+    assert str(ref_action.target) == "Lamp"
 
 
 @pytest.mark.parametrize("raw,expected_ms", [
@@ -1469,3 +1476,154 @@ def test_reader_drops_macroStep_body_with_non_sfc_inner_form():
     sfc = p.find_subroutine("Main").sfc
     assert sfc.steps[0].name == "WithLD"
     assert sfc.steps[0].macro is None
+
+
+# -----------------------------------------------------------------------------
+# Inline action bodies (<action><inline><ST>...</ST></inline></action>)
+# Per IEC §2.6.4.4 an action's body is a choice: a named reference
+# (to a POU / boolean variable) OR an inline body in any IEC
+# language.  The IL ``Action.inline_body`` tuple carries ST AST
+# statements; emit wraps them in ``<inline><ST><xhtml:pre>...``.
+# -----------------------------------------------------------------------------
+
+
+def _make_assignment(name: str, value: str, kind: str = "int"):
+    """Build a simple ``name := value;`` ST assignment statement."""
+    from universal_machinery.il import TagRef
+    from universal_machinery.il.st import Assignment, VarRef, Literal
+    return Assignment(
+        target=VarRef(ref=TagRef(name)),
+        value=Literal(value=value, kind=kind),
+    )
+
+
+def test_action_inline_body_emits_inline_st_element():
+    """An Action with non-empty ``inline_body`` emits
+    ``<action><inline><ST><xhtml:pre>...</pre></ST></inline></action>``
+    instead of ``<action><reference name=...>``."""
+    net = SfcNetwork(steps=[Step(name="Run", initial=True, actions=(
+        Action(qualifier="N",
+                inline_body=(_make_assignment("counter", "42"),)),
+    ))])
+    p = program(subroutines=[prog("Main", main=True, sfc=net)])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<inline>" in xml
+    assert "<ST>" in xml
+    assert "counter" in xml
+    # No <reference> on this action -- inline wins.
+    inline_block = xml.split("<inline>")[1].split("</action>")[0]
+    assert "<reference" not in inline_block
+
+
+def test_action_inline_body_does_not_emit_name_attribute_on_inline():
+    """The XSD's ``<action><inline>`` element is plain
+    ``ppx:body`` -- no ``name=`` attribute (that's only on the
+    transition's condition inline shape).  Pinning this here so
+    we don't regress to an XSD-invalid form."""
+    net = SfcNetwork(steps=[Step(name="Run", initial=True, actions=(
+        Action(qualifier="N",
+                inline_body=(_make_assignment("x", "1"),)),
+    ))])
+    p = program(subroutines=[prog("Main", main=True, sfc=net)])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # The inline element opens with just '<inline>' (no attrs)
+    assert "<inline>" in xml
+
+
+def test_action_inline_body_round_trips_assignment():
+    net = SfcNetwork(steps=[Step(name="Run", initial=True, actions=(
+        Action(qualifier="N",
+                inline_body=(_make_assignment("counter", "42"),)),
+    ))])
+    out = _round_trip(net)
+    body = out.steps[0].actions[0].inline_body
+    assert len(body) == 1
+    from universal_machinery.il.st import Assignment
+    assert isinstance(body[0], Assignment)
+
+
+def test_mixed_inline_and_reference_actions_in_one_block_round_trip():
+    """A single action block may carry a mix of inline-bodied and
+    reference-targeted actions.  Each round-trips correctly to
+    its respective IL shape."""
+    net = SfcNetwork(steps=[Step(name="Run", initial=True, actions=(
+        Action(qualifier="N",
+                inline_body=(_make_assignment("y", "1"),)),
+        Action(qualifier="S", target=Address("Motor")),
+    ))])
+    out = _round_trip(net)
+    actions = out.steps[0].actions
+    assert len(actions) == 2
+    # First action: inline body
+    assert len(actions[0].inline_body) == 1
+    # Second action: reference target
+    assert actions[1].inline_body == ()
+    assert str(actions[1].target) == "Motor"
+
+
+def test_action_inline_body_falls_back_to_reference_when_empty():
+    """``inline_body=()`` is the IL default -- emit should still
+    pick ``<reference>`` so existing reference-targeted actions
+    keep their shape."""
+    net = SfcNetwork(steps=[Step(name="Run", initial=True, actions=(
+        Action(qualifier="N", target=Address("X")),
+    ))])
+    p = program(subroutines=[prog("Main", main=True, sfc=net)])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert '<reference name="X"/>' in xml
+    assert "<inline>" not in xml
+
+
+def test_action_inline_body_with_multi_statement_st():
+    """An inline body can carry multiple statements -- the ST
+    body emits them all and re-parses correctly."""
+    net = SfcNetwork(steps=[Step(name="Run", initial=True, actions=(
+        Action(qualifier="N",
+                inline_body=(
+                    _make_assignment("a", "1"),
+                    _make_assignment("b", "2"),
+                    _make_assignment("c", "3"),
+                )),
+    ))])
+    out = _round_trip(net)
+    body = out.steps[0].actions[0].inline_body
+    assert len(body) == 3
+
+
+def test_action_inline_body_unparseable_st_drops_to_empty():
+    """The reader is tolerant: if the embedded ST text can't be
+    parsed by the ST text parser, ``inline_body`` ends up empty
+    rather than the whole document failing.  Matches the
+    parser's general "conformance over strictness on read"
+    policy."""
+    from universal_machinery.parsers.plcopen_xml import (
+        _parse_inline_action_body,
+    )
+    # Hand-roll an <inline> element with malformed ST text.
+    from xml.etree import ElementTree as ET
+    inline_elem = ET.fromstring(
+        '<inline xmlns="http://www.plcopen.org/xml/tc6_0201">'
+        '<ST><pre xmlns="http://www.w3.org/1999/xhtml">'
+        'this is not valid ST</pre></ST></inline>'
+    )
+    body = _parse_inline_action_body(inline_elem)
+    assert body == ()
+
+
+def test_action_inline_body_serialises_to_json():
+    """``to_dict`` / ``from_dict`` carry ``inline_body`` through
+    via the standard dataclass-walker -- the embedded ST AST
+    statements are themselves recognised dataclass instances."""
+    from universal_machinery.serialisation import to_dict, from_dict
+    net = SfcNetwork(steps=[Step(name="Run", initial=True, actions=(
+        Action(qualifier="N",
+                inline_body=(_make_assignment("v", "7"),)),
+    ))])
+    p = program(subroutines=[prog("Main", main=True, sfc=net)])
+    d = to_dict(p)
+    p2 = from_dict(d)
+    out = p2.find_subroutine("Main").sfc
+    assert len(out.steps[0].actions[0].inline_body) == 1
