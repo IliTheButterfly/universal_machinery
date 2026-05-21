@@ -102,20 +102,21 @@ def test_mixed_rung_falls_back_to_ST_translation():
     """A rung containing a still-deferred op type keeps going
     through ST text emission.
 
-    Compare / Move / BinaryMath / StdFunc / Call all have native
-    LD lowerings now via ``<block>``; the IEC §2.5.2.3 stateful
-    FBs (TON / TOF / TP / CTU / ...) remain on the ST-fallback
-    path pending their own slice."""
-    from universal_machinery.builders import ton
+    Compare / Move / BinaryMath / StdFunc / Call / TON / TOF /
+    TP all have native LD lowerings now via ``<block>``; the
+    counter family (CTU / CTD / CTUD) and the bistables / edge
+    triggers (SR / RS / R_TRIG / F_TRIG) remain on the
+    ST-fallback path pending their slices."""
+    from universal_machinery.builders import ctu
     p = program(subroutines=[prog("Main", main=True, rungs=[
-        rung(ton("T1", 100)),
+        rung(ctu("C1", 10)),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
     # Not LD body
     assert "<LD>" not in xml
     # ST text body present
-    assert "T1" in xml
+    assert "C1" in xml
 
 
 # -----------------------------------------------------------------------------
@@ -1401,3 +1402,101 @@ def test_function_return_pin_uses_target_name_as_formalParameter():
         r'<connection refLocalId="\d+" formalParameter="Average"/>',
         xml,
     ) is not None
+
+
+# -----------------------------------------------------------------------------
+# IEC §2.5.2.3.1 timer FBs (TON / TOF / TP) in LD: each lowers to
+# ``<block typeName=TON|TOF|TP instanceName=<addr>>`` with IN <-
+# rung gate, PT <- inVariable carrying the time literal, and
+# Q + ET output pins each consumed (when set) by an outVariable.
+# -----------------------------------------------------------------------------
+
+
+def test_ton_round_trips_with_done_bit_and_accumulator():
+    from universal_machinery.builders import ton
+    from universal_machinery.il.ops import TON
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(ton("T1", 1000, accumulator="ET1", done_bit="Q1")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, TON)
+    assert op.address == Address("T1")
+    assert op.preset_ms == 1000
+    assert op.accumulator == Address("ET1")
+    assert op.done_bit == Address("Q1")
+
+
+def test_tof_round_trips_with_done_bit_only():
+    from universal_machinery.builders import tof
+    from universal_machinery.il.ops import TOF
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(tof("T2", 500, done_bit="Q2")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, TOF)
+    assert op.preset_ms == 500
+    assert op.done_bit == Address("Q2")
+    assert op.accumulator is None
+
+
+def test_tp_round_trips_with_no_outputs_set():
+    from universal_machinery.builders import tp
+    from universal_machinery.il.ops import TP
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(tp("T3", 250)),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, TP)
+    assert op.address == Address("T3")
+    assert op.preset_ms == 250
+    assert op.done_bit is None
+    assert op.accumulator is None
+
+
+def test_timer_block_emits_typeName_TON_with_instanceName():
+    from universal_machinery.builders import ton
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(ton("T1", 1000)),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="TON"' in xml
+    assert 'instanceName="T1"' in xml
+
+
+def test_timer_block_emits_PT_as_iec_time_literal():
+    """The PT preset_ms is rendered as ``T#<ms>ms`` in the
+    inVariable's expression text per IEC §2.5.2.10 convention."""
+    from universal_machinery.builders import ton
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(ton("T1", 1500)),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<expression>T#1500ms</expression>" in xml
+
+
+def test_timer_rung_emits_native_LD_not_ST_fallback():
+    from universal_machinery.builders import ton
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(ton("T1", 100)),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_timer_round_trip_preserves_iec_time_through_multiple_durations():
+    """A range of preset durations (ms / s / mixed) round-trips
+    through the T# literal correctly via ``_parse_duration_ms``."""
+    from universal_machinery.builders import ton
+    from universal_machinery.il.ops import TON
+    for ms in (10, 1500, 60_000, 3_661_000):
+        rungs = _round_trip([rung(ton("T", ms))])
+        op = rungs[0].ops[0]
+        assert isinstance(op, TON)
+        assert op.preset_ms == ms
