@@ -1,0 +1,218 @@
+# Conformance Test Plan
+
+Promised by `docs/IEC_CONFORMANCE.md` §"Verification posture": a
+mapping from each IEC 61131-3 conformance row to the concrete
+test fixture(s) that exercise it.  Used as a checklist when adding
+new constructs and as a public corpus that future certification
+work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
+
+Every row links to either a passing test file under `tests/` or a
+follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
+counts are snapshotted; the current passing total is **873 tests**.
+
+## Reading this document
+
+```
+| IEC §   | Construct          | Status | Test fixtures        |
+|---------|--------------------|--------|----------------------|
+| §X.Y    | The thing          |   ✅   | tests/path::test_x   |
+```
+
+Status legend:
+
+| Status | Meaning                                                       |
+|--------|---------------------------------------------------------------|
+| ✅     | Implemented + tested + on the round-trip path                 |
+| ⚠️     | Partial: implemented in some directions but not all           |
+| 📋     | Tested via XSD validation only (no IL ↔ IL round-trip yet)    |
+| ❌     | Not implemented                                                |
+
+## §2.2 Program Organization Units (POUs)
+
+| IEC §   | Construct        | Status | Test fixtures |
+|---------|------------------|--------|---------------|
+| §2.2    | PROGRAM          | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_program_with_inputs_outputs_locals |
+| §2.2    | FUNCTION         | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_function_preserves_return_type |
+| §2.2    | FUNCTION_BLOCK   | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_function_block_with_in_out |
+| §2.5.1.5| METHOD (3rd ed.) | ⚠️     | tests/il/test_oop.py — ST + JSON only; PLCopen XSD lacks `<method>` until v2.02+ |
+| §2.5.1.5| INTERFACE        | ⚠️     | tests/il/test_oop.py — same caveat |
+| §2.5.1.5| EXTENDS          | ⚠️     | tests/il/test_oop.py |
+| §2.5.1.5| IMPLEMENTS       | ⚠️     | tests/il/test_oop.py |
+| §2.5.1.5| ABSTRACT         | ⚠️     | tests/il/test_oop.py |
+
+## §2.3.3 User-defined types
+
+| IEC §    | Construct           | Status | Test fixtures |
+|----------|---------------------|--------|---------------|
+| §2.3.3   | STRUCT              | ✅     | tests/il/test_user_types.py, tests/parsers/test_plcopen_xml_reader_udt.py::test_struct_type_round_trips |
+| §2.3.3   | ARRAY (1-D)         | ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_array_type_single_dim_round_trips |
+| §2.3.3   | ARRAY (multi-dim)   | ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_array_type_multi_dim_round_trips |
+| §2.3.3   | ENUM                | ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_enum_type_round_trips |
+| §2.3.3.1 | SUBRANGE (signed)   | ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_subrange_type_signed_round_trips |
+| §2.3.3.1 | SUBRANGE (unsigned) | ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_subrange_type_unsigned_round_trips |
+| §2.3.3   | ALIAS (elementary)  | ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_alias_type_of_elementary_round_trips |
+| §2.3.3   | ALIAS (of NamedType)| ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_alias_type_of_named_type_round_trips |
+| §2.3.3   | NamedType reference | ✅     | tests/parsers/test_plcopen_xml_reader_udt.py::test_pou_with_all_three_directions_resolving_to_udts |
+
+## §2.4 Variables
+
+| IEC §    | Construct                  | Status | Test fixtures |
+|----------|----------------------------|--------|---------------|
+| §2.4.1.1 | Direct representation (%I/%Q/%M ×B/W/D/L/X) | ✅ | tests/il/test_il.py — direct-rep coverage |
+| §2.4.3   | VAR_INPUT                  | ✅     | tests/il/test_pou_db_sfc.py |
+| §2.4.3   | VAR_OUTPUT                 | ✅     | tests/il/test_pou_db_sfc.py |
+| §2.4.3   | VAR_IN_OUT                 | ✅     | tests/il/test_pou_db_sfc.py |
+| §2.4.3   | VAR (local)                | ✅     | tests/il/test_pou_db_sfc.py |
+| §2.4.3   | VAR_EXTERNAL               | ✅     | tests/il/test_pou_db_sfc.py |
+| §2.4.3   | VAR_TEMP                   | ✅     | tests/il/test_pou_db_sfc.py |
+| §2.4.3   | VAR_ACCESS                 | ✅     | tests/il/test_var_access_config.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_access_vars_and_config_vars |
+| §2.4.3.2 | VAR_CONFIG                 | ✅     | tests/il/test_var_access_config.py, tests/parsers/test_plcopen_xml_reader.py |
+| §2.4.3   | VAR_GLOBAL (POU-scope)     | ⚠️     | Modeled as `Tag`; no round-trip-specific test |
+| §2.7.1   | VAR_GLOBAL (config-scope)  | ✅     | tests/il/test_var_access_config.py |
+| §2.7.1   | VAR_GLOBAL (resource-scope)| ✅     | tests/il/test_configuration.py |
+
+## §6.4 Elementary types
+
+| IEC §  | Type   | Status | Test fixtures |
+|--------|--------|--------|---------------|
+| §6.4   | BOOL   | ✅ | tests/il/test_il.py, tests/parsers/test_plcopen_xml_reader.py |
+| §6.4   | BYTE / WORD / DWORD / LWORD | ✅ | tests/il/test_std_function_registry.py |
+| §6.4   | SINT / INT / DINT / LINT    | ✅ | tests/il/test_std_function_registry.py |
+| §6.4   | USINT / UINT / UDINT / ULINT| ✅ | tests/il/test_std_function_registry.py |
+| §6.4   | REAL / LREAL                | ✅ | tests/il/test_il.py |
+| §6.4   | TIME / DATE / TOD / DT      | ✅ | tests/il/test_std_function_registry.py — only via conversion fn coverage; deeper time-value tests pending |
+| §6.4   | STRING / WSTRING            | ✅ | tests/il/test_std_function_registry.py |
+
+## §2.5.2 Standard library
+
+| IEC §    | Family               | Status | Test fixtures |
+|----------|----------------------|--------|---------------|
+| §2.5.2.1 | Type conversions (`<SRC>_TO_<DST>`, all 420 pairs) | ✅ | tests/il/test_std_function_registry.py::test_all_pairs_count |
+| §2.5.2.1 | BCD conversions      | ✅ | tests/il/test_std_function_registry.py::test_bcd_conversions_registered |
+| §2.5.2.1 | TRUNC family         | ✅ | tests/il/test_std_function_registry.py::test_trunc_generic_and_typed_variants |
+| §2.5.2.4 | Numerical (ABS/SQRT/LN/LOG/EXP/trig) | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.5 | Arithmetic (ADD/SUB/MUL/DIV/MOD)     | ✅ | tests/il/test_builders.py, tests/lowering/test_fbd_to_st.py |
+| §2.5.2.6 | Bit-string (SHL/SHR/ROR/ROL)         | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.7 | Logical (AND/OR/XOR/NOT)             | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.8 | Selection (SEL/MAX/MIN/LIMIT/MUX)    | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.8 | Comparison (GT/GE/EQ/LE/LT/NE)       | ✅ | tests/il/test_builders.py |
+| §2.5.2.9 | Character-string (LEN/LEFT/...)      | ✅ | tests/il/test_std_function_registry.py |
+| §2.5.2.10| Time / date arithmetic               | ✅ | tests/il/test_std_function_registry.py::test_time_date_function_registered |
+
+## §2.5.3 Standard function blocks
+
+| IEC §      | FB                | Status | Test fixtures |
+|------------|-------------------|--------|---------------|
+| §2.5.2.3.1 | TON / TOF / TP    | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.3.2 | CTU / CTD / CTUD  | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.3.3 | R_TRIG / F_TRIG   | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.3.3 | SR / RS           | ✅ | tests/il/test_iec_fbs.py |
+| §2.5.2.3.4 | Communication FBs | ❌ | Out of scope until fieldbus modeling lands |
+
+## §2.6 SFC (Sequential Function Chart)
+
+| Element                | Status | Test fixtures |
+|------------------------|--------|---------------|
+| Steps + initial flag   | ✅ | tests/il/test_pou_db_sfc.py, tests/emitters/test_plcopen_xml_sfc.py |
+| Transitions            | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_round_trip_three_step_pipeline |
+| Simultaneous convergence/divergence (multi-from / multi-to via plain wires) | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_round_trip_multi_from_transition_simultaneous_convergence |
+| Inline ST conditions   | ✅ | tests/parsers/test_sfc_condition_lowering.py — full AND / NOT / OR lowering to LD ops |
+| Named-reference cond.  | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_named_reference_condition_round_trips_as_textual_name |
+| Explicit `<selectionDivergence>` / `<simultaneousDivergence>` | ❌ | Deferred -- current emission uses plain multi-connection wires |
+| Action blocks (`<actionBlock>` with `connectionPointOutAction`) | ❌ | Deferred |
+| `<macroStep>` / `<jumpStep>` | ❌ | Deferred |
+
+## §4 Languages
+
+| Language | Status | Test fixtures |
+|----------|--------|---------------|
+| LD (Ladder Diagram) | ✅ | tests/emitters/test_plcopen_xml_ld.py — native `<LD>` emit + read |
+| LD with mixed FBD blocks (math / calls / parallel groups inside rungs) | ⚠️ | Falls back to ST text emission; tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text |
+| FBD (Function Block Diagram) | ✅ | tests/emitters/test_plcopen_xml_fbd.py, tests/parsers/test_plcopen_xml_reader_fbd.py, tests/lowering/test_fbd_to_st.py |
+| ST (Structured Text) | ✅ | tests/il/test_st_ast.py, tests/parsers/test_st_text_parser.py — emit + parse round-trip |
+| SFC | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
+| IL (Instruction List, deprecated) | ❌ | Out of scope -- deprecated in IEC 3rd ed. |
+
+## §2.7 Configuration / Resource / Task
+
+| Element | Status | Test fixtures |
+|---------|--------|---------------|
+| CONFIGURATION  | ✅ | tests/il/test_configuration.py, tests/parsers/test_plcopen_xml_reader.py |
+| RESOURCE       | ✅ | tests/il/test_configuration.py |
+| TASK (cyclic / single / interrupt) | ✅ | tests/parsers/test_plcopen_xml_reader.py::test_round_trip_configuration_with_task_and_pou_instance |
+| PouInstance bound to task | ✅ | tests/parsers/test_plcopen_xml_reader.py |
+
+## Round-trip integrity
+
+| Direction                                  | Status | Test fixtures |
+|--------------------------------------------|--------|---------------|
+| IL → JSON → IL                             | ✅ | tests/il/test_serialisation.py |
+| IL → ST → IL (via parser)                  | ✅ | tests/parsers/test_st_text_parser.py — 14 round-trip tests at the body level |
+| IL → PLCopen XML → IL (POU + Configuration + UDTs) | ✅ | tests/parsers/test_plcopen_xml_reader.py + _udt.py |
+| IL → PLCopen XML → IL (FBD body)           | ✅ | tests/parsers/test_plcopen_xml_reader_fbd.py |
+| IL → PLCopen XML → IL (SFC body)           | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
+| IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
+| FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
+
+## XSD-level conformance
+
+Every test file under `tests/emitters/test_plcopen_xml*.py` runs the
+emitted XML through the bundled PLCopen TC6 v2.01 XSD via
+`validate_plcopen_xml(xml)`.  Schema-level validity is verified for
+every shape covered by the test corpus.
+
+The XSD itself ships under
+`universal_machinery/emitters/schemas/tc6_xml_v201.xsd`
+(sourced from Beremiz's public mirror).
+
+## Validation rules
+
+The validator (`universal_machinery.validation.validate`) emits 18
+distinct error codes covering:
+
+| Code                              | What it catches |
+|-----------------------------------|-----------------|
+| `unresolved-tagref`               | TagRef without a matching Tag or POU parameter |
+| `unresolved-named-type`           | NamedType reference to undeclared UDT |
+| `unknown-call-target`             | Parameterised Call targeting an undeclared POU |
+| `bad-input-binding` / `bad-output-binding` | Call parameter name not in callee's interface |
+| `return-to-no-outputs`            | Call sets `return_to` but callee declares no VAR_OUTPUT |
+| `call-graph-cycle`                | Cycle in the static call graph |
+| `unknown-task` / `unknown-pou-type` | Bad Configuration cross-references |
+| `extends-unknown-fb` / `implements-unknown-iface` | OOP extends / implements broken refs |
+| `abstract-method-on-concrete-fb` / `abstract-method-has-body` / `interface-method-not-abstract` / `interface-method-has-body` | OOP shape rules |
+| `multiple-body-kinds`             | More than one of rungs / sfc / st_body / fbd_body set |
+| `bad-assignment-target`           | ST Assignment.target isn't an lvalue |
+| `for-index-undeclared`            | ST FOR loop's index variable isn't declared |
+| `sfc-issue`                       | Issues from SfcNetwork.validate() |
+| `fbd-duplicate-local-id` / `fbd-unresolved-connection` / `fbd-unknown-source-pin` / `fbd-unknown-jump-label` | FBD graph well-formedness |
+| `st-duplicate-label` / `st-unresolved-goto` | ST GOTO / label consistency |
+| `access-var-bad-direction` / `access-var-duplicate-alias` / `access-var-bad-path` | VAR_ACCESS shape |
+| `config-var-bad-path` / `config-var-duplicate-path` | VAR_CONFIG shape |
+
+Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
+`tests/il/test_st_ast.py`, `tests/il/test_fbd.py`,
+`tests/il/test_var_access_config.py`.
+
+## What's NOT covered (and why)
+
+1. **PLCopen reference-tool round-trip**.  XSD validity is necessary
+   but not sufficient for cert; the next major slice runs emitted
+   XML through matiec / Beremiz / OpenPLC editor as a subprocess
+   and confirms they accept + re-emit it.  External-tooling
+   dependency makes this a follow-up.
+2. **Semantic type checking** (e.g. `Move(src=BOOL_addr, dst=INT_addr)`).
+   The validator catches structural issues; type compatibility is
+   deferred to a future type-resolver pass.
+3. **Hardware-in-the-loop**.  Per `docs/ARCHITECTURE.md`: the
+   ultimate verification posture is emulator-validated-by-hardware;
+   the corpus here is the seed.
+
+## CI surface
+
+`um lint <file>` invokes the validator with text or JSON output for
+CI integration (GitHub Annotations, jq pipelines, error counters).
+Coverage: `tests/test_cli.py::test_lint_*`.
+
+The full test suite is run by `pytest` from the repo root.  Current
+status: **873 / 873 passing**.

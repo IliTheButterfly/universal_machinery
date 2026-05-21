@@ -296,3 +296,95 @@ def test_import_malformed_xml_exits_2(tmp_path):
     result = runner.invoke(app, ["import", str(bad)])
     assert result.exit_code == 2
     assert "PLCopen parse failed" in result.output
+
+
+# -----------------------------------------------------------------------------
+# ``um lint``
+# -----------------------------------------------------------------------------
+
+
+def test_lint_clean_json_program_exits_0(tmp_path):
+    """Clean Program -> exit 0, ``ok`` message."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("X1"), coil("Y1")),
+    ])])
+    path = tmp_path / "ok.json"
+    path.write_text(to_json(p))
+    result = runner.invoke(app, ["lint", str(path)])
+    assert result.exit_code == 0, result.output
+    assert "ok" in result.output.lower()
+
+
+def test_lint_program_with_errors_exits_1(tmp_path):
+    from universal_machinery.builders import goto
+    p = program(subroutines=[prog("Main", main=True,
+                                     st_body=[goto("MISSING")])])
+    path = tmp_path / "bad.json"
+    path.write_text(to_json(p))
+    result = runner.invoke(app, ["lint", str(path)])
+    assert result.exit_code == 1
+    # Error mode emits the count and per-code grouping
+    assert "validation error" in result.output.lower()
+    assert "st-unresolved-goto" in result.output
+
+
+def test_lint_json_format_emits_records(tmp_path):
+    """``--format json`` returns a JSON array of error records."""
+    from universal_machinery.builders import goto
+    p = program(subroutines=[prog("Main", main=True,
+                                     st_body=[goto("MISSING")])])
+    path = tmp_path / "bad.json"
+    path.write_text(to_json(p))
+    result = runner.invoke(app, ["lint", str(path), "-f", "json"])
+    assert result.exit_code == 1
+    records = json.loads(result.output)
+    assert isinstance(records, list)
+    assert len(records) == 1
+    assert records[0]["code"] == "st-unresolved-goto"
+    assert "MISSING" in records[0]["message"]
+    assert "Subroutine 'Main'" in records[0]["location"]
+
+
+def test_lint_json_format_on_clean_program_emits_empty_array(tmp_path):
+    p = program(subroutines=[prog("Main", main=True)])
+    path = tmp_path / "ok.json"
+    path.write_text(to_json(p))
+    result = runner.invoke(app, ["lint", str(path), "-f", "json"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == []
+
+
+def test_lint_accepts_xml_input(tmp_path):
+    """``um lint`` autodetects PLCopen XML and runs validation
+    on the parsed Program."""
+    from universal_machinery.emitters.plcopen_xml import emit_xml
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("X1"), coil("Y1")),
+    ])])
+    path = tmp_path / "ok.xml"
+    path.write_text(emit_xml(p))
+    result = runner.invoke(app, ["lint", str(path)])
+    assert result.exit_code == 0, result.output
+    assert "ok" in result.output.lower()
+
+
+def test_lint_unknown_format_exits_2(tmp_path):
+    p = program(subroutines=[prog("Main", main=True)])
+    path = tmp_path / "ok.json"
+    path.write_text(to_json(p))
+    result = runner.invoke(app, ["lint", str(path), "-f", "yaml"])
+    assert result.exit_code == 2
+    assert "unknown --format" in result.output
+
+
+def test_lint_missing_file_exits_2(tmp_path):
+    result = runner.invoke(app, ["lint", str(tmp_path / "nope.json")])
+    assert result.exit_code == 2
+
+
+def test_lint_malformed_xml_exits_2(tmp_path):
+    bad = tmp_path / "bad.xml"
+    bad.write_text("<<<not xml>>>")
+    result = runner.invoke(app, ["lint", str(bad)])
+    assert result.exit_code == 2
+    assert "PLCopen parse failed" in result.output

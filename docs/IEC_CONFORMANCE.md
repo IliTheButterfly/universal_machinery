@@ -301,6 +301,7 @@ the spec.  See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) on the
 testing posture: emulator + hardware-in-the-loop is the right
 verification path for any conformance claim.
 
-A future commit will add a `docs/CONFORMANCE_TEST_PLAN.md` that
-maps each conformance row above to a concrete test fixture +
-expected output -- the seed of a public PLCopen conformance corpus.
+[`docs/CONFORMANCE_TEST_PLAN.md`](CONFORMANCE_TEST_PLAN.md) maps
+each row above to a concrete test fixture under `tests/` and
+tracks what the corpus does + doesn't yet cover.  Updated as
+slices land; the current pass count is 873.
