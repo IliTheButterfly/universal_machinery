@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1104 tests**.
+counts are snapshotted; the current passing total is **1113 tests**.
 
 ## Reading this document
 
@@ -121,7 +121,7 @@ Status legend:
 | Explicit `<selectionDivergence>` / `<simultaneousDivergence>` / `<selectionConvergence>` / `<simultaneousConvergence>` markers | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all four shapes emit + read with formalParameter pin wiring; reader traces through chained markers; combined diamond + fork-join networks round-trip |
 | Action blocks (`<actionBlock>` with `connectionPointOutAction`) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all 12 IEC §2.6.4.4 qualifiers (N/R/S/L/D/P/P0/P1/DS/DL/SD/SL), `duration=` time literal round-trip, multi-action blocks |
 | `<jumpStep targetName=...>` | ✅ | tests/emitters/test_plcopen_xml_sfc.py — back-edge transitions auto-promote to `<jumpStep>` on emit; reader resolves `targetName` (incl. through marker indirection) into the transition's `to_steps`; dangling targets drop gracefully |
-| `<macroStep>` (hierarchical sub-networks) | ❌ | Deferred |
+| `<macroStep>` (hierarchical sub-networks) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — `Step.macro: Optional[SfcNetwork]` carries the nested network; emit wraps it in `<body><SFC>...</SFC></body>` with fresh per-body localId scope; reader recurses; arbitrary-depth nesting + mixed step/macroStep networks + JSON serialization all round-trip |
 
 ## §4 Languages
 
@@ -245,4 +245,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1104 / 1104 passing**.
+status: **1113 / 1113 passing**.

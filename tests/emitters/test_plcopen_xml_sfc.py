@@ -1226,3 +1226,246 @@ def test_reader_jumpStep_through_marker_indirection():
     # (via the jumpStep that came off the sim_div's other branch).
     assert sfc.transitions[0].from_steps == ("Init",)
     assert set(sfc.transitions[0].to_steps) == {"A", "Init"}
+
+
+# -----------------------------------------------------------------------------
+# macroStep (IEC §2.6.5 / PLCopen <macroStep>)
+# -----------------------------------------------------------------------------
+
+
+def test_step_without_macro_emits_plain_step_element():
+    """Baseline: a Step with ``macro=None`` still emits the
+    standard ``<step>`` element, not ``<macroStep>``."""
+    net = SfcNetwork(steps=[Step(name="Idle", initial=True)])
+    xml = _emit(net)
+    assert "<step " in xml
+    assert "<macroStep " not in xml
+
+
+def test_step_with_macro_emits_macroStep_element_with_inner_body():
+    inner = SfcNetwork(steps=[Step(name="Phase1", initial=True)])
+    net = SfcNetwork(steps=[Step(name="Outer", initial=True, macro=inner)])
+    xml = _emit(net)
+    assert "<macroStep " in xml
+    # macroStep wraps its inner network in <body><SFC>...</SFC></body>.
+    assert "<body>" in xml
+    # The inner step "Phase1" should appear inside the body.
+    macro_block = xml.split("<macroStep ")[1].split("</macroStep>")[0]
+    assert "<SFC>" in macro_block
+    assert 'name="Phase1"' in macro_block
+
+
+def test_macroStep_inner_localIds_start_fresh():
+    """LocalIds in the inner network are scoped to the macro --
+    the inner network's first step uses localId=0, not a value
+    that continues the outer body's allocation."""
+    inner = SfcNetwork(
+        steps=[Step(name="A", initial=True), Step(name="B")],
+        transitions=[Transition(from_steps=("A",), to_steps=("B",))],
+    )
+    net = SfcNetwork(
+        steps=[Step(name="X", initial=True),
+                Step(name="Macro", macro=inner),
+                Step(name="Y")],
+        transitions=[
+            Transition(from_steps=("X",), to_steps=("Macro",)),
+            Transition(from_steps=("Macro",), to_steps=("Y",)),
+        ],
+    )
+    xml = _emit(net)
+    # Outer step X is localId="0".  The inner network's step "A"
+    # should also use localId="0" inside the macro body.
+    macro_block = xml.split("<macroStep ")[1].split("</macroStep>")[0]
+    assert '<step localId="0" name="A"' in macro_block
+
+
+def test_macroStep_round_trip_preserves_inner_network():
+    inner = SfcNetwork(
+        steps=[Step(name="Phase1", initial=True), Step(name="Phase2")],
+        transitions=[Transition(from_steps=("Phase1",),
+                                  to_steps=("Phase2",))],
+    )
+    net = SfcNetwork(
+        steps=[
+            Step(name="Init", initial=True),
+            Step(name="Process", macro=inner),
+            Step(name="Done"),
+        ],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Process",)),
+            Transition(from_steps=("Process",), to_steps=("Done",)),
+        ],
+    )
+    out = _round_trip(net)
+    by_name = {s.name: s for s in out.steps}
+    # Outer network preserved
+    assert set(by_name) == {"Init", "Process", "Done"}
+    # Inner network attached to "Process"
+    inner_out = by_name["Process"].macro
+    assert inner_out is not None
+    assert [s.name for s in inner_out.steps] == ["Phase1", "Phase2"]
+    assert inner_out.steps[0].initial
+    assert inner_out.transitions[0].from_steps == ("Phase1",)
+    assert inner_out.transitions[0].to_steps == ("Phase2",)
+
+
+def test_macroStep_two_level_nesting_round_trips():
+    """A macro step can itself contain another macro step --
+    arbitrary hierarchical depth per IEC §2.6.5."""
+    deepest = SfcNetwork(steps=[Step(name="Leaf", initial=True)])
+    mid = SfcNetwork(steps=[
+        Step(name="Inner", initial=True, macro=deepest),
+    ])
+    net = SfcNetwork(steps=[
+        Step(name="Outer", initial=True, macro=mid),
+    ])
+    out = _round_trip(net)
+    assert out.steps[0].macro is not None
+    inner = out.steps[0].macro
+    assert inner.steps[0].macro is not None
+    assert inner.steps[0].macro.steps[0].name == "Leaf"
+
+
+def test_macroStep_mixed_with_plain_steps_and_markers():
+    """A macroStep can coexist with selection/simultaneous
+    markers within the same outer network."""
+    inner = SfcNetwork(steps=[Step(name="A", initial=True),
+                                Step(name="B")],
+                        transitions=[Transition(from_steps=("A",),
+                                                  to_steps=("B",))])
+    net = SfcNetwork(
+        steps=[
+            Step(name="Decide", initial=True),
+            Step(name="MacroPath", macro=inner),
+            Step(name="DirectPath"),
+            Step(name="Join"),
+        ],
+        transitions=[
+            # Selection divergence at Decide
+            Transition(from_steps=("Decide",), to_steps=("MacroPath",)),
+            Transition(from_steps=("Decide",), to_steps=("DirectPath",)),
+            # Selection convergence at Join
+            Transition(from_steps=("MacroPath",), to_steps=("Join",)),
+            Transition(from_steps=("DirectPath",), to_steps=("Join",)),
+        ],
+    )
+    xml = _emit(net)
+    assert "<macroStep " in xml
+    assert "<selectionDivergence " in xml
+    assert "<selectionConvergence " in xml
+    out = _round_trip(net)
+    by_name = {s.name: s for s in out.steps}
+    assert by_name["MacroPath"].macro is not None
+    assert by_name["DirectPath"].macro is None
+
+
+def test_macroStep_json_serialization_round_trip():
+    """``to_dict`` / ``from_dict`` should handle nested SfcNetwork
+    inside Step.macro transparently -- dataclass introspection
+    walks the nested field automatically."""
+    from universal_machinery.serialisation import to_dict, from_dict
+    inner = SfcNetwork(steps=[Step(name="Phase1", initial=True),
+                                Step(name="Phase2")],
+                        transitions=[Transition(from_steps=("Phase1",),
+                                                  to_steps=("Phase2",))])
+    p = program(subroutines=[prog("Main", main=True, sfc=SfcNetwork(
+        steps=[Step(name="Init", initial=True),
+                Step(name="Macro", macro=inner)],
+        transitions=[Transition(from_steps=("Init",),
+                                  to_steps=("Macro",))],
+    ))])
+    d = to_dict(p)
+    p2 = from_dict(d)
+    out = p2.find_subroutine("Main").sfc
+    macro_step = next(s for s in out.steps if s.name == "Macro")
+    assert macro_step.macro is not None
+    assert [s.name for s in macro_step.macro.steps] == ["Phase1", "Phase2"]
+
+
+# ---- reader-only: hand-rolled macroStep XML ---------------------------------
+
+
+_HAND_ROLLED_MACRO = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body>
+        <SFC>
+          <step localId="0" name="Init" initialStep="true">
+            <position x="0" y="0"/>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <macroStep localId="1" name="SubFlow">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+            <connectionPointOut/>
+            <body>
+              <SFC>
+                <step localId="0" name="Sub1" initialStep="true">
+                  <position x="0" y="0"/>
+                  <connectionPointOut formalParameter="OUT"/>
+                </step>
+                <step localId="1" name="Sub2">
+                  <position x="0" y="0"/>
+                  <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+                  <connectionPointOut formalParameter="OUT"/>
+                </step>
+                <transition localId="2">
+                  <position x="0" y="0"/>
+                  <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+                  <connectionPointOut/>
+                </transition>
+              </SFC>
+            </body>
+          </macroStep>
+          <transition localId="2">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+        </SFC>
+      </body>
+    </pou>
+  </pous></types>
+</project>'''
+
+
+def test_reader_parses_hand_rolled_macroStep():
+    p = parse_plcopen_xml(_HAND_ROLLED_MACRO)
+    sfc = p.find_subroutine("Main").sfc
+    macro_step = next(s for s in sfc.steps if s.name == "SubFlow")
+    assert macro_step.macro is not None
+    inner = macro_step.macro
+    assert [s.name for s in inner.steps] == ["Sub1", "Sub2"]
+    assert inner.steps[0].initial
+    assert inner.transitions[0].from_steps == ("Sub1",)
+    assert inner.transitions[0].to_steps == ("Sub2",)
+
+
+def test_reader_drops_macroStep_body_with_non_sfc_inner_form():
+    """A ``<macroStep><body><LD>...</LD></body></macroStep>`` is
+    XSD-valid (the macroStep body type accepts any POU body
+    shape), but our IL only models SFC inner networks for now --
+    the reader silently sets ``macro=None`` rather than failing."""
+    ld_inner = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body>
+        <SFC>
+          <macroStep localId="0" name="WithLD">
+            <position x="0" y="0"/>
+            <connectionPointOut/>
+            <body><LD/></body>
+          </macroStep>
+        </SFC>
+      </body>
+    </pou>
+  </pous></types>
+</project>'''
+    p = parse_plcopen_xml(ld_inner)
+    sfc = p.find_subroutine("Main").sfc
+    assert sfc.steps[0].name == "WithLD"
+    assert sfc.steps[0].macro is None

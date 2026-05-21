@@ -556,7 +556,7 @@ def _sfc_transition_position(idx: int) -> Position:
 
 def _emit_sfc_step_xml(step: Step, local_id: int,
                        incoming: list) -> str:
-    """One ``<step>`` element.
+    """One ``<step>`` (or ``<macroStep>``) element.
 
     ``incoming`` is the list of upstream sources for this step's
     incoming connection point.  Each entry is either:
@@ -564,14 +564,25 @@ def _emit_sfc_step_xml(step: Step, local_id: int,
       - an ``int`` localId (plain wire from a transition / marker)
       - a ``tuple[int, str]`` ``(src_id, formal_parameter)`` --
         used when the source is a divergence marker output pin
+
+    If ``step.macro`` is set, this is a *macro step* per IEC
+    §2.6.5: we emit ``<macroStep ...>...<body>...</body></macroStep>``
+    instead of ``<step>...</step>``.  The macroStep's body carries
+    its own (locally-scoped) SFC network.
     """
+    is_macro = step.macro is not None
+    tag = "macroStep" if is_macro else "step"
     attrs = [
         f'localId="{local_id}"',
         f"name={quoteattr(step.name)}",
     ]
-    if step.initial:
+    # macroStep doesn't carry initialStep in the XSD -- only plain
+    # steps do.  An initial macro step is still legal per the spec,
+    # but it's expressed via the inner network's initial steps;
+    # we silently drop ``step.initial`` for macro steps.
+    if step.initial and not is_macro:
         attrs.append('initialStep="true"')
-    parts = [f"<step {' '.join(attrs)}>",
+    parts = [f"<{tag} {' '.join(attrs)}>",
              f"  {_position_xml(_sfc_step_position(local_id))}"]
     if incoming:
         inner_conns = "\n".join(
@@ -582,20 +593,40 @@ def _emit_sfc_step_xml(step: Step, local_id: int,
         parts.append("  </connectionPointIn>")
     # The schema requires a connectionPointOut on every step that
     # has an outgoing wire.  We always include it so steps with
-    # downstream transitions stay well-formed; the formalParameter
-    # attribute is required.
-    parts.append('  <connectionPointOut formalParameter="OUT"/>')
-    if step.actions:
+    # downstream transitions stay well-formed.  Per the XSD,
+    # ``<step>`` requires a formalParameter on its connectionPointOut
+    # but ``<macroStep>`` does not.
+    if is_macro:
+        parts.append('  <connectionPointOut/>')
+    else:
+        parts.append('  <connectionPointOut formalParameter="OUT"/>')
+    if step.actions and not is_macro:
         # Action blocks attach via this separate pin; the schema
         # requires a formalParameter so we use "OUT_ACTION".
+        # macroStep doesn't carry actions (the inner network does
+        # its own action handling) -- we don't emit OUT_ACTION
+        # for macro steps even if Step.actions happens to be set.
         parts.append('  <connectionPointOutAction '
                      'formalParameter="OUT_ACTION"/>')
+    if is_macro:
+        # Emit the nested SFC body inside <body><SFC>...</SFC></body>.
+        # The inner network's localIds are scoped to the macro --
+        # they share no namespace with the outer body's IDs.
+        inner_net = _emit_sfc_network_content(step.macro)
+        parts.append("  <body>")
+        parts.append("    <SFC>")
+        # _emit_sfc_network_content already 4-space indents each
+        # element; we add another 4 spaces to nest it inside
+        # macroStep > body > SFC.
+        parts.append(_indent(inner_net, "    "))
+        parts.append("    </SFC>")
+        parts.append("  </body>")
     if step.comment:
         parts.append(
             f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
             f'{escape(step.comment)}</p></documentation>'
         )
-    parts.append("</step>")
+    parts.append(f"</{tag}>")
     return "\n".join(parts)
 
 
@@ -900,7 +931,22 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
     net = sub.sfc
     if net is None or (not net.steps and not net.transitions):
         return "<body>\n  <SFC/>\n</body>"
+    inner = _emit_sfc_network_content(net)
+    return f"<body>\n  <SFC>\n{inner}\n  </SFC>\n</body>"
 
+
+def _emit_sfc_network_content(net) -> str:
+    """Lay out + emit the inner element block of one SFC network.
+
+    Returns the concatenated, ``_indent``-padded text that goes
+    *inside* a ``<SFC>...</SFC>`` wrapper.  Used both by the
+    top-level POU body and by ``<macroStep>`` bodies, which carry
+    their own (locally-scoped) SFC network.
+
+    LocalIds in the returned content start from 0 and are unique
+    only within this network -- the PLCopen XSD treats each
+    ``<body>`` as its own localId scope.
+    """
     # ----- Phase 1: allocate localIds for steps + transitions.
     step_id_by_name: dict[str, int] = {
         s.name: i for i, s in enumerate(net.steps)
@@ -1117,8 +1163,7 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
         ))
         next_local_id += 1 + len(s.actions)
 
-    inner = "\n".join(_indent(p, "    ") for p in inner_parts)
-    return f"<body>\n  <SFC>\n{inner}\n  </SFC>\n</body>"
+    return "\n".join(_indent(p, "    ") for p in inner_parts)
 
 
 # -----------------------------------------------------------------------------
