@@ -1275,6 +1275,154 @@ def _function_return_type(name: str, prog: Program,
     return None
 
 
+def _resolve_subrange(prog: Program, type_obj):
+    """Walk a ``NamedType`` / ``AliasType`` chain looking for an
+    underlying ``SubrangeType``.  Returns it on hit; ``None`` on
+    miss (the type resolves to a non-subrange).
+
+    Unlike ``_resolve_named_type`` (which collapses SubrangeType
+    to its base), this helper preserves the subrange so callers
+    can read its ``lower`` / ``upper`` bounds.
+    """
+    from .il import AliasType, NamedType, SubrangeType
+    seen: set[str] = set()
+    cur = type_obj
+    while True:
+        if isinstance(cur, SubrangeType):
+            return cur
+        if isinstance(cur, NamedType):
+            if cur.name in seen:
+                return None
+            seen.add(cur.name)
+            nxt = prog.find_user_type(cur.name)
+            if nxt is None:
+                return None
+            cur = nxt
+            continue
+        if isinstance(cur, AliasType):
+            if isinstance(cur.base, NamedType):
+                if cur.base.name in seen:
+                    return None
+                seen.add(cur.base.name)
+                nxt = prog.find_user_type(cur.base.name)
+                cur = nxt if nxt is not None else cur.base
+            else:
+                cur = cur.base
+            continue
+        return None
+
+
+def _literal_int_value(expr) -> Optional[int]:
+    """Extract an integer value from a ``Literal`` expression, or
+    ``None`` for non-literal / non-integer / unparseable forms.
+
+    Handles:
+      - ``Literal("42", kind="int")`` -> 42
+      - ``Literal("-5", kind="int")`` -> -5 (negative-literal fold
+        produced by the ST parser)
+      - ``Literal("16#FF", kind="typed")`` -> 255 (based-int)
+      - ``Literal("FALSE"|"TRUE", kind="bool")`` -> 0 / 1
+
+    REAL literals, strings, time literals, etc. return ``None``.
+    """
+    from .il import Literal
+    if not isinstance(expr, Literal):
+        return None
+    if expr.kind == "int":
+        try:
+            return int(expr.value)
+        except ValueError:
+            return None
+    if expr.kind == "bool":
+        return 1 if expr.value == "TRUE" else 0
+    if expr.kind == "typed":
+        # Based-int form: ``<base>#<digits>``
+        text = expr.value
+        if "#" in text:
+            base_s, _, digits = text.partition("#")
+            try:
+                base = int(base_s)
+                if 2 <= base <= 36:
+                    return int(digits.replace("_", ""), base)
+            except ValueError:
+                return None
+    return None
+
+
+def _lvalue_subrange(target, sub: Optional[Subroutine],
+                     prog: Program):
+    """Find the ``SubrangeType`` (if any) for an Assignment
+    target.  Mirrors ``_lvalue_type``'s shape:
+
+      - ``VarRef`` : look up the variable's declared type, walk
+                     to a SubrangeType via ``_resolve_subrange``.
+      - ``FieldAccess`` / ``IndexAccess`` : drill through the
+        chain via ``_resolve_chain_datatype`` (a SubrangeType-
+        preserving variant of ``_resolve_chain_type``).
+
+    Returns the ``SubrangeType`` or ``None``.
+    """
+    from .il import FieldAccess, IndexAccess, TagRef, VarRef
+    if isinstance(target, VarRef):
+        if sub is None or not isinstance(target.ref, TagRef):
+            # Address-keyed lookup uses Program.tags's data_type,
+            # which is ``TagType`` -- never a SubrangeType.
+            return None
+        name = target.ref.name
+        for v in (sub.inputs + sub.outputs + sub.in_outs
+                    + sub.local_vars):
+            if v.name == name:
+                return _resolve_subrange(prog, v.data_type)
+        return None
+    if isinstance(target, (FieldAccess, IndexAccess)):
+        if sub is None:
+            return None
+        return _resolve_chain_subrange(target, sub, prog)
+    return None
+
+
+def _resolve_chain_subrange(expr, sub: Subroutine, prog: Program):
+    """Subrange-preserving variant of ``_resolve_chain_type``.
+
+    Walks the same ``FieldAccess`` / ``IndexAccess`` chain but
+    returns the leaf ``SubrangeType`` (or None) instead of a
+    collapsed type-name string.  Used by ``_lvalue_subrange``.
+    """
+    from .il import (
+        ArrayType, FieldAccess, IndexAccess, StructType,
+    )
+    steps: list = []
+    cur = expr
+    while isinstance(cur, (FieldAccess, IndexAccess)):
+        steps.append(cur)
+        cur = cur.base
+    steps.reverse()
+
+    cur_type = _root_var_datatype(expr, sub, prog)
+    if cur_type is None:
+        return None
+
+    for step in steps:
+        cur_type = _resolve_named_type(prog, cur_type)
+        if isinstance(step, FieldAccess):
+            if not isinstance(cur_type, StructType):
+                return None
+            member = None
+            for m in cur_type.members:
+                if m.name == step.field:
+                    member = m
+                    break
+            if member is None:
+                return None
+            cur_type = member.data_type
+        elif isinstance(step, IndexAccess):
+            if not isinstance(cur_type, ArrayType):
+                return None
+            cur_type = cur_type.element_type
+
+    return _resolve_subrange(prog, cur_type)
+
+
 def _root_var_datatype(expr, sub: Subroutine, prog: Program):
     """Walk a chained FieldAccess / IndexAccess expression back to
     its root ``VarRef``, then look up the variable's full
@@ -1456,6 +1604,27 @@ def _check_st_types(prog: Program) -> list[ValidationError]:
                                  f"value type {value_t!r}"),
                         location=where,
                     ))
+                # Subrange range check: if the target's declared
+                # type is a SubrangeType and the value is a
+                # literal integer, verify the literal sits in
+                # [lower, upper].  Non-literal RHS (variables,
+                # expressions) can't be checked without value-
+                # flow analysis -- a follow-up slice.
+                subrange = _lvalue_subrange(s.target, sub, prog)
+                if subrange is not None:
+                    lit_val = _literal_int_value(s.value)
+                    if (lit_val is not None
+                            and not (subrange.lower <= lit_val
+                                       <= subrange.upper)):
+                        errors.append(ValidationError(
+                            code="subrange-out-of-range",
+                            message=(f"literal value {lit_val} is "
+                                     f"outside SUBRANGE "
+                                     f"{subrange.name!r} bounds "
+                                     f"[{subrange.lower}, "
+                                     f"{subrange.upper}]"),
+                            location=where,
+                        ))
             elif isinstance(s, IfStatement):
                 for cond, body in s.branches:
                     cond_t = _infer_st_expr_type(cond, env, prog, sub)
@@ -1695,7 +1864,7 @@ def validate(prog: Program) -> list[ValidationError]:
          Compare operand symmetry, coil targets are BOOL)
      16. Semantic type checking on ST AST bodies (Assignment
          target↔value compat, IF/WHILE/REPEAT condition is BOOL,
-         FOR index numericity)
+         FOR index numericity, SUBRANGE literal-bounds checks)
      17. Semantic type checking on SFC transition conditions
          (contacts must be BOOL, compares must balance)
     """

@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **997 tests**.
+counts are snapshotted; the current passing total is **1015 tests**.
 
 ## Reading this document
 
@@ -167,7 +167,7 @@ The XSD itself ships under
 
 ## Validation rules
 
-The validator (`universal_machinery.validation.validate`) emits 29
+The validator (`universal_machinery.validation.validate`) emits 30
 distinct error codes covering:
 
 | Code                              | What it catches |
@@ -200,11 +200,13 @@ distinct error codes covering:
 | `st-for-bound-not-numeric`        | FOR start / end / step bound isn't numeric |
 | `sfc-contact-not-bool`            | SFC transition contact target isn't BOOL |
 | `sfc-compare-type-mismatch`       | SFC transition compare operands cross IEC §6.5 buckets |
+| `subrange-out-of-range`           | Literal value assigned to a SUBRANGE-typed target is outside `[lower, upper]` |
 
 Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
 `tests/il/test_st_ast.py`, `tests/il/test_fbd.py`,
 `tests/il/test_var_access_config.py`, `tests/il/test_type_check.py`,
-`tests/il/test_st_type_check.py`, `tests/il/test_sfc_type_check.py`.
+`tests/il/test_st_type_check.py`, `tests/il/test_sfc_type_check.py`,
+`tests/il/test_subrange_range_check.py`.
 
 ## What's NOT covered (and why)
 
@@ -215,8 +217,9 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
    dependency makes this a follow-up.
 2. ⚠️ *Partial.* **Semantic type checking** covers rung ops, ST AST
    bodies, SFC transition conditions, struct field / array
-   element access, FunctionCallExpr return-type inference, and
-   polymorphic-builtin operand-aware inference --
+   element access, FunctionCallExpr return-type inference,
+   polymorphic-builtin operand-aware inference, and SUBRANGE
+   literal-bounds checks --
    ``Move`` / ``BinaryMath`` / ``Compare`` / coil ops on LD rungs,
    plus Assignment / IF / WHILE / REPEAT / FOR / CASE statements
    inside ``st_body``, plus contacts and compares inside each
@@ -227,12 +230,13 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
    IEC ``<SRC>_TO_<DST>`` / ``<SRC>_TRUNC_<DST>`` conversions, a
    fixed-return-type table for ~30 §2.5.2 builtins (SQRT/SIN/
    COS/... -> REAL, LEN/FIND -> INT, LEFT/RIGHT/CONCAT/... ->
-   STRING, ADD_TIME / SUB_TIME / ... -> TIME), and operand-aware
+   STRING, ADD_TIME / SUB_TIME / ... -> TIME), operand-aware
    inference for the six polymorphic builtins (``ABS`` /
    ``MIN`` / ``MAX`` inherit from the first input, ``SEL`` /
-   ``LIMIT`` / ``MUX`` from the value input).  Still deferred:
-   pin types on FBD ``<block>`` elements and constant evaluation
-   + range checks on SUBRANGE types.
+   ``LIMIT`` / ``MUX`` from the value input), and SUBRANGE-target
+   literal-bounds checks (incl. base-N literals like ``16#FF``
+   and bool-coerced TRUE/FALSE).  Only remaining deferred
+   piece: pin type checking on FBD ``<block>`` elements.
 3. **Hardware-in-the-loop**.  Per `docs/ARCHITECTURE.md`: the
    ultimate verification posture is emulator-validated-by-hardware;
    the corpus here is the seed.
@@ -244,4 +248,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **997 / 997 passing**.
+status: **1015 / 1015 passing**.
