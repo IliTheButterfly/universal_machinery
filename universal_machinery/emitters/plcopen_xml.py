@@ -75,7 +75,7 @@ from ..il import (
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
     ContactRisingEdge, Move, OutCoil, OutReset, OutSet, ParallelGroup,
-    StdFunc,
+    StdFunc, TOF, TON, TP,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1241,6 +1241,11 @@ _NATIVE_LD_OPS = (
     # return value emit an additional ``<outVariable>`` consuming
     # the block's OUT pin.
     Call,
+    # IEC §2.5.2.3.1 timer family (TON / TOF / TP).  Each lowers
+    # to ``<block typeName=TON|TOF|TP instanceName=<addr>>`` with
+    # IN (rung gate) + PT (preset time literal) inputs, and
+    # Q (done bit) + ET (elapsed time) outputs.
+    TON, TOF, TP,
 )
 
 
@@ -1749,6 +1754,82 @@ def _emit_ld_call_block_xml(op: "Call", in_ids: list[int],
     return lines
 
 
+def _emit_ld_timer_block_xml(op, block_type: str, pt_id: int,
+                                block_id: int, q_id: "Optional[int]",
+                                et_id: "Optional[int]",
+                                parent_ids: list[int],
+                                x: float, y: float) -> list[str]:
+    """Lower one IEC §2.5.2.3.1 timer FB (TON / TOF / TP) into:
+
+      - ``<inVariable>`` carrying the preset time literal as
+        ``T#<ms>ms`` (the PT input)
+      - ``<block typeName=TON|TOF|TP instanceName=<addr>>`` with
+        IN <- rung gate, PT <- inVariable, Q + ET output pins
+      - ``<outVariable>`` for the done bit (Q) if ``op.done_bit``
+        is set
+      - ``<outVariable>`` for the elapsed time (ET) if
+        ``op.accumulator`` is set
+    """
+    en_conn = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    pt_text = f"T#{op.preset_ms}ms"
+    instance_text = _ld_expression_text(op.address)
+    # For timer FBs the rung's boolean signal flows into the
+    # ``IN`` pin (the FB's "enable timing" input) -- the IEC
+    # convention.  We don't wire ``EN`` to the same source
+    # (which would make the LD reader's parallel-fork detector
+    # see two paths from leftRail to the same block).
+    lines: list[str] = [
+        f'<inVariable localId="{pt_id}">'
+        f'<position x="{x:g}" y="{y + 20:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(pt_text)}</expression>'
+        f'</inVariable>',
+        f'<block localId="{block_id}" typeName="{block_type}" '
+        f'instanceName={quoteattr(instance_text)}>'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>'
+        f'<variable formalParameter="IN">'
+        f'<connectionPointIn>{en_conn}</connectionPointIn>'
+        f'</variable>'
+        f'<variable formalParameter="PT">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{pt_id}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+        f'</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>'
+        f'<variable formalParameter="Q"><connectionPointOut/></variable>'
+        f'<variable formalParameter="ET"><connectionPointOut/></variable>'
+        f'</outputVariables>'
+        f'</block>'
+    ]
+    out_x = x + _LD_OP_WIDTH * 2
+    if op.done_bit is not None and q_id is not None:
+        lines.append(
+            f'<outVariable localId="{q_id}">'
+            f'<position x="{out_x:g}" y="{y - 10:g}"/>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{block_id}" formalParameter="Q"/>'
+            f'</connectionPointIn>'
+            f'<expression>{escape(_ld_expression_text(op.done_bit))}</expression>'
+            f'</outVariable>'
+        )
+    if op.accumulator is not None and et_id is not None:
+        lines.append(
+            f'<outVariable localId="{et_id}">'
+            f'<position x="{out_x:g}" y="{y + 30:g}"/>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{block_id}" formalParameter="ET"/>'
+            f'</connectionPointIn>'
+            f'<expression>{escape(_ld_expression_text(op.accumulator))}</expression>'
+            f'</outVariable>'
+        )
+    return lines
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -1814,6 +1895,22 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
             out_id = next_local_id; next_local_id += 1
             lines.extend(_emit_ld_move_block_xml(
                 op, in_id, block_id, out_id, cursor_ids, x, y,
+            ))
+            cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 3
+        elif isinstance(op, (TON, TOF, TP)):
+            block_type = type(op).__name__
+            pt_id = next_local_id; next_local_id += 1
+            block_id = next_local_id; next_local_id += 1
+            q_id = None
+            et_id = None
+            if op.done_bit is not None:
+                q_id = next_local_id; next_local_id += 1
+            if op.accumulator is not None:
+                et_id = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_timer_block_xml(
+                op, block_type, pt_id, block_id, q_id, et_id,
+                cursor_ids, x, y,
             ))
             cursor_ids = [block_id]
             x += _LD_OP_WIDTH * 3

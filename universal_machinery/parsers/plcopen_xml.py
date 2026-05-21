@@ -74,7 +74,7 @@ from ..il import (
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
     ContactRisingEdge, OutCoil, OutReset, OutSet, ParallelGroup,
-    STD_FUNCTION_NAMES, StdFunc,
+    STD_FUNCTION_NAMES, StdFunc, TOF, TON, TP,
 )
 
 
@@ -1558,6 +1558,34 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                 return Move(
                     src=_compare_operand_from_text(src_text),
                     dst=_compare_operand_from_text(dst_text),
+                )
+            if type_name in ("TON", "TOF", "TP"):
+                # IEC §2.5.2.3.1 timer family.  Recover:
+                #   - address     <- instanceName attr
+                #   - preset_ms   <- PT inVariable expression (T#<ms>ms)
+                #   - done_bit    <- outVariable consuming Q pin
+                #   - accumulator <- outVariable consuming ET pin
+                instance = elem.get("instanceName") or ""
+                pt_text = _trace_block_pin_operand(
+                    elem, "PT", elements_by_id, kind_by_id
+                )
+                preset_ms = _parse_duration_ms(pt_text) or 0
+                done_text = _trace_block_out_consumer(
+                    node_id, "Q", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                et_text = _trace_block_out_consumer(
+                    node_id, "ET", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                cls = {"TON": TON, "TOF": TOF, "TP": TP}[type_name]
+                return cls(
+                    address=_compare_operand_from_text(instance),
+                    preset_ms=preset_ms,
+                    done_bit=(_compare_operand_from_text(done_text)
+                                if done_text else None),
+                    accumulator=(_compare_operand_from_text(et_text)
+                                    if et_text else None),
                 )
             if type_name:
                 # Anything else with a typeName is treated as a
