@@ -403,6 +403,108 @@ def test_reader_treats_missing_edge_attribute_as_plain_NO():
 
 
 # -----------------------------------------------------------------------------
+# Negated edge contacts: ``<contact edge="rising" negated="true">`` /
+# ``<contact edge="falling" negated="true">``.  Previously the
+# reader stripped the negation (lossy case documented in PR #36);
+# now ContactRisingEdge / ContactFallingEdge carry a ``negated``
+# flag and round-trip the combination losslessly.
+# -----------------------------------------------------------------------------
+
+
+def test_negated_rising_edge_round_trips_via_dataclass_flag():
+    """``ContactRisingEdge(addr, negated=True)`` -> XML contact
+    with both ``negated="true"`` and ``edge="rising"``; reader
+    recovers both flags into the same IL form."""
+    from universal_machinery.il.ops import ContactRisingEdge
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(ContactRisingEdge(Address("clk"), negated=True), coil("out")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, ContactRisingEdge)
+    assert op.negated is True
+
+
+def test_negated_falling_edge_round_trips_via_dataclass_flag():
+    from universal_machinery.il.ops import ContactFallingEdge
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(ContactFallingEdge(Address("clk"), negated=True), coil("out")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, ContactFallingEdge)
+    assert op.negated is True
+
+
+def test_negated_edge_contact_emit_carries_both_attrs():
+    from universal_machinery.il.ops import ContactRisingEdge
+    from universal_machinery.il import Address
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(ContactRisingEdge(Address("clk"), negated=True), coil("out")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # Both attrs must appear on the same <contact> element
+    contact_elem = xml.split("<contact ")[1].split(">")[0]
+    assert 'negated="true"' in contact_elem
+    assert 'edge="rising"' in contact_elem
+
+
+def test_plain_edge_contact_still_emits_without_negated_attribute():
+    """Negative baseline: a non-negated edge contact (the
+    common case) doesn't pick up a stray ``negated="true"``."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(redge("X"), coil("Y")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    contact_elem = xml.split("<contact ")[1].split(">")[0]
+    assert 'negated="true"' not in contact_elem
+
+
+def test_reader_recovers_negated_edge_from_hand_rolled_xml():
+    """A document that carries ``negated="true" edge="rising"``
+    on a ``<contact>`` element now round-trips into
+    ``ContactRisingEdge(..., negated=True)`` rather than losing
+    the negation."""
+    from universal_machinery.il.ops import ContactRisingEdge
+    xml = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body><LD>
+        <leftPowerRail localId="0">
+          <position x="0" y="0"/>
+          <connectionPointOut formalParameter="OUT"/>
+        </leftPowerRail>
+        <contact localId="1" negated="true" edge="rising">
+          <position x="100" y="0"/>
+          <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>flag</variable>
+        </contact>
+        <coil localId="2">
+          <position x="200" y="0"/>
+          <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>out</variable>
+        </coil>
+        <rightPowerRail localId="3">
+          <position x="300" y="0"/>
+          <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+</project>'''
+    sub = parse_plcopen_xml(xml).find_subroutine("Main")
+    op = sub.rungs[0].ops[0]
+    assert isinstance(op, ContactRisingEdge)
+    assert op.negated is True
+
+
+# -----------------------------------------------------------------------------
 # ParallelGroup (OR branches inside a rung).  Previously any rung
 # carrying a ParallelGroup dropped to ST-text fallback; native LD
 # now emits the branches with multi-incoming wires at the join.

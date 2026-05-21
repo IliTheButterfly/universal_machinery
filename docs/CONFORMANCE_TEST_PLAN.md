@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1153 tests**.
+counts are snapshotted; the current passing total is **1158 tests**.
 
 ## Reading this document
 
@@ -128,7 +128,7 @@ Status legend:
 
 | Language | Status | Test fixtures |
 |----------|--------|---------------|
-| LD (Ladder Diagram) | ✅ | tests/emitters/test_plcopen_xml_ld.py — native `<LD>` emit + read; contacts (NO / NC), edge contacts (rising / falling via XSD `edge=`), coils (regular / SET / RESET) all round-trip |
+| LD (Ladder Diagram) | ✅ | tests/emitters/test_plcopen_xml_ld.py — native `<LD>` emit + read; contacts (NO / NC), edge contacts (rising / falling via XSD `edge=`, including the `negated=true` × `edge=` combination via `ContactRisingEdge(..., negated=True)` / `ContactFallingEdge(..., negated=True)`), coils (regular / SET / RESET) all round-trip |
 | LD `ParallelGroup` (OR branches inside rungs) | ✅ | tests/emitters/test_plcopen_xml_ld.py — multi-branch / multi-contact-per-branch / mixed NO+NC branches all round-trip via native `<LD>` multi-incoming wire shape |
 | LD with mixed FBD blocks (math / calls / stdlib inside rungs) | ⚠️ | Falls back to ST text emission; tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text |
 | FBD (Function Block Diagram) | ✅ | tests/emitters/test_plcopen_xml_fbd.py, tests/parsers/test_plcopen_xml_reader_fbd.py, tests/lowering/test_fbd_to_st.py |
@@ -247,4 +247,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1153 / 1153 passing**.
+status: **1158 / 1158 passing**.

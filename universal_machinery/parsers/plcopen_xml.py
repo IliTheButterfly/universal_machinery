@@ -1341,9 +1341,9 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
             negated = _parse_bool_attr(elem, "negated")
             edge = (elem.get("edge") or "none").lower()
             if edge == "rising":
-                return ContactRisingEdge(addr)
+                return ContactRisingEdge(addr, negated=negated)
             elif edge == "falling":
-                return ContactFallingEdge(addr)
+                return ContactFallingEdge(addr, negated=negated)
             elif negated:
                 return ContactNC(addr)
             return ContactNO(addr)
