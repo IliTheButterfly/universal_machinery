@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1113 tests**.
+counts are snapshotted; the current passing total is **1122 tests**.
 
 ## Reading this document
 
@@ -127,7 +127,7 @@ Status legend:
 
 | Language | Status | Test fixtures |
 |----------|--------|---------------|
-| LD (Ladder Diagram) | ✅ | tests/emitters/test_plcopen_xml_ld.py — native `<LD>` emit + read |
+| LD (Ladder Diagram) | ✅ | tests/emitters/test_plcopen_xml_ld.py — native `<LD>` emit + read; contacts (NO / NC), edge contacts (rising / falling via XSD `edge=`), coils (regular / SET / RESET) all round-trip |
 | LD with mixed FBD blocks (math / calls / parallel groups inside rungs) | ⚠️ | Falls back to ST text emission; tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text |
 | FBD (Function Block Diagram) | ✅ | tests/emitters/test_plcopen_xml_fbd.py, tests/parsers/test_plcopen_xml_reader_fbd.py, tests/lowering/test_fbd_to_st.py |
 | ST (Structured Text) | ✅ | tests/il/test_st_ast.py, tests/parsers/test_st_text_parser.py — emit + parse round-trip |
@@ -245,4 +245,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1113 / 1113 passing**.
+status: **1122 / 1122 passing**.

@@ -16,14 +16,16 @@ import pytest
 xmlschema = pytest.importorskip("xmlschema")
 
 from universal_machinery.builders import (
-    add, coil, nc, no, prog, program, reset_, rung, set_, tag, tag_decl,
+    add, coil, fedge, nc, no, prog, program, redge, reset_, rung, set_,
+    tag, tag_decl,
 )
 from universal_machinery.emitters.plcopen_xml import (
     emit_xml, validate_plcopen_xml,
 )
 from universal_machinery.il import Address, TagRef, TagType
 from universal_machinery.il.ops import (
-    ContactNC, ContactNO, OutCoil, OutReset, OutSet,
+    ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
+    OutCoil, OutReset, OutSet,
 )
 from universal_machinery.parsers.plcopen_xml import parse_plcopen_xml
 
@@ -232,3 +234,169 @@ def test_ld_reader_recognises_negated_contact_and_coil():
     assert isinstance(ops[0], ContactNC)
     assert ops[0].address == TagRef("flag")
     assert isinstance(ops[1], OutCoil)
+
+
+# -----------------------------------------------------------------------------
+# Edge contacts (XSD ``edge="rising"`` / ``edge="falling"`` on
+# ``<contact>``).  IL distinguishes via ``ContactRisingEdge`` /
+# ``ContactFallingEdge``.
+# -----------------------------------------------------------------------------
+
+
+def test_rising_edge_contact_emits_edge_attribute():
+    """``redge('clk')`` -> ``<contact edge="rising">`` per the
+    XSD's ``edgeModifierType`` enumeration."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(redge("clk"), coil("out")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'edge="rising"' in xml
+    assert 'edge="falling"' not in xml
+    # The contact element shouldn't pick up a ``negated`` flag from
+    # the edge -- ContactRisingEdge isn't a negated contact.
+    contact_elem = xml.split("<contact ")[1].split(">")[0]
+    assert 'negated="true"' not in contact_elem
+
+
+def test_falling_edge_contact_emits_edge_attribute():
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(fedge("clk"), coil("out")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'edge="falling"' in xml
+
+
+def test_edge_contact_body_no_longer_falls_back_to_ST():
+    """Rungs with edge contacts now stay in native ``<LD>`` rather
+    than dropping to the ST-text fallback emit path."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(redge("X"), coil("Y")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    # The ST-text fallback wraps the body in an <ST> element with
+    # the rung text inside; absence pins the native path.
+    assert "<ST>" not in xml
+
+
+def test_rising_edge_contact_round_trips():
+    rungs = _round_trip([rung(redge("X001"), coil("Y001"))])
+    assert isinstance(rungs[0].ops[0], ContactRisingEdge)
+    assert rungs[0].ops[0].address == Address("X001")
+
+
+def test_falling_edge_contact_round_trips():
+    rungs = _round_trip([rung(fedge("X002"), coil("Y002"))])
+    assert isinstance(rungs[0].ops[0], ContactFallingEdge)
+    assert rungs[0].ops[0].address == Address("X002")
+
+
+def test_mixed_edge_and_regular_contacts_in_one_body():
+    """A POU body with a mix of NO / NC / rising / falling
+    contacts should round-trip every contact kind correctly."""
+    rungs = _round_trip([
+        rung(no("A"), coil("oA")),
+        rung(nc("B"), coil("oB")),
+        rung(redge("C"), coil("oC")),
+        rung(fedge("D"), coil("oD")),
+    ])
+    kinds = [type(r.ops[0]).__name__ for r in rungs]
+    assert kinds == [
+        "ContactNO", "ContactNC",
+        "ContactRisingEdge", "ContactFallingEdge",
+    ]
+
+
+def test_edge_contact_chained_with_other_contacts():
+    """A rung with multiple contacts (gate) followed by a coil
+    keeps every contact's kind during round-trip."""
+    rungs = _round_trip([
+        rung(redge("clk"), no("enable"), coil("pulse_out")),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], ContactRisingEdge)
+    assert isinstance(ops[1], ContactNO)
+    assert isinstance(ops[2], OutCoil)
+
+
+# -----------------------------------------------------------------------------
+# Reader-only: hand-rolled documents
+# -----------------------------------------------------------------------------
+
+
+def test_reader_parses_hand_rolled_edge_attribute():
+    """A document with ``edge="rising"`` on a ``<contact>`` (no
+    matter who emitted it) should lower into ``ContactRisingEdge``
+    on read."""
+    xml = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body><LD>
+        <leftPowerRail localId="0">
+          <position x="0" y="0"/>
+          <connectionPointOut formalParameter="OUT"/>
+        </leftPowerRail>
+        <contact localId="1" edge="rising">
+          <position x="100" y="0"/>
+          <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>clk</variable>
+        </contact>
+        <coil localId="2">
+          <position x="200" y="0"/>
+          <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>out</variable>
+        </coil>
+        <rightPowerRail localId="3">
+          <position x="300" y="0"/>
+          <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+</project>'''
+    sub = parse_plcopen_xml(xml).find_subroutine("Main")
+    assert isinstance(sub.rungs[0].ops[0], ContactRisingEdge)
+
+
+def test_reader_treats_missing_edge_attribute_as_plain_NO():
+    """``edge="none"`` (the XSD default) should not promote a
+    plain NO contact into an edge contact."""
+    xml = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body><LD>
+        <leftPowerRail localId="0">
+          <position x="0" y="0"/>
+          <connectionPointOut formalParameter="OUT"/>
+        </leftPowerRail>
+        <contact localId="1" edge="none">
+          <position x="100" y="0"/>
+          <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>flag</variable>
+        </contact>
+        <coil localId="2">
+          <position x="200" y="0"/>
+          <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>out</variable>
+        </coil>
+        <rightPowerRail localId="3">
+          <position x="300" y="0"/>
+          <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+</project>'''
+    sub = parse_plcopen_xml(xml).find_subroutine("Main")
+    assert isinstance(sub.rungs[0].ops[0], ContactNO)
