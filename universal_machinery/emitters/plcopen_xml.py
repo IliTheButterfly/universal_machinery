@@ -98,6 +98,7 @@ _DIRECTION_TO_ELEMENT = {
     VarDirection.LOCAL:    "localVars",
     VarDirection.EXTERNAL: "externalVars",
     VarDirection.TEMP:     "tempVars",
+    VarDirection.GLOBAL:   "globalVars",
 }
 
 
@@ -1471,6 +1472,7 @@ def emit_pou_xml(sub: Subroutine) -> str:
 
     for direction in (VarDirection.INPUT, VarDirection.OUTPUT,
                       VarDirection.IN_OUT, VarDirection.LOCAL,
+                      VarDirection.GLOBAL,
                       VarDirection.EXTERNAL, VarDirection.TEMP):
         block_vars = [v for v in _vars_by_direction(sub, direction)]
         block = _emit_var_block(direction, block_vars)
@@ -1514,6 +1516,7 @@ def _vars_by_direction(sub: Subroutine,
     if direction is VarDirection.OUTPUT:   return sub.outputs
     if direction is VarDirection.IN_OUT:   return sub.in_outs
     if direction is VarDirection.LOCAL:    return sub.local_vars
+    if direction is VarDirection.GLOBAL:   return sub.global_vars
     return ()                              # EXTERNAL/TEMP not on Subroutine yet
 
 

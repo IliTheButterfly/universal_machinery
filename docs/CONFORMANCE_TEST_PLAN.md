@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1139 tests**.
+counts are snapshotted; the current passing total is **1145 tests**.
 
 ## Reading this document
 
@@ -67,7 +67,7 @@ Status legend:
 | §2.4.3   | VAR_TEMP                   | ✅     | tests/il/test_pou_db_sfc.py |
 | §2.4.3   | VAR_ACCESS                 | ✅     | tests/il/test_var_access_config.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_access_vars_and_config_vars |
 | §2.4.3.2 | VAR_CONFIG                 | ✅     | tests/il/test_var_access_config.py, tests/parsers/test_plcopen_xml_reader.py |
-| §2.4.3   | VAR_GLOBAL (POU-scope)     | ⚠️     | Modeled as `Tag`; no round-trip-specific test |
+| §2.4.3   | VAR_GLOBAL (POU-scope)     | ✅     | `Subroutine.global_vars: list[Var]`; PLCopen XML emits `<globalVars>` block inside `<interface>`; tests/parsers/test_plcopen_xml_reader.py — round-trip preserves names, types, initial values, and keeps globals distinct from locals |
 | §2.7.1   | VAR_GLOBAL (config-scope)  | ✅     | tests/il/test_var_access_config.py |
 | §2.7.1   | VAR_GLOBAL (resource-scope)| ✅     | tests/il/test_configuration.py |
 
@@ -247,4 +247,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1139 / 1139 passing**.
+status: **1145 / 1145 passing**.

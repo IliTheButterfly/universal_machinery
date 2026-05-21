@@ -397,3 +397,81 @@ def test_task_non_integer_priority_raises():
     )
     with pytest.raises(PlcopenParseError, match="non-integer priority"):
         parse_plcopen_xml(_wrap_doc(configs=cfg))
+
+
+# -----------------------------------------------------------------------------
+# POU-scope VAR_GLOBAL (IEC §2.4.3): the rare-but-IEC-valid form
+# where a single POU declares VAR_GLOBAL ... END_VAR locally.
+# Distinct from Resource / Configuration-scope globals.
+# -----------------------------------------------------------------------------
+
+
+def test_pou_scope_var_global_round_trips_through_plcopen_xml():
+    """``Subroutine.global_vars`` -> ``<globalVars>`` block inside
+    ``<interface>``; reader recovers it back into the same field
+    (not conflated with ``local_vars`` or any other bucket)."""
+    p = program(subroutines=[prog("Main", main=True,
+        local_vars=[var("counter", TagType.INT)])])
+    # Manually add global_vars (no builder helper yet)
+    p.subroutines[0].global_vars = [
+        var("globalA", TagType.INT),
+        var("globalFlag", TagType.BOOL),
+    ]
+    p2 = _round_trip(p)
+    sub = p2.find_subroutine("Main")
+    assert [v.name for v in sub.global_vars] == ["globalA", "globalFlag"]
+    assert sub.global_vars[0].data_type is TagType.INT
+    assert sub.global_vars[1].data_type is TagType.BOOL
+    # Locals stay separate
+    assert [v.name for v in sub.local_vars] == ["counter"]
+
+
+def test_pou_scope_var_global_emits_globalVars_block():
+    """The XML body should carry an explicit ``<globalVars>`` block
+    (as opposed to bucketing globals into ``<localVars>``)."""
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].global_vars = [var("g", TagType.INT)]
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    assert "<globalVars>" in xml
+    # And the local var name doesn't accidentally appear in globalVars
+    assert "<localVars" not in xml or "g" not in xml.split("<localVars>")[1].split("</localVars>")[0]
+
+
+def test_pou_scope_var_global_xsd_validates():
+    """``<globalVars>`` inside a POU's ``<interface>`` is XSD-valid
+    per PLCopen TC6 v2.01."""
+    from universal_machinery.emitters.plcopen_xml import validate_plcopen_xml
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].global_vars = [var("g", TagType.INT)]
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_pou_scope_var_global_with_initial_value_round_trips():
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].global_vars = [
+        var("counter", TagType.INT, initial="42"),
+    ]
+    p2 = _round_trip(p)
+    sub = p2.find_subroutine("Main")
+    assert sub.global_vars[0].initial_value == "42"
+
+
+def test_pou_scope_var_global_serialises_through_json():
+    from universal_machinery.serialisation import to_dict, from_dict
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].global_vars = [
+        var("global_x", TagType.REAL),
+    ]
+    p2 = from_dict(to_dict(p))
+    sub = p2.find_subroutine("Main")
+    assert [v.name for v in sub.global_vars] == ["global_x"]
+
+
+def test_empty_pou_scope_global_vars_does_not_emit_block():
+    """If a Subroutine has no global_vars, no ``<globalVars>``
+    block should appear -- pins that the empty-list default
+    doesn't generate spurious empty interface elements."""
+    p = program(subroutines=[prog("Main", main=True)])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    assert "<globalVars" not in xml

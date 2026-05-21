@@ -122,6 +122,7 @@ _ELEMENT_TO_DIRECTION = {
     "localVars":    VarDirection.LOCAL,
     "externalVars": VarDirection.EXTERNAL,
     "tempVars":     VarDirection.TEMP,
+    "globalVars":   VarDirection.GLOBAL,
 }
 
 
@@ -1600,6 +1601,7 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
     outputs:    list[Var] = []
     in_outs:    list[Var] = []
     local_vars: list[Var] = []
+    global_vars: list[Var] = []
     return_type: Optional[TagType] = None
 
     interface = _child(pou_elem, "interface")
@@ -1620,6 +1622,8 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
                 outputs.extend(vars_)
             elif direction is VarDirection.IN_OUT:
                 in_outs.extend(vars_)
+            elif direction is VarDirection.GLOBAL:
+                global_vars.extend(vars_)
             else:
                 # LOCAL, EXTERNAL, TEMP all funnel into local_vars
                 # -- the IL keeps a single ``local_vars`` slot and
@@ -1652,7 +1656,8 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
     return Subroutine(
         name=name, kind=kind, main=main, comment=comment,
         inputs=inputs, outputs=outputs, in_outs=in_outs,
-        local_vars=local_vars, return_type=return_type,
+        local_vars=local_vars, global_vars=global_vars,
+        return_type=return_type,
         rungs=rungs,
         st_body=st_body, fbd_body=fbd_body, sfc=sfc_body,
     )
