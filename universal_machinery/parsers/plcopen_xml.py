@@ -73,7 +73,7 @@ from ..il import (
 )
 from ..il.ops import (
     ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
-    OutCoil, OutReset, OutSet,
+    OutCoil, OutReset, OutSet, ParallelGroup,
 )
 
 
@@ -1282,6 +1282,120 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
             if src in consumers:
                 consumers[src].append(lid)
 
+    def _make_op_from_node(node_id: int):
+        """Convert one LD element id (contact / coil) into its IL op."""
+        elem = elements_by_id[node_id]
+        kind = kind_by_id[node_id]
+        if kind == "contact":
+            addr = _parse_ld_variable_operand(elem)
+            negated = _parse_bool_attr(elem, "negated")
+            edge = (elem.get("edge") or "none").lower()
+            if edge == "rising":
+                return ContactRisingEdge(addr)
+            elif edge == "falling":
+                return ContactFallingEdge(addr)
+            elif negated:
+                return ContactNC(addr)
+            return ContactNO(addr)
+        if kind == "coil":
+            addr = _parse_ld_variable_operand(elem)
+            storage = elem.get("storage") or ""
+            if storage == "set":
+                return OutSet(addr)
+            if storage == "reset":
+                return OutReset(addr)
+            return OutCoil(addr)
+        return None
+
+    def _detect_parallel(fork_id: int):
+        """Given a node whose consumers branch, BFS each branch
+        forward until they re-converge.  Returns
+        ``(branch_paths, join_id)`` where ``branch_paths`` is a
+        list of localId lists (one per branch, excluding the
+        join node) and ``join_id`` is the node where all branches
+        terminate.  Returns ``None`` if no clean join is found
+        within a sane depth (caller falls back to linear walk).
+        """
+        branch_starts = [
+            c for c in consumers.get(fork_id, [])
+            if kind_by_id.get(c) != "rightPowerRail"
+            and c not in visited
+        ]
+        if len(branch_starts) < 2:
+            return None
+        # BFS each branch forward; record (node -> shortest path
+        # from branch start to that node).
+        branch_reaches: list[dict[int, list[int]]] = []
+        for start in branch_starts:
+            reached: dict[int, list[int]] = {start: [start]}
+            frontier = [start]
+            steps = 0
+            while frontier and steps < 32:
+                new_frontier = []
+                for n in frontier:
+                    for nxt in consumers.get(n, []):
+                        if nxt in reached:
+                            continue
+                        if kind_by_id.get(nxt) == "rightPowerRail":
+                            # Joins via the rail are valid -- the
+                            # rail's incoming may merge multiple
+                            # branch tails directly.
+                            reached[nxt] = reached[n] + [nxt]
+                            continue
+                        reached[nxt] = reached[n] + [nxt]
+                        new_frontier.append(nxt)
+                frontier = new_frontier
+                steps += 1
+            branch_reaches.append(reached)
+        # Find a node reachable from every branch -- candidate join.
+        common = set(branch_reaches[0])
+        for br in branch_reaches[1:]:
+            common &= set(br)
+        if not common:
+            return None
+        # Among the candidates, pick the one whose ``incoming_by_id``
+        # set exactly matches the union of "last node before join"
+        # across all branches.
+        for j in sorted(common, key=lambda x: max(
+            len(br[x]) for br in branch_reaches
+        )):
+            paths = []
+            for br in branch_reaches:
+                path = br[j]   # [start, ..., j]
+                paths.append(path[:-1])  # exclude join
+            if any(not p for p in paths):
+                continue
+            last_elems = {p[-1] for p in paths}
+            if last_elems == set(incoming_by_id.get(j, [])):
+                return paths, j
+        return None
+
+    def _walk_linear_branch(start_id: int) -> list:
+        """Walk a single linear branch from ``start_id`` forward
+        until the path ends.  Used inside parallel-branch
+        reconstruction where each branch is linear (a sequence of
+        single-consumer contacts).  Nested parallel groups inside
+        a branch aren't supported in this slice -- they'd require
+        recursing ``_detect_parallel`` on the branch's internal
+        forks."""
+        ops: list = []
+        cursor = start_id
+        while True:
+            if cursor in visited:
+                break
+            op = _make_op_from_node(cursor)
+            if op is None:
+                break
+            ops.append(op)
+            visited.add(cursor)
+            nxts = [n for n in consumers.get(cursor, [])
+                    if kind_by_id.get(n) != "rightPowerRail"
+                    and n not in visited]
+            if len(nxts) != 1:
+                break
+            cursor = nxts[0]
+        return ops
+
     rungs: list[Rung] = []
     visited: set[int] = set()
 
@@ -1289,69 +1403,71 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
         if kind != "leftPowerRail":
             continue
         # Walk the rail's downstream chain.  PLCopen rungs are
-        # linear in the common case; we follow the first
-        # consumer at each step.
+        # linear in the common case; ParallelGroup branches fan
+        # out then re-converge via multi-incoming wires.
         ops: list = []
         cursor = lid
         while True:
-            if cursor in visited:
+            if cursor in visited and cursor != lid:
                 break
             visited.add(cursor)
             nxts = consumers.get(cursor, [])
-            if not nxts:
+            non_rail_unvisited = [
+                n for n in nxts
+                if kind_by_id.get(n) != "rightPowerRail"
+                and n not in visited
+            ]
+            rails = [n for n in nxts
+                      if kind_by_id.get(n) == "rightPowerRail"]
+            if not non_rail_unvisited:
+                if rails:
+                    visited.add(rails[0])
                 break
-            # Prefer the unvisited next consumer that isn't a
-            # rightPowerRail (rails are terminators, not links).
-            chosen: Optional[int] = None
-            for n in nxts:
-                if n in visited:
+            if len(non_rail_unvisited) > 1:
+                # Fork -- attempt to detect a parallel-branch
+                # pattern that re-converges.  If no clean join is
+                # found, fall back to linear walk of the first
+                # branch (best-effort; the round-trip stays
+                # well-formed but may lose the OR structure).
+                detected = _detect_parallel(cursor)
+                if detected is not None:
+                    branch_paths, join_id = detected
+                    branch_ops_tuples = []
+                    for path in branch_paths:
+                        branch_ops = []
+                        for nid in path:
+                            op = _make_op_from_node(nid)
+                            if op is not None:
+                                branch_ops.append(op)
+                            visited.add(nid)
+                        branch_ops_tuples.append(tuple(branch_ops))
+                    ops.append(ParallelGroup(
+                        branches=tuple(branch_ops_tuples)
+                    ))
+                    # Emit the join node's own op: it's the op
+                    # *after* the ParallelGroup in the IL rung.
+                    # (For the typical "A AND (B OR C) -> coil"
+                    # shape, the join is the coil; for chained
+                    # parallels the join is the next contact.)
+                    join_op = _make_op_from_node(join_id)
+                    if join_op is not None:
+                        ops.append(join_op)
+                    visited.add(join_id)
+                    cursor = join_id
                     continue
-                if kind_by_id.get(n) == "rightPowerRail":
-                    # Terminator -- record but don't follow further.
-                    chosen = n
-                    break
-                chosen = n
-                break
-            if chosen is None:
-                break
-            kind = kind_by_id[chosen]
-            elem = elements_by_id[chosen]
-            if kind == "contact":
-                addr = _parse_ld_variable_operand(elem)
-                negated = _parse_bool_attr(elem, "negated")
-                # XSD ``edge=`` carries "rising" / "falling" / "none"
-                # (default).  IL distinguishes rising / falling via
-                # dedicated op classes -- ContactRisingEdge /
-                # ContactFallingEdge -- so we dispatch on the edge
-                # attr.  Negated edge contacts aren't modelled (the
-                # IL classes don't carry a negated flag); we drop
-                # negation in that case rather than failing.
-                edge = (elem.get("edge") or "none").lower()
-                if edge == "rising":
-                    ops.append(ContactRisingEdge(addr))
-                elif edge == "falling":
-                    ops.append(ContactFallingEdge(addr))
-                elif negated:
-                    ops.append(ContactNC(addr))
-                else:
-                    ops.append(ContactNO(addr))
-                cursor = chosen
+                # Fallback: walk first branch linearly.
+                cursor = non_rail_unvisited[0]
+                chosen_op = _make_op_from_node(cursor)
+                if chosen_op is not None:
+                    ops.append(chosen_op)
                 continue
-            if kind == "coil":
-                addr = _parse_ld_variable_operand(elem)
-                storage = elem.get("storage") or ""
-                if storage == "set":
-                    ops.append(OutSet(addr))
-                elif storage == "reset":
-                    ops.append(OutReset(addr))
-                else:
-                    ops.append(OutCoil(addr))
-                cursor = chosen
-                continue
-            if kind == "rightPowerRail":
-                visited.add(chosen)
-                break
-            break
+            # Linear: exactly one non-rail consumer
+            chosen = non_rail_unvisited[0]
+            op = _make_op_from_node(chosen)
+            if op is not None:
+                ops.append(op)
+            cursor = chosen
+            continue
         if ops:
             rungs.append(Rung(ops=ops))
 

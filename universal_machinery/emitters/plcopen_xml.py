@@ -74,7 +74,7 @@ from ..il import (
 )
 from ..il.ops import (
     ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
-    OutCoil, OutReset, OutSet,
+    OutCoil, OutReset, OutSet, ParallelGroup,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1180,16 +1180,29 @@ def _emit_sfc_network_content(net) -> str:
 #:
 #: Edge contacts (rising / falling) emit via the standard
 #: ``<contact>`` element with the XSD-defined ``edge=`` attribute.
+#: ParallelGroup lowers to multi-incoming wires at the branch
+#: join (the next op after the group), recursively handling
+#: nested groups inside branches.
 _NATIVE_LD_OPS = (
     ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
-    OutCoil, OutSet, OutReset,
+    OutCoil, OutSet, OutReset, ParallelGroup,
 )
 
 
 def _is_pure_ld_rung(rung: Rung) -> bool:
-    """A rung is pure-LD if every op is a contact or coil
-    (no math, calls, stdlib, parallel groups, ...)."""
-    return all(isinstance(op, _NATIVE_LD_OPS) for op in rung.ops)
+    """A rung is pure-LD if every op is a native LD primitive --
+    contact (NO/NC/edge), coil (regular/SET/RESET), or
+    ParallelGroup whose branches recursively contain only native
+    ops.  Math, calls, stdlib, etc. still fall back to ST text."""
+    def _ok(op) -> bool:
+        if isinstance(op, ParallelGroup):
+            return all(
+                isinstance(b, (list, tuple))
+                and all(_ok(inner) for inner in b)
+                for b in op.branches
+            )
+        return isinstance(op, _NATIVE_LD_OPS)
+    return all(_ok(op) for op in rung.ops)
 
 
 def _is_pure_ld_body(rungs) -> bool:
@@ -1215,19 +1228,131 @@ _LD_OP_WIDTH = 100.0
 _LD_LEFT_X = 20.0
 
 
+def _emit_ld_contact_xml(op, this_id: int, parent_ids: list[int],
+                            x: float, y: float) -> str:
+    """Render one contact (NO / NC / rising / falling) with its
+    incoming references."""
+    attrs = []
+    if isinstance(op, ContactNC):
+        attrs.append('negated="true"')
+    if isinstance(op, ContactRisingEdge):
+        attrs.append('edge="rising"')
+    elif isinstance(op, ContactFallingEdge):
+        attrs.append('edge="falling"')
+    attr_str = (" " + " ".join(attrs)) if attrs else ""
+    cp_in = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    return (
+        f'<contact localId="{this_id}"{attr_str}>'
+        f'<position x="{x:g}" y="{y:g}"/>'
+        f'<connectionPointIn>{cp_in}</connectionPointIn>'
+        f'<connectionPointOut/>'
+        f'<variable>{escape(_ld_variable_text(op.address))}</variable>'
+        '</contact>'
+    )
+
+
+def _emit_ld_coil_xml(op, this_id: int, parent_ids: list[int],
+                        x: float, y: float) -> str:
+    """Render one coil (regular / SET / RESET) with its incoming
+    references."""
+    attrs = []
+    if isinstance(op, OutSet):
+        attrs.append('storage="set"')
+    elif isinstance(op, OutReset):
+        attrs.append('storage="reset"')
+    attr_str = (" " + " ".join(attrs)) if attrs else ""
+    cp_in = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    return (
+        f'<coil localId="{this_id}"{attr_str}>'
+        f'<position x="{x:g}" y="{y:g}"/>'
+        f'<connectionPointIn>{cp_in}</connectionPointIn>'
+        f'<connectionPointOut/>'
+        f'<variable>{escape(_ld_variable_text(op.address))}</variable>'
+        '</coil>'
+    )
+
+
+def _emit_ld_ops_chain(ops, parent_ids: list[int],
+                         next_local_id: int, x: float, y: float
+                         ) -> tuple[list[str], list[int], int, float,
+                                     Optional[int]]:
+    """Walk a sequence of LD ops left-to-right, emitting elements.
+
+    Returns ``(xml_lines, tail_ids, next_local_id, x_after,
+    coil_id_or_None)``.  ``tail_ids`` is the list of localIds that
+    feed into the next downstream op (single id for plain contact
+    chains, multi-id list immediately after a ParallelGroup).
+    ``coil_id_or_None`` is the localId of any coil encountered
+    (so the caller can wire the rightPowerRail to it).
+    """
+    lines: list[str] = []
+    cursor_ids = list(parent_ids)
+    coil_id: Optional[int] = None
+    for op in ops:
+        if isinstance(op, (ContactNO, ContactNC,
+                            ContactRisingEdge, ContactFallingEdge)):
+            this_id = next_local_id; next_local_id += 1
+            lines.append(_emit_ld_contact_xml(op, this_id, cursor_ids, x, y))
+            cursor_ids = [this_id]
+            x += _LD_OP_WIDTH
+        elif isinstance(op, (OutCoil, OutSet, OutReset)):
+            this_id = next_local_id; next_local_id += 1
+            lines.append(_emit_ld_coil_xml(op, this_id, cursor_ids, x, y))
+            cursor_ids = [this_id]
+            coil_id = this_id
+            x += _LD_OP_WIDTH
+        elif isinstance(op, ParallelGroup):
+            # Each branch starts from cursor_ids (the current rung
+            # head) and produces its own tail.  All branch tails
+            # union into the post-group cursor list -- the next op
+            # downstream picks them up as its connectionPointIn.
+            #
+            # Branches recurse via _emit_ld_ops_chain so a branch
+            # whose ops include another ParallelGroup is handled
+            # without special-casing.  Each branch laid out on its
+            # own y-row offset so the diagram stays readable;
+            # localIds remain globally unique within the body.
+            branch_tails: list[int] = []
+            branch_x_max = x
+            for bi, branch in enumerate(op.branches):
+                branch_y = y + (bi - (len(op.branches) - 1) / 2.0) * 40.0
+                b_lines, b_tails, next_local_id, bx, _coil = (
+                    _emit_ld_ops_chain(
+                        branch, cursor_ids, next_local_id, x, branch_y
+                    )
+                )
+                lines.extend(b_lines)
+                branch_tails.extend(b_tails)
+                if bx > branch_x_max:
+                    branch_x_max = bx
+            cursor_ids = branch_tails
+            x = branch_x_max
+        else:
+            # Non-native op (math / call / stdlib / etc.) -- shouldn't
+            # be reached because _is_pure_ld_rung filtered the body
+            # back to ST emission already.  Defensive skip.
+            continue
+    return lines, cursor_ids, next_local_id, x, coil_id
+
+
 def _emit_ld_rung_xml(rung: Rung, rung_idx: int,
                         next_local_id: int) -> tuple[list[str], int]:
     """One rung lowered to:
 
-      leftPowerRail -> contact(s) -> coil -> rightPowerRail
+      leftPowerRail -> contact(s) / ParallelGroup(s) -> coil -> rightPowerRail
 
     Returns (xml_lines, new_next_local_id).  ``next_local_id`` is
     threaded across rungs so localIds stay unique within the body.
 
     Op order in the IL rung is left-to-right: leading contact-shape
     ops form the gate, the trailing op (coil-shape) is the rung's
-    output.  We emit each op as its own element, wired sink-side
-    so the chain reads as a series circuit.
+    output.  ParallelGroup ops fan into multiple parallel branches
+    that re-converge on the next downstream element via
+    multi-incoming wires.
     """
     lines: list[str] = []
     y = 20.0 + rung_idx * _LD_RUNG_HEIGHT
@@ -1241,74 +1366,27 @@ def _emit_ld_rung_xml(rung: Rung, rung_idx: int,
         '</leftPowerRail>'
     )
 
-    # Walk the rung's ops left-to-right.  Each consumer pin
-    # references the previous producer's localId (sink-side
-    # wiring per PLCopen).
-    prev_id = left_id
-    op_x = _LD_LEFT_X + _LD_OP_WIDTH
-    coil_id: Optional[int] = None
-    for op in rung.ops:
-        if isinstance(op, (ContactNO, ContactNC,
-                            ContactRisingEdge, ContactFallingEdge)):
-            this_id = next_local_id; next_local_id += 1
-            attrs = []
-            if isinstance(op, ContactNC):
-                attrs.append('negated="true"')
-            if isinstance(op, ContactRisingEdge):
-                attrs.append('edge="rising"')
-            elif isinstance(op, ContactFallingEdge):
-                attrs.append('edge="falling"')
-            attr_str = (" " + " ".join(attrs)) if attrs else ""
-            lines.append(
-                f'<contact localId="{this_id}"{attr_str}>'
-                f'<position x="{op_x:g}" y="{y:g}"/>'
-                f'<connectionPointIn>'
-                f'<connection refLocalId="{prev_id}"/>'
-                f'</connectionPointIn>'
-                f'<connectionPointOut/>'
-                f'<variable>{escape(_ld_variable_text(op.address))}</variable>'
-                '</contact>'
-            )
-            prev_id = this_id
-            op_x += _LD_OP_WIDTH
-        elif isinstance(op, (OutCoil, OutSet, OutReset)):
-            this_id = next_local_id; next_local_id += 1
-            attrs = []
-            if isinstance(op, OutSet):
-                attrs.append('storage="set"')
-            elif isinstance(op, OutReset):
-                attrs.append('storage="reset"')
-            attr_str = (" " + " ".join(attrs)) if attrs else ""
-            lines.append(
-                f'<coil localId="{this_id}"{attr_str}>'
-                f'<position x="{op_x:g}" y="{y:g}"/>'
-                f'<connectionPointIn>'
-                f'<connection refLocalId="{prev_id}"/>'
-                f'</connectionPointIn>'
-                f'<connectionPointOut/>'
-                f'<variable>{escape(_ld_variable_text(op.address))}</variable>'
-                '</coil>'
-            )
-            coil_id = this_id
-            op_x += _LD_OP_WIDTH
+    op_lines, tail_ids, next_local_id, op_x, coil_id = _emit_ld_ops_chain(
+        rung.ops, [left_id], next_local_id, _LD_LEFT_X + _LD_OP_WIDTH, y
+    )
+    lines.extend(op_lines)
 
-    # rightPowerRail closing the rung
+    # rightPowerRail closing the rung.  Wires back from the coil
+    # if present, else from the last op-chain tail (a "gate-only"
+    # rung with no coil is degenerate but representable).
     right_id = next_local_id; next_local_id += 1
-    # The right rail's incoming connection comes from the coil
-    # if present, else from the last contact (a "gate-only" rung
-    # with no coil is degenerate but representable).
-    incoming = coil_id if coil_id is not None else prev_id
-    if incoming != left_id:
+    incoming_ids = [coil_id] if coil_id is not None else tail_ids
+    if incoming_ids and incoming_ids != [left_id]:
+        cp_in = "".join(
+            f'<connection refLocalId="{i}"/>' for i in incoming_ids
+        )
         lines.append(
             f'<rightPowerRail localId="{right_id}">'
             f'<position x="{op_x:g}" y="{y:g}"/>'
-            f'<connectionPointIn>'
-            f'<connection refLocalId="{incoming}"/>'
-            f'</connectionPointIn>'
+            f'<connectionPointIn>{cp_in}</connectionPointIn>'
             '</rightPowerRail>'
         )
     else:
-        # Empty rung (rare; included for schema completeness)
         lines.append(
             f'<rightPowerRail localId="{right_id}">'
             f'<position x="{op_x:g}" y="{y:g}"/>'
