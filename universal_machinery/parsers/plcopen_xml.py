@@ -73,8 +73,8 @@ from ..il import (
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, OutCoil, OutReset, OutSet, ParallelGroup,
-    STD_FUNCTION_NAMES, StdFunc, TOF, TON, TP,
+    ContactRisingEdge, CTD, CTU, CTUD, OutCoil, OutReset, OutSet,
+    ParallelGroup, STD_FUNCTION_NAMES, StdFunc, TOF, TON, TP,
 )
 
 
@@ -1559,6 +1559,91 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                     src=_compare_operand_from_text(src_text),
                     dst=_compare_operand_from_text(dst_text),
                 )
+            if type_name in ("CTU", "CTD", "CTUD"):
+                instance = elem.get("instanceName") or ""
+                pv_text = _trace_block_pin_operand(
+                    elem, "PV", elements_by_id, kind_by_id
+                )
+                try:
+                    preset = int(pv_text)
+                except (TypeError, ValueError):
+                    preset = 0
+                cv_text = _trace_block_out_consumer(
+                    node_id, "CV", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                accumulator = (_compare_operand_from_text(cv_text)
+                                  if cv_text else None)
+                if type_name == "CTU":
+                    r_text = _trace_block_pin_operand(
+                        elem, "R", elements_by_id, kind_by_id
+                    )
+                    q_text = _trace_block_out_consumer(
+                        node_id, "Q", elements_by_id, kind_by_id,
+                        incoming_by_id,
+                    )
+                    return CTU(
+                        address=_compare_operand_from_text(instance),
+                        preset=preset,
+                        reset=(_compare_operand_from_text(r_text)
+                                  if r_text else None),
+                        accumulator=accumulator,
+                        done_bit=(_compare_operand_from_text(q_text)
+                                     if q_text else None),
+                    )
+                if type_name == "CTD":
+                    ld_text = _trace_block_pin_operand(
+                        elem, "LD", elements_by_id, kind_by_id
+                    )
+                    q_text = _trace_block_out_consumer(
+                        node_id, "Q", elements_by_id, kind_by_id,
+                        incoming_by_id,
+                    )
+                    return CTD(
+                        address=_compare_operand_from_text(instance),
+                        preset=preset,
+                        load=(_compare_operand_from_text(ld_text)
+                                if ld_text else None),
+                        accumulator=accumulator,
+                        done_bit=(_compare_operand_from_text(q_text)
+                                     if q_text else None),
+                    )
+                # CTUD
+                cu_text = _trace_block_pin_operand(
+                    elem, "CU", elements_by_id, kind_by_id
+                )
+                cd_text = _trace_block_pin_operand(
+                    elem, "CD", elements_by_id, kind_by_id
+                )
+                r_text = _trace_block_pin_operand(
+                    elem, "R", elements_by_id, kind_by_id
+                )
+                ld_text = _trace_block_pin_operand(
+                    elem, "LD", elements_by_id, kind_by_id
+                )
+                qu_text = _trace_block_out_consumer(
+                    node_id, "QU", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                qd_text = _trace_block_out_consumer(
+                    node_id, "QD", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                return CTUD(
+                    address=_compare_operand_from_text(instance),
+                    preset=preset,
+                    cu_input=_compare_operand_from_text(cu_text),
+                    cd_input=_compare_operand_from_text(cd_text),
+                    reset=(_compare_operand_from_text(r_text)
+                              if r_text else None),
+                    load=(_compare_operand_from_text(ld_text)
+                              if ld_text else None),
+                    accumulator=accumulator,
+                    qu=(_compare_operand_from_text(qu_text)
+                           if qu_text else None),
+                    qd=(_compare_operand_from_text(qd_text)
+                           if qd_text else None),
+                )
             if type_name in ("TON", "TOF", "TP"):
                 # IEC §2.5.2.3.1 timer family.  Recover:
                 #   - address     <- instanceName attr
@@ -1831,6 +1916,21 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
             continue
         if ops:
             rungs.append(Rung(ops=ops))
+
+    # Second pass: pick up "orphan" blocks -- block elements that
+    # the leftRail forward walk didn't reach because none of their
+    # input pins traced back to the leftRail.  This happens for
+    # FB shapes whose primary inputs come from auxiliary
+    # inVariables rather than the rung gate (CTUD has both CU
+    # and CD as inVariable inputs, for example).  Each unvisited
+    # block becomes its own one-op rung.
+    for lid, kind in kind_by_id.items():
+        if kind != "block" or lid in visited:
+            continue
+        op = _make_op_from_node(lid)
+        if op is not None:
+            rungs.append(Rung(ops=[op]))
+            visited.add(lid)
 
     return rungs
 
