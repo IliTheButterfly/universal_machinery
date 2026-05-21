@@ -107,16 +107,16 @@ def test_mixed_rung_falls_back_to_ST_translation():
     counter family (CTU / CTD / CTUD) and the bistables / edge
     triggers (SR / RS / R_TRIG / F_TRIG) remain on the
     ST-fallback path pending their slices."""
-    from universal_machinery.builders import ctu
+    from universal_machinery.builders import sr
     p = program(subroutines=[prog("Main", main=True, rungs=[
-        rung(ctu("C1", 10)),
+        rung(sr("Q1", "S1", "R1")),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
     # Not LD body
     assert "<LD>" not in xml
     # ST text body present
-    assert "C1" in xml
+    assert "Q1" in xml
 
 
 # -----------------------------------------------------------------------------
@@ -1500,3 +1500,105 @@ def test_timer_round_trip_preserves_iec_time_through_multiple_durations():
         op = rungs[0].ops[0]
         assert isinstance(op, TON)
         assert op.preset_ms == ms
+
+
+# -----------------------------------------------------------------------------
+# IEC §2.5.2.3.2 counter FBs (CTU / CTD / CTUD) in LD: each
+# lowers to ``<block typeName=CTU|CTD|CTUD instanceName=<addr>>``
+# with CU/CD/R/LD/PV inputs and Q/QU/QD/CV outputs as appropriate
+# for the counter variant.
+# -----------------------------------------------------------------------------
+
+
+def test_ctu_round_trips_with_reset_and_outputs():
+    from universal_machinery.builders import ctu
+    from universal_machinery.il.ops import CTU
+    from universal_machinery.il import Address, TagRef
+    rungs = _round_trip([
+        rung(ctu("C1", 10, reset="Rst1",
+                  accumulator="CV1", done_bit="Q1")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, CTU)
+    assert op.address == Address("C1")
+    assert op.preset == 10
+    # 'Rst1' coerces to TagRef (mixed-case word, not CLICK addr)
+    assert op.reset == TagRef("Rst1")
+    assert op.accumulator == Address("CV1")
+    assert op.done_bit == Address("Q1")
+
+
+def test_ctd_round_trips_with_load_and_outputs():
+    from universal_machinery.builders import ctd
+    from universal_machinery.il.ops import CTD
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(ctd("C2", 100, load="LD2",
+                  accumulator="CV2", done_bit="Q2")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, CTD)
+    assert op.preset == 100
+    assert op.load == Address("LD2")
+    assert op.done_bit == Address("Q2")
+
+
+def test_ctud_round_trips_with_all_inputs_and_outputs():
+    from universal_machinery.builders import ctud
+    from universal_machinery.il.ops import CTUD
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(ctud("C3", 50,
+                    cu_input="UP3", cd_input="DN3",
+                    reset="R3", load="L3",
+                    accumulator="CV3",
+                    qu="QU3", qd="QD3")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, CTUD)
+    assert op.preset == 50
+    assert op.cu_input == Address("UP3")
+    assert op.cd_input == Address("DN3")
+    assert op.reset == Address("R3")
+    assert op.load == Address("L3")
+    assert op.accumulator == Address("CV3")
+    assert op.qu == Address("QU3")
+    assert op.qd == Address("QD3")
+
+
+def test_counter_block_emits_typeName_and_instanceName():
+    from universal_machinery.builders import ctu
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(ctu("MyCounter", 5)),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="CTU"' in xml
+    assert 'instanceName="MyCounter"' in xml
+
+
+def test_counter_rung_emits_native_LD_not_ST_fallback():
+    from universal_machinery.builders import ctu
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(ctu("C1", 10)),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_ctud_emits_separate_CU_CD_inVariable_sources():
+    """CTUD takes both count-up (CU) and count-down (CD) as
+    auxiliary bool inputs from inVariables -- not from the rung
+    gate.  Pinning the shape so the LD reader's parallel-fork
+    detector doesn't trip on multi-pin wiring."""
+    from universal_machinery.builders import ctud
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(ctud("C3", 50, cu_input="up", cd_input="dn")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # Both CU and CD have their own inVariable
+    assert "<expression>up</expression>" in xml
+    assert "<expression>dn</expression>" in xml

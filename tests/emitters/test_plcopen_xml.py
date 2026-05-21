@@ -211,9 +211,9 @@ def test_pou_body_mixed_rungs_still_lower_to_ST_text():
     TP are now native LD via ``<block>`` -- this test now uses
     ``CTU`` (up-counter FB), which is still on the ST-fallback
     path pending the counter-FB slice."""
-    from universal_machinery.builders import ctu
+    from universal_machinery.builders import sr
     p = prog("Main", main=True, rungs=[
-        rung(ctu("C1", 10)),
+        rung(sr("Q1", "S1", "R1")),
     ])
     xml = emit_pou_xml(p)
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
@@ -230,16 +230,16 @@ def test_st_body_escapes_xml_special_chars():
     ST-fallback path (the IEC §2.5.2.3.2 counter family + the
     bistables / edge triggers in §2.5.2.3.3 aren't yet native
     LD)."""
-    from universal_machinery.builders import ctu
+    from universal_machinery.builders import sr
     p = prog("Main", main=True, rungs=[
-        rung(ctu("C1", 10)),
+        rung(sr("Q1", "S1", "R1")),
     ])
     xml = emit_pou_xml(p)
     # Parses cleanly == escaping worked
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
     pre = root.find(".//{http://www.w3.org/1999/xhtml}pre")
     assert pre is not None
-    assert "C1" in pre.text
+    assert "Q1" in pre.text
 
 
 # -----------------------------------------------------------------------------

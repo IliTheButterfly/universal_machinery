@@ -74,8 +74,8 @@ from ..il import (
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, Move, OutCoil, OutReset, OutSet, ParallelGroup,
-    StdFunc, TOF, TON, TP,
+    ContactRisingEdge, CTD, CTU, CTUD, Move, OutCoil, OutReset, OutSet,
+    ParallelGroup, StdFunc, TOF, TON, TP,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1246,6 +1246,11 @@ _NATIVE_LD_OPS = (
     # IN (rung gate) + PT (preset time literal) inputs, and
     # Q (done bit) + ET (elapsed time) outputs.
     TON, TOF, TP,
+    # IEC §2.5.2.3.2 counter family (CTU / CTD / CTUD).  Each
+    # lowers to ``<block typeName=CTU|CTD|CTUD instanceName=<addr>>``
+    # with CU / CD / R / LD / PV inputs and Q / QU / QD / CV
+    # outputs depending on the specific counter type.
+    CTU, CTD, CTUD,
 )
 
 
@@ -1830,6 +1835,139 @@ def _emit_ld_timer_block_xml(op, block_type: str, pt_id: int,
     return lines
 
 
+def _emit_ld_counter_block_xml(op, block_type: str, ids: dict,
+                                  parent_ids: list[int],
+                                  x: float, y: float) -> list[str]:
+    """Lower one IEC §2.5.2.3.2 counter FB (CTU / CTD / CTUD)
+    into ``<block typeName=...>`` + supporting inVariables /
+    outVariables.
+
+    ``ids`` is a pre-allocated mapping of element role -> localId.
+    Required keys: ``"pv"``, ``"block"``.  Optional: ``"r"``,
+    ``"ld"``, ``"cu"``, ``"cd"`` (for inVariable sources), and
+    ``"q"``, ``"qu"``, ``"qd"``, ``"cv"`` (for outVariable
+    destinations).
+
+    The rung's boolean signal feeds the FB's primary count input
+    (CU for CTU / CTUD, CD for CTD).  All other bool inputs
+    (R / LD / CD on CTUD) and the PV preset come from their own
+    ``<inVariable>`` sources.
+    """
+    en_conn = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    instance_text = _ld_expression_text(op.address)
+    pv_text = str(op.preset)
+    lines: list[str] = [
+        f'<inVariable localId="{ids["pv"]}">'
+        f'<position x="{x:g}" y="{y + 20:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(pv_text)}</expression>'
+        f'</inVariable>'
+    ]
+    # Optional auxiliary inVariables for R / LD / CU / CD inputs.
+    aux_inputs: list[tuple[str, str, int]] = []   # (pin_name, expr, id)
+    if block_type == "CTU" and op.reset is not None:
+        aux_inputs.append(("R", _ld_expression_text(op.reset), ids["r"]))
+    if block_type == "CTD" and op.load is not None:
+        aux_inputs.append(("LD", _ld_expression_text(op.load), ids["ld"]))
+    if block_type == "CTUD":
+        # CTUD's primary count input is hardware-style: cu/cd are
+        # both regular bool inputs (not the rung gate).  R/LD too.
+        aux_inputs.append(("CU", _ld_expression_text(op.cu_input), ids["cu"]))
+        aux_inputs.append(("CD", _ld_expression_text(op.cd_input), ids["cd"]))
+        if op.reset is not None:
+            aux_inputs.append(("R", _ld_expression_text(op.reset), ids["r"]))
+        if op.load is not None:
+            aux_inputs.append(("LD", _ld_expression_text(op.load), ids["ld"]))
+    aux_y_offset = 40
+    for pin_name, text, lid in aux_inputs:
+        lines.append(
+            f'<inVariable localId="{lid}">'
+            f'<position x="{x:g}" y="{y + aux_y_offset:g}"/>'
+            f'<connectionPointOut/>'
+            f'<expression>{escape(text)}</expression>'
+            f'</inVariable>'
+        )
+        aux_y_offset += 20
+    # Build the block.  CTU's primary count pin is CU, CTD's is
+    # CD; both come from the rung gate.  CTUD's CU/CD are both
+    # auxiliary inVariables (no rung-gate routing).
+    input_pins = ""
+    if block_type == "CTU":
+        input_pins += (
+            f'<variable formalParameter="CU">'
+            f'<connectionPointIn>{en_conn}</connectionPointIn>'
+            f'</variable>'
+        )
+    elif block_type == "CTD":
+        input_pins += (
+            f'<variable formalParameter="CD">'
+            f'<connectionPointIn>{en_conn}</connectionPointIn>'
+            f'</variable>'
+        )
+    for pin_name, _text, lid in aux_inputs:
+        input_pins += (
+            f'<variable formalParameter="{pin_name}">'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{lid}"/>'
+            f'</connectionPointIn>'
+            f'</variable>'
+        )
+    input_pins += (
+        f'<variable formalParameter="PV">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{ids["pv"]}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+    )
+    output_pin_names = (["Q", "CV"] if block_type in ("CTU", "CTD")
+                         else ["QU", "QD", "CV"])
+    output_pins = "".join(
+        f'<variable formalParameter="{p}"><connectionPointOut/></variable>'
+        for p in output_pin_names
+    )
+    lines.append(
+        f'<block localId="{ids["block"]}" typeName="{block_type}" '
+        f'instanceName={quoteattr(instance_text)}>'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>{input_pins}</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>{output_pins}</outputVariables>'
+        f'</block>'
+    )
+    # Emit outVariables for each set destination.
+    out_x = x + _LD_OP_WIDTH * 2
+    out_y = y - 10
+    if block_type in ("CTU", "CTD"):
+        out_specs = [("Q", "done_bit", "q"), ("CV", "accumulator", "cv")]
+    else:
+        out_specs = [
+            ("QU", "qu", "qu"),
+            ("QD", "qd", "qd"),
+            ("CV", "accumulator", "cv"),
+        ]
+    for pin_name, field_name, id_key in out_specs:
+        dst = getattr(op, field_name)
+        if dst is None:
+            continue
+        lid = ids.get(id_key)
+        if lid is None:
+            continue
+        lines.append(
+            f'<outVariable localId="{lid}">'
+            f'<position x="{out_x:g}" y="{out_y:g}"/>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{ids["block"]}" '
+            f'formalParameter="{pin_name}"/>'
+            f'</connectionPointIn>'
+            f'<expression>{escape(_ld_expression_text(dst))}</expression>'
+            f'</outVariable>'
+        )
+        out_y += 20
+    return lines
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -1897,6 +2035,42 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
                 op, in_id, block_id, out_id, cursor_ids, x, y,
             ))
             cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 3
+        elif isinstance(op, (CTU, CTD, CTUD)):
+            block_type = type(op).__name__
+            ids: dict = {}
+            ids["pv"] = next_local_id; next_local_id += 1
+            # CTUD always has CU + CD as inVariable inputs; CTU has
+            # optional R; CTD has optional LD; CTUD has optional R + LD.
+            if block_type == "CTU" and op.reset is not None:
+                ids["r"] = next_local_id; next_local_id += 1
+            if block_type == "CTD" and op.load is not None:
+                ids["ld"] = next_local_id; next_local_id += 1
+            if block_type == "CTUD":
+                ids["cu"] = next_local_id; next_local_id += 1
+                ids["cd"] = next_local_id; next_local_id += 1
+                if op.reset is not None:
+                    ids["r"] = next_local_id; next_local_id += 1
+                if op.load is not None:
+                    ids["ld"] = next_local_id; next_local_id += 1
+            ids["block"] = next_local_id; next_local_id += 1
+            # Output ids: Q + CV for CTU/CTD; QU/QD/CV for CTUD.
+            if block_type in ("CTU", "CTD"):
+                if op.done_bit is not None:
+                    ids["q"] = next_local_id; next_local_id += 1
+                if op.accumulator is not None:
+                    ids["cv"] = next_local_id; next_local_id += 1
+            else:
+                if op.qu is not None:
+                    ids["qu"] = next_local_id; next_local_id += 1
+                if op.qd is not None:
+                    ids["qd"] = next_local_id; next_local_id += 1
+                if op.accumulator is not None:
+                    ids["cv"] = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_counter_block_xml(
+                op, block_type, ids, cursor_ids, x, y,
+            ))
+            cursor_ids = [ids["block"]]
             x += _LD_OP_WIDTH * 3
         elif isinstance(op, (TON, TOF, TP)):
             block_type = type(op).__name__
