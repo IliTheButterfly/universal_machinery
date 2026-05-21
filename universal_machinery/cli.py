@@ -7,6 +7,7 @@ A thin Typer wrapper over the library's existing entry points:
   ``um emit <file> -f st|xml``  emit Structured Text or PLCopen TC6 XML
   ``um diff <a> <b>``     line-diff two IL programs (JSON form)
   ``um import <file.xml>``  parse a PLCopen TC6 XML doc into IL JSON
+  ``um lint <file> -f text|json``  CI-friendly validation; accepts JSON or XML
 
 The CLI takes IL programs in their JSON form (the
 ``universal_machinery.serialisation`` format).  Vendor-format
@@ -295,6 +296,121 @@ def import_(
         raise typer.Exit(code=2)
 
     _write_output(to_json(prog, indent=2), output)
+
+
+# -----------------------------------------------------------------------------
+# `um lint`: CI-friendly validation pass
+# -----------------------------------------------------------------------------
+
+
+@app.command()
+def lint(
+    file: Path = typer.Argument(..., help="IL program (JSON) or PLCopen XML"),
+    output_format: str = typer.Option(
+        "text", "--format", "-f",
+        help="``text`` (default, human-readable) or ``json`` "
+             "(machine-readable list of error records).",
+    ),
+) -> None:
+    """Run the structural validator and report results.
+
+    Reads ``file`` as IL JSON or PLCopen TC6 XML (autodetected from
+    the extension) and runs ``universal_machinery.validation.validate``.
+
+    Output formats:
+      - ``text``: rich-formatted summary suitable for terminal use.
+        Exit code 0 on clean, 1 on errors found.
+      - ``json``: a JSON array of
+        ``{code, message, location}`` records, one per error.
+        Exit code matches text mode.  Useful for CI integration
+        (jq pipelines, error counters, GitHub Annotations, etc.).
+
+    Errors reading or parsing the file exit with code 2 and emit
+    the diagnostic on stderr regardless of format.
+    """
+    prog = _read_lint_input(file)
+    errors = validate(prog)
+
+    if output_format == "json":
+        # Stable shape: list of objects, one per error.  Always
+        # emits valid JSON (empty list when no errors) so callers
+        # can pipe through jq without conditional guards.
+        records = [
+            {"code": e.code, "message": e.message, "location": e.location}
+            for e in errors
+        ]
+        sys.stdout.write(json.dumps(records, indent=2))
+        if not records or json.dumps(records, indent=2)[-1] != "\n":
+            sys.stdout.write("\n")
+        raise typer.Exit(code=1 if errors else 0)
+
+    if output_format != "text":
+        err.print(f"[red]error[/red]: unknown --format {output_format!r}; "
+                   "expected ``text`` or ``json``")
+        raise typer.Exit(code=2)
+
+    if not errors:
+        out.print(f"[green]ok[/green]: {file} is structurally valid "
+                   f"([dim]0 errors[/dim])")
+        raise typer.Exit(code=0)
+
+    # Text mode: group by code so callers see related issues
+    # together; print location + message.
+    err.print(
+        f"[yellow]found {len(errors)} validation error"
+        f"{'s' if len(errors) != 1 else ''}[/yellow] in {file}:"
+    )
+    by_code: dict[str, list] = {}
+    for e in errors:
+        by_code.setdefault(e.code, []).append(e)
+    for code in sorted(by_code):
+        err.print(f"  [red]{code}[/red] ({len(by_code[code])}):")
+        for e in by_code[code]:
+            loc = f" [dim]@ {e.location}[/dim]" if e.location else ""
+            err.print(f"    {e.message}{loc}")
+    raise typer.Exit(code=1)
+
+
+def _read_lint_input(path: Path) -> Program:
+    """Load a Program from ``path``, autodetecting format.
+
+    Supported inputs:
+      - ``.xml`` files (or files starting with ``<?xml``): parsed
+        via the PLCopen TC6 reader.
+      - Anything else: read as IL JSON.
+
+    Exits with code 2 on read / parse failure.
+    """
+    try:
+        if str(path) == "-":
+            text = sys.stdin.read()
+        else:
+            text = path.read_text()
+    except OSError as e:
+        err.print(f"[red]error[/red]: can't read {path}: {e}")
+        raise typer.Exit(code=2)
+
+    looks_xml = (path.suffix.lower() == ".xml"
+                  or text.lstrip().startswith("<"))
+    if looks_xml:
+        from .parsers.plcopen_xml import (
+            PlcopenParseError, parse_plcopen_xml,
+        )
+        try:
+            return parse_plcopen_xml(text)
+        except PlcopenParseError as e:
+            err.print(f"[red]error[/red]: PLCopen parse failed: {e}")
+            raise typer.Exit(code=2)
+
+    try:
+        prog = from_json(text)
+    except (SerialisationError, json.JSONDecodeError) as e:
+        err.print(f"[red]error[/red]: {path}: {e}")
+        raise typer.Exit(code=2)
+    if not isinstance(prog, Program):
+        err.print(f"[red]error[/red]: {path}: top-level value is not a Program")
+        raise typer.Exit(code=2)
+    return prog
 
 
 # -----------------------------------------------------------------------------
