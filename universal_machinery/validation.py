@@ -876,6 +876,267 @@ def _check_st_for_index_declared(prog: Program) -> list[ValidationError]:
     return errors
 
 
+# -----------------------------------------------------------------------------
+# Semantic type checking (IEC §6.5 type compatibility)
+# -----------------------------------------------------------------------------
+
+
+#: IEC §6.5 type-compatibility buckets.  Two types are
+#: implicit-compatible when they share a bucket; everything else
+#: requires an explicit ``<SRC>_TO_<DST>`` conversion call.
+#:
+#: The mapping is intentionally permissive within numeric families
+#: (signed + unsigned + width promotions all allowed) because real-
+#: world PLC code mixes them freely and most vendor compilers
+#: accept the lot.  A stricter "width-promotion only" mode could
+#: be a follow-up.
+_INT_TYPES = frozenset({
+    "SINT", "INT", "DINT", "LINT",
+    "USINT", "UINT", "UDINT", "ULINT",
+})
+_REAL_TYPES = frozenset({"REAL", "LREAL"})
+_BIT_STRING_TYPES = frozenset({"BYTE", "WORD", "DWORD"})  # LWORD per IEC; absent from TagType
+_TIME_TYPES = frozenset({"TIME"})                          # DATE/TOD/DT absent from TagType today
+_STRING_TYPES = frozenset({"STRING"})
+
+
+def _tagtype_name(t) -> Optional[str]:
+    """Return the IEC type-name string for a ``TagType`` /
+    ``NamedType`` / UserType, or ``None`` if the type is unknown
+    or hasn't resolved.
+
+    User-defined types resolve to their *base* via the program's
+    user_types registry one level deep -- AliasType chains
+    eventually hit an elementary or stop.  Structs / arrays /
+    enums fall back to their own name (treated as distinct
+    types for compatibility purposes; we don't unify across
+    UDTs without a deeper resolver).
+    """
+    from .il import (
+        AliasType, ArrayType, EnumType, NamedType, StructType,
+        SubrangeType, TagType,
+    )
+    if isinstance(t, TagType):
+        return t.value
+    if isinstance(t, (StructType, ArrayType, EnumType)):
+        return t.name
+    if isinstance(t, SubrangeType):
+        # Subrange types are compatible with their base
+        return _tagtype_name(t.base)
+    if isinstance(t, AliasType):
+        return _tagtype_name(t.base)
+    if isinstance(t, NamedType):
+        return None  # caller looks up in registry
+    return None
+
+
+def _resolve_named_type(prog: Program, type_obj):
+    """Walk ``NamedType`` references through ``Program.user_types``
+    until landing on an elementary ``TagType`` or a structural
+    type (Struct / Array / Enum).  Returns the resolved type or
+    the original on failure."""
+    from .il import AliasType, NamedType
+    seen: set[str] = set()
+    cur = type_obj
+    while isinstance(cur, NamedType):
+        if cur.name in seen:
+            break
+        seen.add(cur.name)
+        nxt = prog.find_user_type(cur.name)
+        if nxt is None:
+            return cur
+        cur = nxt
+    # Aliases chain too
+    seen_alias: set[str] = set()
+    while isinstance(cur, AliasType):
+        if cur.name in seen_alias:
+            break
+        seen_alias.add(cur.name)
+        if isinstance(cur.base, NamedType):
+            nxt = prog.find_user_type(cur.base.name)
+            cur = nxt if nxt is not None else cur.base
+        else:
+            cur = cur.base
+    return cur
+
+
+def _are_types_compatible(a_name: Optional[str],
+                          b_name: Optional[str]) -> bool:
+    """True iff two type names share an IEC compatibility bucket
+    (or one side is unknown -- we don't raise on missing info).
+
+    Same-name comparisons are always compatible.  ``None`` on
+    either side means "we couldn't resolve the operand", which we
+    treat as a non-failure so the structural validator's
+    ``unresolved-tagref`` (or similar) is the canonical complaint.
+    """
+    if a_name is None or b_name is None:
+        return True
+    if a_name == b_name:
+        return True
+    # Bit-strings convert to integers of comparable width
+    if (a_name in _INT_TYPES and b_name in _INT_TYPES):
+        return True
+    if (a_name in _REAL_TYPES and b_name in _REAL_TYPES):
+        return True
+    if (a_name in _BIT_STRING_TYPES and b_name in _BIT_STRING_TYPES):
+        return True
+    # Integer <-> bit-string: permissive
+    if ((a_name in _INT_TYPES and b_name in _BIT_STRING_TYPES)
+            or (a_name in _BIT_STRING_TYPES and b_name in _INT_TYPES)):
+        return True
+    return False
+
+
+def _is_numeric(name: Optional[str]) -> bool:
+    """Numeric = integer family ∪ real family.  Used by
+    ``BinaryMath`` checks (math doesn't apply to BOOL, TIME,
+    STRING, structs)."""
+    if name is None:
+        return True  # unknown -> don't complain
+    return name in _INT_TYPES or name in _REAL_TYPES
+
+
+def _is_bool(name: Optional[str]) -> bool:
+    if name is None:
+        return True
+    return name == "BOOL"
+
+
+def _build_type_env(prog: Program,
+                    sub: Subroutine) -> dict[str, str]:
+    """Map every name in scope for ``sub`` to its IEC type-name
+    string.  Sources:
+
+      - Program.tags
+      - sub.inputs / outputs / in_outs / local_vars
+      - Top-level UDT registry (for NamedType resolution)
+
+    Local names shadow globals when both define the same name --
+    POU parameters / locals take precedence over Program.tags.
+    """
+    env: dict[str, str] = {}
+    for tag in prog.tags.values():
+        env[tag.name] = tag.data_type.value
+    for v in (sub.inputs + sub.outputs + sub.in_outs + sub.local_vars):
+        resolved = _resolve_named_type(prog, v.data_type)
+        name = _tagtype_name(resolved)
+        if name is not None:
+            env[v.name] = name
+    return env
+
+
+def _operand_type(prog: Program, env: dict[str, str], value) -> Optional[str]:
+    """Type-name of a Value (Address / TagRef / literal) in scope.
+
+    ``Address`` looks up the raw address in the tag table; ``TagRef``
+    looks up the name in the local env first, then globals (already
+    merged into env).  Literals (untyped strings) return ``None``
+    -- the check skips comparisons against literals to avoid false
+    positives.
+    """
+    from .il import Address, TagRef
+    if isinstance(value, Address):
+        # Match a Tag whose address.raw matches
+        for tag in prog.tags.values():
+            if tag.address is not None and tag.address.raw == value.raw:
+                return tag.data_type.value
+        return None
+    if isinstance(value, TagRef):
+        return env.get(value.name)
+    return None  # literal / something else
+
+
+def _check_op_types(prog: Program) -> list[ValidationError]:
+    """Type-check the rung ops in every POU's body.
+
+    Checks (IEC §6.5):
+
+      - move-type-mismatch        : Move src and dst aren't
+                                     compatible.
+      - binary-math-non-numeric   : One side of BinaryMath isn't
+                                     in the numeric family.
+      - binary-math-type-mismatch : dst type doesn't share a
+                                     bucket with the operand types.
+      - compare-type-mismatch     : Compare operands sit in
+                                     different buckets.
+      - coil-target-not-bool      : OutCoil/OutSet/OutReset target
+                                     isn't BOOL.
+
+    Each error names the offending subroutine + rung index.
+    """
+    from .il.ops import (
+        BinaryMath, Compare, Move, OutCoil, OutReset, OutSet,
+    )
+    errors: list[ValidationError] = []
+
+    for sub in prog.subroutines:
+        env = _build_type_env(prog, sub)
+        for rung_idx, rung in enumerate(sub.rungs):
+            loc = f"Subroutine '{sub.name}' / rung {rung_idx}"
+            for op in rung.ops:
+                if isinstance(op, Move):
+                    src_t = _operand_type(prog, env, op.src)
+                    dst_t = _operand_type(prog, env, op.dst)
+                    if not _are_types_compatible(src_t, dst_t):
+                        errors.append(ValidationError(
+                            code="move-type-mismatch",
+                            message=(f"Move src type {src_t!r} not "
+                                     f"compatible with dst type "
+                                     f"{dst_t!r}"),
+                            location=loc,
+                        ))
+                elif isinstance(op, BinaryMath):
+                    lhs_t = _operand_type(prog, env, op.lhs)
+                    rhs_t = _operand_type(prog, env, op.rhs)
+                    dst_t = _operand_type(prog, env, op.dst)
+                    if not _is_numeric(lhs_t):
+                        errors.append(ValidationError(
+                            code="binary-math-non-numeric",
+                            message=(f"BinaryMath lhs has non-numeric "
+                                     f"type {lhs_t!r}"),
+                            location=loc,
+                        ))
+                    if not _is_numeric(rhs_t):
+                        errors.append(ValidationError(
+                            code="binary-math-non-numeric",
+                            message=(f"BinaryMath rhs has non-numeric "
+                                     f"type {rhs_t!r}"),
+                            location=loc,
+                        ))
+                    if (not _are_types_compatible(lhs_t, dst_t)
+                            or not _are_types_compatible(rhs_t, dst_t)):
+                        errors.append(ValidationError(
+                            code="binary-math-type-mismatch",
+                            message=(f"BinaryMath dst type {dst_t!r} "
+                                     f"not compatible with operand "
+                                     f"types lhs={lhs_t!r} "
+                                     f"rhs={rhs_t!r}"),
+                            location=loc,
+                        ))
+                elif isinstance(op, Compare):
+                    lhs_t = _operand_type(prog, env, op.lhs)
+                    rhs_t = _operand_type(prog, env, op.rhs)
+                    if not _are_types_compatible(lhs_t, rhs_t):
+                        errors.append(ValidationError(
+                            code="compare-type-mismatch",
+                            message=(f"Compare operands have "
+                                     f"incompatible types lhs={lhs_t!r} "
+                                     f"rhs={rhs_t!r}"),
+                            location=loc,
+                        ))
+                elif isinstance(op, (OutCoil, OutSet, OutReset)):
+                    addr_t = _operand_type(prog, env, op.address)
+                    if not _is_bool(addr_t):
+                        errors.append(ValidationError(
+                            code="coil-target-not-bool",
+                            message=(f"{type(op).__name__} target has "
+                                     f"non-BOOL type {addr_t!r}"),
+                            location=loc,
+                        ))
+    return errors
+
+
 def _check_sfc_wellformedness(prog: Program) -> list[ValidationError]:
     """Delegate to ``SfcNetwork.validate()`` for each POU's SFC body."""
     errors: list[ValidationError] = []
@@ -922,6 +1183,9 @@ def validate(prog: Program) -> list[ValidationError]:
          a target in the same body)
      14. VAR_ACCESS / VAR_CONFIG well-formedness (direction valid,
          alias uniqueness, instance-path syntax)
+     15. Semantic type checking on rung ops (IEC §6.5
+         compatibility: Move src/dst, BinaryMath numericity,
+         Compare operand symmetry, coil targets are BOOL)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -938,6 +1202,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_fbd_wellformedness(prog))
     errors.extend(_check_st_goto_labels(prog))
     errors.extend(_check_access_and_config_vars(prog))
+    errors.extend(_check_op_types(prog))
     return errors
 
 

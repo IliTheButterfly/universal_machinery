@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **873 tests**.
+counts are snapshotted; the current passing total is **896 tests**.
 
 ## Reading this document
 
@@ -167,7 +167,7 @@ The XSD itself ships under
 
 ## Validation rules
 
-The validator (`universal_machinery.validation.validate`) emits 18
+The validator (`universal_machinery.validation.validate`) emits 23
 distinct error codes covering:
 
 | Code                              | What it catches |
@@ -189,10 +189,15 @@ distinct error codes covering:
 | `st-duplicate-label` / `st-unresolved-goto` | ST GOTO / label consistency |
 | `access-var-bad-direction` / `access-var-duplicate-alias` / `access-var-bad-path` | VAR_ACCESS shape |
 | `config-var-bad-path` / `config-var-duplicate-path` | VAR_CONFIG shape |
+| `move-type-mismatch`              | Move src/dst types don't share an IEC §6.5 compat bucket |
+| `binary-math-non-numeric`         | BinaryMath lhs or rhs isn't in integer/real family |
+| `binary-math-type-mismatch`       | BinaryMath dst doesn't share a bucket with operand types |
+| `compare-type-mismatch`           | Compare operands cross IEC §6.5 buckets |
+| `coil-target-not-bool`            | OutCoil/OutSet/OutReset target isn't BOOL |
 
 Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
 `tests/il/test_st_ast.py`, `tests/il/test_fbd.py`,
-`tests/il/test_var_access_config.py`.
+`tests/il/test_var_access_config.py`, `tests/il/test_type_check.py`.
 
 ## What's NOT covered (and why)
 
@@ -201,9 +206,14 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
    XML through matiec / Beremiz / OpenPLC editor as a subprocess
    and confirms they accept + re-emit it.  External-tooling
    dependency makes this a follow-up.
-2. **Semantic type checking** (e.g. `Move(src=BOOL_addr, dst=INT_addr)`).
-   The validator catches structural issues; type compatibility is
-   deferred to a future type-resolver pass.
+2. ⚠️ *Partial.* **Semantic type checking** for rung ops landed --
+   ``Move`` / ``BinaryMath`` / ``Compare`` / coil ops type-check
+   against IEC §6.5 compatibility buckets, with UDT
+   resolution through the `Program.user_types` registry.  Still
+   deferred: type checking inside ST AST (Assignment / IF
+   condition / etc.), inside SFC transition conditions, and pin
+   types on FBD ``<block>`` elements.  Also deferred:
+   constant evaluation + range checks on SUBRANGE types.
 3. **Hardware-in-the-loop**.  Per `docs/ARCHITECTURE.md`: the
    ultimate verification posture is emulator-validated-by-hardware;
    the corpus here is the seed.
@@ -215,4 +225,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **873 / 873 passing**.
+status: **896 / 896 passing**.
