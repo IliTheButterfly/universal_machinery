@@ -1311,6 +1311,40 @@ def _trace_block_pin_operand(block_elem: ET.Element, pin_name: str,
     return ""
 
 
+def _trace_block_out_consumer(block_id: int, pin_name: str,
+                                 elements_by_id: dict[int, ET.Element],
+                                 kind_by_id: dict[int, str],
+                                 incoming_by_id: dict[int, list[int]]
+                                 ) -> str:
+    """Find the ``<outVariable>`` that consumes a block's named
+    output pin (typically ``OUT`` for Move's destination).  The
+    outVariable's ``<expression>`` body carries the destination
+    operand text.
+
+    Returns ``""`` when no outVariable consumes the pin (the
+    document may wire the OUT pin directly into a downstream
+    block or coil; we don't yet recover destinations in that
+    shape).
+    """
+    for cid, refs in incoming_by_id.items():
+        if kind_by_id.get(cid) != "outVariable":
+            continue
+        out_elem = elements_by_id[cid]
+        cp_in = _child(out_elem, "connectionPointIn")
+        if cp_in is None:
+            continue
+        for conn in _children(cp_in, "connection"):
+            try:
+                ref_id = int(conn.get("refLocalId", ""))
+            except ValueError:
+                continue
+            fp = conn.get("formalParameter") or ""
+            if ref_id == block_id and (fp == pin_name or fp == ""):
+                expr = _child(out_elem, "expression")
+                return (expr.text or "").strip() if expr is not None else ""
+    return ""
+
+
 def _compare_operand_from_text(text: str):
     """One Compare operand text -> IL ``Value`` (Address / TagRef /
     literal str).  Mirrors the smart-coercion in
@@ -1423,17 +1457,14 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                 return ContactNC(addr)
             return ContactNO(addr)
         if kind == "block":
-            # Currently we recognise the Compare family
-            # (GT / GE / EQ / LE / LT / NE).  Other ``typeName``s
-            # fall through to None so the walker treats the block
-            # as an opaque pass-through (its IL op isn't modelled
-            # yet -- math, calls, stdlib are follow-up slices).
+            # Recognised typeNames: the Compare family
+            # (GT / GE / EQ / LE / LT / NE) and MOVE.  Other
+            # ``typeName``s fall through to None so the walker
+            # treats the block as an opaque pass-through (math,
+            # calls, stdlib are follow-up slices).
             type_name = elem.get("typeName", "")
             if type_name in _COMPARE_BLOCK_TO_OP:
                 op_symbol = _COMPARE_BLOCK_TO_OP[type_name]
-                # Trace IN1 / IN2 pins back to the producing
-                # inVariable elements and recover their textual
-                # operand from the <expression> body.
                 lhs_text = _trace_block_pin_operand(
                     elem, "IN1", elements_by_id, kind_by_id
                 )
@@ -1444,6 +1475,22 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                     op=op_symbol,
                     lhs=_compare_operand_from_text(lhs_text),
                     rhs=_compare_operand_from_text(rhs_text),
+                )
+            if type_name == "MOVE":
+                # Trace IN back to its producing inVariable for
+                # the src operand; the dst comes from whichever
+                # outVariable consumes the block's OUT pin.
+                src_text = _trace_block_pin_operand(
+                    elem, "IN", elements_by_id, kind_by_id
+                )
+                dst_text = _trace_block_out_consumer(
+                    node_id, "OUT", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                from ..il.ops import Move
+                return Move(
+                    src=_compare_operand_from_text(src_text),
+                    dst=_compare_operand_from_text(dst_text),
                 )
             return None
         if kind == "coil":
