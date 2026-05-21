@@ -674,6 +674,162 @@ def test_reader_recovers_compare_from_hand_rolled_GT_block():
 
 
 # -----------------------------------------------------------------------------
+# Move op in LD (IEC §2.5.2.1): lowers to ``<block typeName="MOVE">``
+# with an ``<inVariable>`` source and ``<outVariable>`` destination.
+# Previously a Move-containing rung dropped to ST-text fallback.
+# -----------------------------------------------------------------------------
+
+
+def test_move_rung_emits_native_LD_not_ST_fallback():
+    from universal_machinery.il.ops import Move
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("X001"), Move(src="42", dst="DS5")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_move_emits_block_typeName_MOVE_with_in_and_out_variables():
+    from universal_machinery.il.ops import Move
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("X001"), Move(src="42", dst="DS5")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="MOVE"' in xml
+    assert "<inVariable" in xml
+    assert "<outVariable" in xml
+    assert "<expression>42</expression>" in xml
+    assert "<expression>DS5</expression>" in xml
+
+
+def test_move_round_trips_with_literal_src_and_address_dst():
+    from universal_machinery.il.ops import Move
+    rungs = _round_trip([
+        rung(no("X001"), Move(src="42", dst="DS5")),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], ContactNO)
+    assert isinstance(ops[1], Move)
+    assert ops[1].src == "42"
+    assert isinstance(ops[1].dst, Address)
+    assert ops[1].dst.raw == "DS5"
+
+
+def test_move_round_trips_with_address_src_and_address_dst():
+    from universal_machinery.il.ops import Move
+    rungs = _round_trip([
+        rung(Move(src="X001", dst="Y001")),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], Move)
+    assert isinstance(ops[0].src, Address)
+    assert ops[0].src.raw == "X001"
+    assert isinstance(ops[0].dst, Address)
+    assert ops[0].dst.raw == "Y001"
+
+
+def test_move_block_wires_EN_to_upstream_contact():
+    """The Move block's EN input ties back to the upstream contact
+    (not directly to leftRail) so the rung's boolean gate keeps
+    flowing through it."""
+    from universal_machinery.il.ops import Move
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("enable"), Move(src="src_v", dst="dst_v")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    # The block at the end has EN refLocalId pointing at the
+    # contact (localId=1), not leftRail (localId=0).
+    import re
+    block_m = re.search(
+        r"<block [^>]*typeName=\"MOVE\".*?</block>", xml, re.S,
+    )
+    assert block_m is not None
+    en_m = re.search(
+        r'<variable formalParameter="EN">\s*'
+        r'<connectionPointIn>\s*<connection refLocalId="1"/>',
+        block_m.group(0),
+    )
+    assert en_m is not None
+
+
+def test_reader_recovers_move_from_hand_rolled_block():
+    """A document with a hand-rolled ``<block typeName="MOVE">``
+    + inVariable / outVariable recovers as an IL Move op."""
+    from universal_machinery.il.ops import Move
+    xml = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body><LD>
+        <leftPowerRail localId="0">
+          <position x="0" y="0"/>
+          <connectionPointOut formalParameter="OUT"/>
+        </leftPowerRail>
+        <inVariable localId="1">
+          <position x="100" y="0"/>
+          <connectionPointOut/>
+          <expression>source_var</expression>
+        </inVariable>
+        <block localId="2" typeName="MOVE">
+          <position x="200" y="0"/>
+          <inputVariables>
+            <variable formalParameter="EN">
+              <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            </variable>
+            <variable formalParameter="IN">
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+            </variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables>
+            <variable formalParameter="ENO"><connectionPointOut/></variable>
+            <variable formalParameter="OUT"><connectionPointOut/></variable>
+          </outputVariables>
+        </block>
+        <outVariable localId="3">
+          <position x="300" y="0"/>
+          <connectionPointIn>
+            <connection refLocalId="2" formalParameter="OUT"/>
+          </connectionPointIn>
+          <expression>dest_var</expression>
+        </outVariable>
+        <rightPowerRail localId="4">
+          <position x="400" y="0"/>
+          <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+</project>'''
+    sub = parse_plcopen_xml(xml).find_subroutine("Main")
+    ops = sub.rungs[0].ops
+    assert isinstance(ops[0], Move)
+    from universal_machinery.il import TagRef
+    assert ops[0].src == TagRef("source_var")
+    assert ops[0].dst == TagRef("dest_var")
+
+
+def test_compare_and_move_in_same_rung_round_trip():
+    """A rung mixing a Compare gate + a Move action -- both
+    native LD block ops -- round-trips with both ops preserved."""
+    from universal_machinery.il.ops import Compare, Move
+    from universal_machinery.il import TagRef
+    rungs = _round_trip([
+        rung(Compare(op=">", lhs="speed", rhs="0"),
+             Move(src="speed", dst="last_speed")),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], Compare)
+    assert ops[0].op == ">"
+    assert isinstance(ops[1], Move)
+    assert ops[1].dst == TagRef("last_speed")
+
+
+# -----------------------------------------------------------------------------
 # ParallelGroup (OR branches inside a rung).  Previously any rung
 # carrying a ParallelGroup dropped to ST-text fallback; native LD
 # now emits the branches with multi-incoming wires at the join.

@@ -74,7 +74,7 @@ from ..il import (
 )
 from ..il.ops import (
     Compare, ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
-    OutCoil, OutReset, OutSet, ParallelGroup,
+    Move, OutCoil, OutReset, OutSet, ParallelGroup,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1218,6 +1218,11 @@ _NATIVE_LD_OPS = (
     # elements embedded in the LD body, with two ``<inVariable>``
     # operand sources and the block's OUT pin feeding the rung gate.
     Compare,
+    # Move ops lower into ``<block typeName="MOVE">`` with an
+    # ``<inVariable>`` source feeding IN and an ``<outVariable>``
+    # destination receiving OUT.  The block's ENO output continues
+    # the rung's boolean gate so chained ops still work.
+    Move,
 )
 
 
@@ -1406,6 +1411,67 @@ def _emit_ld_compare_block_xml(op: "Compare", block_type: str,
     ]
 
 
+def _emit_ld_move_block_xml(op: "Move", in_id: int, block_id: int,
+                              out_id: int, parent_ids: list[int],
+                              x: float, y: float) -> list[str]:
+    """Lower one Move op into ``<inVariable>`` + ``<block typeName="MOVE">``
+    + ``<outVariable>`` embedded in LD.
+
+    Wiring:
+      - ``parent_ids`` (rung gate) -> block's ``EN`` input
+      - ``in_id`` (inVariable carrying the src text) -> block's ``IN``
+      - block's ``OUT`` -> ``out_id`` (outVariable carrying the dst text)
+      - block's ``ENO`` is the new rung-gate cursor so chained ops
+        continue downstream
+
+    The IEC §2.5.2.1 ``MOVE`` function is the universal "copy
+    value from source to destination" primitive, and the PLCopen
+    TC6 v2.01 XSD models it via the generic ``<block typeName=...>``
+    element (the schema doesn't reserve a special tag).
+    """
+    src_text = _ld_expression_text(op.src)
+    dst_text = _ld_expression_text(op.dst)
+    en_conn = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    return [
+        f'<inVariable localId="{in_id}">'
+        f'<position x="{x:g}" y="{y:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(src_text)}</expression>'
+        f'</inVariable>',
+        f'<block localId="{block_id}" typeName="MOVE">'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>'
+        f'<variable formalParameter="EN">'
+        f'<connectionPointIn>{en_conn}</connectionPointIn>'
+        f'</variable>'
+        f'<variable formalParameter="IN">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{in_id}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+        f'</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>'
+        f'<variable formalParameter="ENO">'
+        f'<connectionPointOut/>'
+        f'</variable>'
+        f'<variable formalParameter="OUT">'
+        f'<connectionPointOut/>'
+        f'</variable>'
+        f'</outputVariables>'
+        f'</block>',
+        f'<outVariable localId="{out_id}">'
+        f'<position x="{x + _LD_OP_WIDTH * 2:g}" y="{y:g}"/>'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{block_id}" formalParameter="OUT"/>'
+        f'</connectionPointIn>'
+        f'<expression>{escape(dst_text)}</expression>'
+        f'</outVariable>',
+    ]
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -1461,6 +1527,19 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
                     branch_x_max = bx
             cursor_ids = branch_tails
             x = branch_x_max
+        elif isinstance(op, Move):
+            # Lower Move into FBD ``<block typeName="MOVE">`` with
+            # an ``<inVariable>`` source and an ``<outVariable>``
+            # destination.  The block's ENO output keeps the rung's
+            # boolean gate alive so downstream ops still chain.
+            in_id = next_local_id; next_local_id += 1
+            block_id = next_local_id; next_local_id += 1
+            out_id = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_move_block_xml(
+                op, in_id, block_id, out_id, cursor_ids, x, y,
+            ))
+            cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 3
         elif isinstance(op, Compare):
             # Lower Compare into FBD ``<block typeName="GT|...">``
             # embedded in the LD body.  The block consumes its
