@@ -207,12 +207,13 @@ def test_pou_body_mixed_rungs_still_lower_to_ST_text():
     """Rungs that contain non-LD ops keep going through the ST
     translator until that op type's native LD lowering lands.
 
-    Compare / Move / BinaryMath / StdFunc are now native LD via
-    ``<block>`` -- this test now uses ``Call`` (POU invocation),
-    which is still on the ST-fallback path pending its slice."""
-    from universal_machinery.builders import call
+    Compare / Move / BinaryMath / StdFunc / Call are now native
+    LD via ``<block>`` -- this test now uses ``TON`` (on-delay
+    timer FB), which is still on the ST-fallback path pending
+    a dedicated timer-FB slice."""
+    from universal_machinery.builders import ton
     p = prog("Main", main=True, rungs=[
-        rung(call("OtherPou")),
+        rung(ton("T1", 100)),
     ])
     xml = emit_pou_xml(p)
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
@@ -225,20 +226,19 @@ def test_pou_body_mixed_rungs_still_lower_to_ST_text():
 def test_st_body_escapes_xml_special_chars():
     """Ops that produce <, >, & in ST text must be XML-escaped.
 
-    Uses ``Call`` (POU invocation) since it's still on the
-    ST-fallback path -- Compare / Move / BinaryMath / StdFunc
-    have all moved to native LD via ``<block>``."""
-    from universal_machinery.builders import call
+    Uses ``TON`` (on-delay timer FB) since it's the only family
+    still on the ST-fallback path."""
+    from universal_machinery.builders import ton
     p = prog("Main", main=True, rungs=[
-        rung(call("OtherPou")),
+        rung(ton("T1", 100)),
     ])
     xml = emit_pou_xml(p)
     # Parses cleanly == escaping worked
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
     pre = root.find(".//{http://www.w3.org/1999/xhtml}pre")
     assert pre is not None
-    # The ST body should carry the call text
-    assert "OtherPou" in pre.text
+    # The ST body should carry some text from the TON emit
+    assert "T1" in pre.text
 
 
 # -----------------------------------------------------------------------------

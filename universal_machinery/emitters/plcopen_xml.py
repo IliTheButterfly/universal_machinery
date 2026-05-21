@@ -73,7 +73,7 @@ from ..il import (
     TagType, TaskSpec, Transition, Var, VarDirection, is_signed_subrange,
 )
 from ..il.ops import (
-    BinaryMath, Compare, ContactFallingEdge, ContactNC, ContactNO,
+    BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
     ContactRisingEdge, Move, OutCoil, OutReset, OutSet, ParallelGroup,
     StdFunc,
 )
@@ -1235,6 +1235,12 @@ _NATIVE_LD_OPS = (
     # operand sources (IN1 .. INn) and a single ``<outVariable>``
     # destination.
     StdFunc,
+    # Call (POU invocation) lowers into ``<block typeName=<target>>``
+    # with named-parameter binding via the formalParameter attr.
+    # FB calls also carry ``instanceName``; functions with a
+    # return value emit an additional ``<outVariable>`` consuming
+    # the block's OUT pin.
+    Call,
 )
 
 
@@ -1629,6 +1635,120 @@ def _emit_ld_std_func_block_xml(op: "StdFunc", in_ids: list[int],
     return lines
 
 
+def _emit_ld_call_block_xml(op: "Call", in_ids: list[int],
+                              out_ids: list[int], block_id: int,
+                              return_out_id: "Optional[int]",
+                              parent_ids: list[int],
+                              x: float, y: float) -> list[str]:
+    """Lower one Call op into N ``<inVariable>`` + ``<block
+    typeName=<target>>`` + M ``<outVariable>`` embedded in LD.
+
+    Pin naming uses the IL ``Call.inputs`` / ``Call.outputs``
+    formal-parameter names directly (no IEC convention to fall
+    back on -- the bindings are caller-specified).
+
+    FB calls (``op.instance`` set) emit ``instanceName=<addr>``
+    on the block element per the XSD.
+
+    Function calls with ``return_to`` add a final ``<outVariable>``
+    consuming the block's special ``<target>`` formalParameter
+    pin (the function's return value, in IEC convention named
+    after the function).
+    """
+    lines: list[str] = []
+    en_conn = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    # Emit input inVariables
+    for i, (formal, src) in enumerate(op.inputs):
+        text = _ld_expression_text(src)
+        lines.append(
+            f'<inVariable localId="{in_ids[i]}">'
+            f'<position x="{x:g}" '
+            f'y="{y + (i - (len(op.inputs) - 1) / 2.0) * 20:g}"/>'
+            f'<connectionPointOut/>'
+            f'<expression>{escape(text)}</expression>'
+            f'</inVariable>'
+        )
+    # Build the block
+    attrs = [
+        f'localId="{block_id}"',
+        f'typeName={quoteattr(op.target)}',
+    ]
+    if op.instance is not None:
+        attrs.append(
+            f'instanceName={quoteattr(_ld_expression_text(op.instance))}'
+        )
+    input_pins = (
+        f'<variable formalParameter="EN">'
+        f'<connectionPointIn>{en_conn}</connectionPointIn>'
+        f'</variable>'
+    )
+    for i, (formal, _src) in enumerate(op.inputs):
+        input_pins += (
+            f'<variable formalParameter={quoteattr(formal)}>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{in_ids[i]}"/>'
+            f'</connectionPointIn>'
+            f'</variable>'
+        )
+    output_pins = (
+        '<variable formalParameter="ENO">'
+        '<connectionPointOut/>'
+        '</variable>'
+    )
+    for formal, _dst in op.outputs:
+        output_pins += (
+            f'<variable formalParameter={quoteattr(formal)}>'
+            f'<connectionPointOut/>'
+            f'</variable>'
+        )
+    if op.return_to is not None:
+        output_pins += (
+            f'<variable formalParameter={quoteattr(op.target)}>'
+            f'<connectionPointOut/>'
+            f'</variable>'
+        )
+    lines.append(
+        f'<block {" ".join(attrs)}>'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>{input_pins}</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>{output_pins}</outputVariables>'
+        f'</block>'
+    )
+    # Emit outVariables for each output binding + optional return_to
+    out_x = x + _LD_OP_WIDTH * 2
+    out_idx = 0
+    for (formal, dst), oid in zip(op.outputs, out_ids):
+        text = _ld_expression_text(dst)
+        lines.append(
+            f'<outVariable localId="{oid}">'
+            f'<position x="{out_x:g}" '
+            f'y="{y + (out_idx - (len(op.outputs) - 1) / 2.0) * 20:g}"/>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{block_id}" '
+            f'formalParameter={quoteattr(formal)}/>'
+            f'</connectionPointIn>'
+            f'<expression>{escape(text)}</expression>'
+            f'</outVariable>'
+        )
+        out_idx += 1
+    if op.return_to is not None and return_out_id is not None:
+        text = _ld_expression_text(op.return_to)
+        lines.append(
+            f'<outVariable localId="{return_out_id}">'
+            f'<position x="{out_x:g}" y="{y + 20:g}"/>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{block_id}" '
+            f'formalParameter={quoteattr(op.target)}/>'
+            f'</connectionPointIn>'
+            f'<expression>{escape(text)}</expression>'
+            f'</outVariable>'
+        )
+    return lines
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -1694,6 +1814,21 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
             out_id = next_local_id; next_local_id += 1
             lines.extend(_emit_ld_move_block_xml(
                 op, in_id, block_id, out_id, cursor_ids, x, y,
+            ))
+            cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 3
+        elif isinstance(op, Call):
+            in_ids = [next_local_id + i for i in range(len(op.inputs))]
+            next_local_id += len(op.inputs)
+            block_id = next_local_id; next_local_id += 1
+            out_ids = [next_local_id + i for i in range(len(op.outputs))]
+            next_local_id += len(op.outputs)
+            return_out_id = None
+            if op.return_to is not None:
+                return_out_id = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_call_block_xml(
+                op, in_ids, out_ids, block_id, return_out_id,
+                cursor_ids, x, y,
             ))
             cursor_ids = [block_id]
             x += _LD_OP_WIDTH * 3

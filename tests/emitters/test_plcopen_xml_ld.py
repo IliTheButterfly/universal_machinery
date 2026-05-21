@@ -102,19 +102,20 @@ def test_mixed_rung_falls_back_to_ST_translation():
     """A rung containing a still-deferred op type keeps going
     through ST text emission.
 
-    Compare / Move / BinaryMath / StdFunc all have native LD
-    lowerings now via ``<block>``; ``Call`` (POU invocation)
-    remains on the ST-fallback path pending its own slice."""
-    from universal_machinery.builders import call
+    Compare / Move / BinaryMath / StdFunc / Call all have native
+    LD lowerings now via ``<block>``; the IEC §2.5.2.3 stateful
+    FBs (TON / TOF / TP / CTU / ...) remain on the ST-fallback
+    path pending their own slice."""
+    from universal_machinery.builders import ton
     p = program(subroutines=[prog("Main", main=True, rungs=[
-        rung(call("OtherPou")),
+        rung(ton("T1", 100)),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
     # Not LD body
     assert "<LD>" not in xml
-    # ST text body present (the Call lowers via the ST emitter)
-    assert "OtherPou" in xml
+    # ST text body present
+    assert "T1" in xml
 
 
 # -----------------------------------------------------------------------------
@@ -1285,3 +1286,118 @@ def test_stdfunc_one_input_uses_IN_pin_naming_in_xml():
     assert 'formalParameter="IN"' in xml
     # And NOT IN1
     assert 'formalParameter="IN1"' not in xml
+
+
+# -----------------------------------------------------------------------------
+# Call op in LD: invokes a user POU (FUNCTION / FUNCTION_BLOCK /
+# SUBROUTINE) via ``<block typeName=<target>>`` with named-parameter
+# binding via formalParameter.  This closes the mixed LD+FBD-block
+# series -- after this slice, only the stateful FB family
+# (TON / TOF / CTU / RTrig / ...) still falls back to ST text.
+# -----------------------------------------------------------------------------
+
+
+def test_unparameterised_subroutine_call_round_trips():
+    from universal_machinery.builders import call
+    from universal_machinery.il.ops import Call
+    rungs = _round_trip([rung(call("Sub1"))])
+    op = rungs[0].ops[0]
+    assert isinstance(op, Call)
+    assert op.target == "Sub1"
+    assert op.inputs == ()
+    assert op.outputs == ()
+    assert op.return_to is None
+
+
+def test_function_call_with_return_to_round_trips():
+    from universal_machinery.builders import call
+    from universal_machinery.il.ops import Call
+    from universal_machinery.il import TagRef
+    rungs = _round_trip([
+        rung(call("Average",
+                    inputs=[("a", tag("x")), ("b", tag("y"))],
+                    return_to=tag("avg"))),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, Call)
+    assert op.target == "Average"
+    assert op.inputs == (
+        ("a", TagRef("x")), ("b", TagRef("y")),
+    )
+    assert op.return_to == TagRef("avg")
+
+
+def test_function_block_call_with_outputs_and_instance_round_trips():
+    from universal_machinery.builders import call
+    from universal_machinery.il.ops import Call
+    from universal_machinery.il import Address, TagRef
+    rungs = _round_trip([
+        rung(call("PID",
+                    instance=Address("DB7"),
+                    inputs=[("SP", tag("setpoint")),
+                              ("PV", tag("process"))],
+                    outputs=[("OUT", tag("output"))])),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, Call)
+    assert op.target == "PID"
+    assert op.instance == Address("DB7")
+    assert op.inputs == (
+        ("SP", TagRef("setpoint")),
+        ("PV", TagRef("process")),
+    )
+    assert op.outputs == (("OUT", TagRef("output")),)
+
+
+def test_call_block_uses_target_as_typeName():
+    from universal_machinery.builders import call
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(call("Average",
+                    inputs=[("a", tag("x"))],
+                    return_to=tag("avg"))),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="Average"' in xml
+
+
+def test_call_fb_emits_instanceName_attribute():
+    from universal_machinery.builders import call
+    from universal_machinery.il import Address
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(call("PID", instance=Address("DB7"),
+                    outputs=[("OUT", tag("output"))])),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'instanceName="DB7"' in xml
+
+
+def test_call_rung_emits_native_LD_not_ST_fallback():
+    from universal_machinery.builders import call
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(call("OtherPou")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_function_return_pin_uses_target_name_as_formalParameter():
+    """Per IEC convention the function's return-value pin
+    carries the function's own name as its formalParameter."""
+    from universal_machinery.builders import call
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(call("Average",
+                    inputs=[("a", tag("x"))],
+                    return_to=tag("avg"))),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    import re
+    # The function-return outVariable's connection refs the
+    # block with formalParameter="Average".
+    assert re.search(
+        r'<connection refLocalId="\d+" formalParameter="Average"/>',
+        xml,
+    ) is not None

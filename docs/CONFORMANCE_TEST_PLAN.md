@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1207 tests**.
+counts are snapshotted; the current passing total is **1214 tests**.
 
 ## Reading this document
 
@@ -134,7 +134,8 @@ Status legend:
 | LD Move op (`<block typeName="MOVE">` + `<inVariable>` + `<outVariable>` in LD body) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2.1 MOVE round-trips with Address / TagRef / literal src; ENO continues rung gate; Compare + Move in one rung also round-trips |
 | LD BinaryMath ops (`<block typeName="ADD|SUB|MUL|DIV|MOD">` + 2 inVariables + outVariable) | ✅ | tests/emitters/test_plcopen_xml_ld.py — all five IEC §2.5.2.5 arithmetic ops round-trip with Address / literal operands; gated rungs preserve EN wiring through the upstream contact |
 | LD StdFunc ops (`<block typeName=NAME>` with variable IN/IN1..INn pins + outVariable) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2 standard-library calls (ABS / SQRT / AND / OR / SEL / LIMIT / MUX / SHL / SHR / ...) round-trip; single-input form uses `IN` pin, multi-input uses `IN1`..`INn` |
-| LD with remaining mixed FBD blocks (Call / POU invocation inside rungs) | ⚠️ | Falls back to ST text emission for `Call`; tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text (now exercised by `call("OtherPou")`) |
+| LD Call ops (POU invocation via `<block typeName=<target>>` with named formalParameter bindings) | ✅ | tests/emitters/test_plcopen_xml_ld.py — unparameterised subroutine, function with return_to, and FB call with `instanceName` + outputs all round-trip; function-return pin uses target name as formalParameter |
+| LD with remaining mixed FBD blocks (stateful FBs: TON / TOF / CTU / ... inside rungs) | ⚠️ | Falls back to ST text emission for the IEC §2.5.2.3 stateful-FB family; tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text (now exercised by `ton(...)`) |
 | FBD (Function Block Diagram) | ✅ | tests/emitters/test_plcopen_xml_fbd.py, tests/parsers/test_plcopen_xml_reader_fbd.py, tests/lowering/test_fbd_to_st.py |
 | ST (Structured Text) | ✅ | tests/il/test_st_ast.py, tests/parsers/test_st_text_parser.py — emit + parse round-trip |
 | SFC | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
@@ -251,4 +252,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1207 / 1207 passing**.
+status: **1214 / 1214 passing**.
