@@ -99,17 +99,22 @@ def test_multiple_rungs_each_get_own_power_rails():
 
 
 def test_mixed_rung_falls_back_to_ST_translation():
-    """A rung containing a non-LD op (math) keeps going through
-    ST text emission."""
+    """A rung containing a non-LD op (one of the still-deferred
+    op types) keeps going through ST text emission.
+
+    Compare, Move, and BinaryMath have moved to native LD via
+    ``<block>``; StdFunc (and Call) remain on the ST-fallback
+    path pending their own slices."""
+    from universal_machinery.builders import abs_
     p = program(subroutines=[prog("Main", main=True, rungs=[
-        rung(add(tag("a"), tag("b"), tag("r"))),
+        rung(abs_(tag("a"), tag("r"))),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
     # Not LD body
     assert "<LD>" not in xml
-    # ST text body present
-    assert "r := a + b;" in xml
+    # ST text body present (the ABS call lowers as `r := ABS(a);`)
+    assert "ABS" in xml
 
 
 # -----------------------------------------------------------------------------
@@ -827,6 +832,168 @@ def test_compare_and_move_in_same_rung_round_trip():
     assert ops[0].op == ">"
     assert isinstance(ops[1], Move)
     assert ops[1].dst == TagRef("last_speed")
+
+
+# -----------------------------------------------------------------------------
+# BinaryMath in LD (IEC §2.5.2.5): ``+``/``-``/``*``/``/``/``%``
+# lower to ``<block typeName="ADD|SUB|MUL|DIV|MOD">`` with two
+# ``<inVariable>`` operand sources and an ``<outVariable>``
+# destination.  Previously any BinaryMath-containing rung
+# dropped to ST-text fallback (``r := a + b;``).
+# -----------------------------------------------------------------------------
+
+
+def test_binary_math_rung_emits_native_LD_not_ST_fallback():
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(add("DS1", "DS2", "DS3")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_binary_math_emits_block_typeName_ADD_and_three_operand_elements():
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(add("DS1", "DS2", "DS3")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="ADD"' in xml
+    assert xml.count("<inVariable") == 2
+    assert "<outVariable" in xml
+    assert "<expression>DS1</expression>" in xml
+    assert "<expression>DS2</expression>" in xml
+    assert "<expression>DS3</expression>" in xml
+
+
+@pytest.mark.parametrize("symbol,block_name", [
+    ("+", "ADD"),
+    ("-", "SUB"),
+    ("*", "MUL"),
+    ("/", "DIV"),
+    ("%", "MOD"),
+])
+def test_each_binary_math_op_maps_to_iec_block_typename(symbol, block_name):
+    from universal_machinery.il.ops import BinaryMath
+    from universal_machinery.il import Address
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(BinaryMath(op=symbol, lhs=Address("DS1"),
+                          rhs=Address("DS2"), dst=Address("DS3"))),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert f'typeName="{block_name}"' in xml
+
+
+@pytest.mark.parametrize("symbol", ["+", "-", "*", "/", "%"])
+def test_every_binary_math_op_round_trips(symbol):
+    from universal_machinery.il.ops import BinaryMath
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(BinaryMath(op=symbol, lhs=Address("DS1"),
+                          rhs=Address("DS2"), dst=Address("DS3"))),
+    ])
+    assert isinstance(rungs[0].ops[0], BinaryMath)
+    assert rungs[0].ops[0].op == symbol
+
+
+def test_binary_math_round_trips_operands_with_address_and_literal():
+    from universal_machinery.il.ops import BinaryMath
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(BinaryMath(op="+", lhs=Address("DS1"),
+                          rhs="100", dst=Address("DS2"))),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, BinaryMath)
+    assert op.op == "+"
+    assert op.lhs == Address("DS1")
+    assert op.rhs == "100"
+    assert op.dst == Address("DS2")
+
+
+def test_binary_math_gated_by_contact_round_trips():
+    """A rung with a contact gate followed by BinaryMath: the
+    block's EN wires through the contact, ENO continues the
+    gate so downstream chaining would still work."""
+    from universal_machinery.il.ops import BinaryMath
+    from universal_machinery.il import Address
+    rungs = _round_trip([
+        rung(no("enable"),
+              BinaryMath(op="*", lhs=Address("speed"),
+                          rhs="60", dst=Address("rpm"))),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], ContactNO)
+    assert isinstance(ops[1], BinaryMath)
+    assert ops[1].op == "*"
+
+
+def test_reader_recovers_binary_math_from_hand_rolled_SUB_block():
+    from universal_machinery.il.ops import BinaryMath
+    from universal_machinery.il import Address
+    xml = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body><LD>
+        <leftPowerRail localId="0">
+          <position x="0" y="0"/>
+          <connectionPointOut formalParameter="OUT"/>
+        </leftPowerRail>
+        <inVariable localId="1">
+          <position x="100" y="0"/>
+          <connectionPointOut/>
+          <expression>DS10</expression>
+        </inVariable>
+        <inVariable localId="2">
+          <position x="100" y="40"/>
+          <connectionPointOut/>
+          <expression>DS11</expression>
+        </inVariable>
+        <block localId="3" typeName="SUB">
+          <position x="200" y="0"/>
+          <inputVariables>
+            <variable formalParameter="EN">
+              <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            </variable>
+            <variable formalParameter="IN1">
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+            </variable>
+            <variable formalParameter="IN2">
+              <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+            </variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables>
+            <variable formalParameter="ENO"><connectionPointOut/></variable>
+            <variable formalParameter="OUT"><connectionPointOut/></variable>
+          </outputVariables>
+        </block>
+        <outVariable localId="4">
+          <position x="300" y="0"/>
+          <connectionPointIn>
+            <connection refLocalId="3" formalParameter="OUT"/>
+          </connectionPointIn>
+          <expression>DS12</expression>
+        </outVariable>
+        <rightPowerRail localId="5">
+          <position x="400" y="0"/>
+          <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+</project>'''
+    sub = parse_plcopen_xml(xml).find_subroutine("Main")
+    op = sub.rungs[0].ops[0]
+    assert isinstance(op, BinaryMath)
+    assert op.op == "-"
+    assert op.lhs == Address("DS10")
+    assert op.rhs == Address("DS11")
+    assert op.dst == Address("DS12")
 
 
 # -----------------------------------------------------------------------------

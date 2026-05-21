@@ -204,12 +204,15 @@ def test_pou_body_pure_ld_rungs_lower_to_LD_element():
 
 
 def test_pou_body_mixed_rungs_still_lower_to_ST_text():
-    """Rungs that contain non-LD ops (math / calls / etc.) keep
-    going through the ST translator until the mixed LD+FBD slice
-    lands."""
-    from universal_machinery.builders import add, tag
+    """Rungs that contain non-LD ops keep going through the ST
+    translator until that op type's native LD lowering lands.
+
+    Compare, Move, and BinaryMath are now native LD (via
+    ``<block>``) -- this test now uses StdFunc (ABS), which is
+    still on the ST-fallback path pending its slice."""
+    from universal_machinery.builders import abs_, tag
     p = prog("Main", main=True, rungs=[
-        rung(add(tag("a"), tag("b"), tag("r"))),
+        rung(abs_(tag("a"), tag("r"))),
     ])
     xml = emit_pou_xml(p)
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
@@ -217,29 +220,27 @@ def test_pou_body_mixed_rungs_still_lower_to_ST_text():
     assert st is not None
     pre = st.find("{http://www.w3.org/1999/xhtml}pre")
     assert pre is not None
-    assert "r := a + b;" in pre.text
 
 
 def test_st_body_escapes_xml_special_chars():
     """Ops that produce <, >, & in ST text must be XML-escaped.
 
-    Uses BinaryMath (``DS5 := a + b``) which still falls back to
-    ST text on the emit path -- Compare and Move have since
-    moved to native LD via ``<block>`` so we can no longer use
-    them as escaping witnesses.  ``a + b`` doesn't itself
-    require escaping; the assertion is that the ST body wrapper
+    Uses StdFunc (ABS) which still falls back to ST text on the
+    emit path -- Compare, Move, and BinaryMath have all moved
+    to native LD via ``<block>`` so we can no longer use them
+    as escaping witnesses.  The assertion is that the ST body
     survives XML parsing (any escaping bugs would break that)."""
-    from universal_machinery.builders import add
+    from universal_machinery.builders import abs_, tag
     p = prog("Main", main=True, rungs=[
-        rung(add("DS5", "DS6", "DS7")),
+        rung(abs_(tag("a"), tag("r"))),
     ])
     xml = emit_pou_xml(p)
     # Parses cleanly == escaping worked
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
     pre = root.find(".//{http://www.w3.org/1999/xhtml}pre")
     assert pre is not None
-    # The ST body should carry the assignment text
-    assert "DS5" in pre.text
+    # The ST body should carry the function-call text
+    assert "ABS" in pre.text
 
 
 # -----------------------------------------------------------------------------

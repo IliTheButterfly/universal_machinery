@@ -73,8 +73,8 @@ from ..il import (
     TagType, TaskSpec, Transition, Var, VarDirection, is_signed_subrange,
 )
 from ..il.ops import (
-    Compare, ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
-    Move, OutCoil, OutReset, OutSet, ParallelGroup,
+    BinaryMath, Compare, ContactFallingEdge, ContactNC, ContactNO,
+    ContactRisingEdge, Move, OutCoil, OutReset, OutSet, ParallelGroup,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1223,7 +1223,23 @@ _NATIVE_LD_OPS = (
     # destination receiving OUT.  The block's ENO output continues
     # the rung's boolean gate so chained ops still work.
     Move,
+    # BinaryMath ops (ADD / SUB / MUL / DIV / MOD) lower into
+    # ``<block typeName="...">`` with two ``<inVariable>`` operand
+    # sources feeding IN1 / IN2 and an ``<outVariable>``
+    # destination receiving OUT (IEC §2.5.2.5).
+    BinaryMath,
 )
+
+
+#: IL BinaryMath.op symbol -> IEC §2.5.2.5 arithmetic function name.
+#: Used for ``<block typeName=...>`` when lowering BinaryMath into LD.
+_BINARY_MATH_OP_TO_BLOCK_NAME = {
+    "+": "ADD",
+    "-": "SUB",
+    "*": "MUL",
+    "/": "DIV",
+    "%": "MOD",
+}
 
 
 #: IL Compare.op symbol -> IEC §2.5.2.8 comparison function name.
@@ -1472,6 +1488,75 @@ def _emit_ld_move_block_xml(op: "Move", in_id: int, block_id: int,
     ]
 
 
+def _emit_ld_binary_math_block_xml(op: "BinaryMath", block_type: str,
+                                      in1_id: int, in2_id: int,
+                                      block_id: int, out_id: int,
+                                      parent_ids: list[int],
+                                      x: float, y: float) -> list[str]:
+    """Lower one BinaryMath op into ``<inVariable>`` × 2 +
+    ``<block typeName="ADD|SUB|MUL|DIV|MOD">`` + ``<outVariable>``
+    embedded in LD.
+
+    Wiring:
+      - ``parent_ids`` (rung gate) -> block's ``EN``
+      - ``in1_id`` / ``in2_id`` -> block's ``IN1`` / ``IN2``
+      - block's ``OUT`` -> ``out_id`` (outVariable carrying dst text)
+      - block's ``ENO`` is the new rung-gate cursor
+    """
+    lhs_text = _ld_expression_text(op.lhs)
+    rhs_text = _ld_expression_text(op.rhs)
+    dst_text = _ld_expression_text(op.dst)
+    en_conn = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    return [
+        f'<inVariable localId="{in1_id}">'
+        f'<position x="{x:g}" y="{y - 20:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(lhs_text)}</expression>'
+        f'</inVariable>',
+        f'<inVariable localId="{in2_id}">'
+        f'<position x="{x:g}" y="{y + 20:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(rhs_text)}</expression>'
+        f'</inVariable>',
+        f'<block localId="{block_id}" typeName="{block_type}">'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>'
+        f'<variable formalParameter="EN">'
+        f'<connectionPointIn>{en_conn}</connectionPointIn>'
+        f'</variable>'
+        f'<variable formalParameter="IN1">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{in1_id}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+        f'<variable formalParameter="IN2">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{in2_id}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+        f'</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>'
+        f'<variable formalParameter="ENO">'
+        f'<connectionPointOut/>'
+        f'</variable>'
+        f'<variable formalParameter="OUT">'
+        f'<connectionPointOut/>'
+        f'</variable>'
+        f'</outputVariables>'
+        f'</block>',
+        f'<outVariable localId="{out_id}">'
+        f'<position x="{x + _LD_OP_WIDTH * 2:g}" y="{y:g}"/>'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{block_id}" formalParameter="OUT"/>'
+        f'</connectionPointIn>'
+        f'<expression>{escape(dst_text)}</expression>'
+        f'</outVariable>',
+    ]
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -1537,6 +1622,18 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
             out_id = next_local_id; next_local_id += 1
             lines.extend(_emit_ld_move_block_xml(
                 op, in_id, block_id, out_id, cursor_ids, x, y,
+            ))
+            cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 3
+        elif isinstance(op, BinaryMath):
+            block_type = _BINARY_MATH_OP_TO_BLOCK_NAME.get(op.op, "ADD")
+            in1_id = next_local_id; next_local_id += 1
+            in2_id = next_local_id; next_local_id += 1
+            block_id = next_local_id; next_local_id += 1
+            out_id = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_binary_math_block_xml(
+                op, block_type, in1_id, in2_id, block_id, out_id,
+                cursor_ids, x, y,
             ))
             cursor_ids = [block_id]
             x += _LD_OP_WIDTH * 3
