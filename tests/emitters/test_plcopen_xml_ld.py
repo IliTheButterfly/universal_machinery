@@ -25,7 +25,7 @@ from universal_machinery.emitters.plcopen_xml import (
 from universal_machinery.il import Address, TagRef, TagType
 from universal_machinery.il.ops import (
     ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
-    OutCoil, OutReset, OutSet,
+    OutCoil, OutReset, OutSet, ParallelGroup,
 )
 from universal_machinery.parsers.plcopen_xml import parse_plcopen_xml
 
@@ -400,3 +400,199 @@ def test_reader_treats_missing_edge_attribute_as_plain_NO():
 </project>'''
     sub = parse_plcopen_xml(xml).find_subroutine("Main")
     assert isinstance(sub.rungs[0].ops[0], ContactNO)
+
+
+# -----------------------------------------------------------------------------
+# ParallelGroup (OR branches inside a rung).  Previously any rung
+# carrying a ParallelGroup dropped to ST-text fallback; native LD
+# now emits the branches with multi-incoming wires at the join.
+# -----------------------------------------------------------------------------
+
+
+def _pg(*branches):
+    return ParallelGroup(branches=tuple(tuple(b) for b in branches))
+
+
+def test_parallel_group_rung_emits_native_LD_not_ST_fallback():
+    """A rung with a ParallelGroup should now stay in
+    ``<LD>...</LD>`` -- the ST-text fallback was the previous
+    behaviour."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("A"),
+             _pg([no("B")], [no("C")]),
+             coil("D")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_parallel_group_emits_multi_incoming_wire_at_join():
+    """The first op *after* a ParallelGroup carries every branch
+    tail in its ``<connectionPointIn>``.  For
+    ``A AND (B OR C) -> coil``, the coil's incoming has two
+    ``<connection>`` children, one per branch tail."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("A"),
+             _pg([no("B")], [no("C")]),
+             coil("D")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    # Two contacts B & C, both children of A; the coil joins them.
+    # The coil's connectionPointIn has 2 connections.
+    import re
+    coil_match = re.search(
+        r'<coil[^>]*>.*?<connectionPointIn>(.*?)</connectionPointIn>',
+        xml, re.S,
+    )
+    assert coil_match is not None
+    assert coil_match.group(1).count("<connection ") == 2
+
+
+def test_parallel_group_two_branch_round_trips():
+    rungs = _round_trip([
+        rung(no("A"),
+             _pg([no("B")], [no("C")]),
+             coil("D")),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], ContactNO)
+    assert isinstance(ops[1], ParallelGroup)
+    assert len(ops[1].branches) == 2
+    # Branch contents preserved (single ContactNO each)
+    branch_contacts = [b[0] for b in ops[1].branches]
+    assert all(isinstance(c, ContactNO) for c in branch_contacts)
+    assert {c.address.name for c in branch_contacts} == {"B", "C"}
+    assert isinstance(ops[2], OutCoil)
+
+
+def test_parallel_group_three_branch_round_trips():
+    rungs = _round_trip([
+        rung(_pg([no("A")], [no("B")], [no("C")]),
+             coil("out")),
+    ])
+    ops = rungs[0].ops
+    pg = ops[0]
+    assert isinstance(pg, ParallelGroup)
+    assert len(pg.branches) == 3
+    branch_names = {b[0].address.name for b in pg.branches}
+    assert branch_names == {"A", "B", "C"}
+
+
+def test_parallel_group_branch_with_multiple_contacts_round_trips():
+    """A branch can carry more than one contact (a sub-AND chain
+    inside an OR alternative).  ``A AND ((B AND C) OR D) -> out``."""
+    rungs = _round_trip([
+        rung(no("A"),
+             _pg([no("B"), no("C")], [no("D")]),
+             coil("out")),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[1], ParallelGroup)
+    branches = ops[1].branches
+    # Find the 2-op branch
+    by_len = {len(b): b for b in branches}
+    assert set(by_len) == {1, 2}
+    two_op = by_len[2]
+    assert [c.address.name for c in two_op] == ["B", "C"]
+    one_op = by_len[1]
+    assert one_op[0].address.name == "D"
+
+
+def test_parallel_group_with_mixed_contact_kinds_in_branches():
+    """Branches can mix NO / NC contacts."""
+    rungs = _round_trip([
+        rung(_pg([no("a")], [nc("b")]),
+             coil("out")),
+    ])
+    pg = rungs[0].ops[0]
+    assert isinstance(pg, ParallelGroup)
+    kinds = {type(b[0]).__name__ for b in pg.branches}
+    assert kinds == {"ContactNO", "ContactNC"}
+
+
+def test_parallel_group_xsd_validates():
+    """All ParallelGroup shapes should XSD-validate (the XSD
+    only requires multi-incoming at the join; nothing more)."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(_pg([no("a")], [no("b")], [no("c")]), coil("out")),
+        rung(no("x"),
+             _pg([no("y")], [no("z")]),
+             coil("done")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_parallel_group_localIds_remain_unique():
+    """Across multiple rungs containing ParallelGroups, every
+    localId in the body should still be unique."""
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(_pg([no("a")], [no("b")]), coil("out1")),
+        rung(_pg([no("c")], [no("d")]), coil("out2")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    import re
+    ids = re.findall(r'localId="(\d+)"', xml)
+    assert len(ids) == len(set(ids)), "duplicate localId found"
+
+
+# ---- reader-only: hand-rolled documents -------------------------------------
+
+
+def test_reader_recovers_parallel_group_from_hand_rolled_multi_incoming():
+    xml = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body><LD>
+        <leftPowerRail localId="0">
+          <position x="0" y="0"/>
+          <connectionPointOut formalParameter="OUT"/>
+        </leftPowerRail>
+        <contact localId="1">
+          <position x="100" y="0"/>
+          <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>start</variable>
+        </contact>
+        <contact localId="2">
+          <position x="200" y="0"/>
+          <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>p</variable>
+        </contact>
+        <contact localId="3">
+          <position x="200" y="40"/>
+          <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>q</variable>
+        </contact>
+        <coil localId="4">
+          <position x="300" y="0"/>
+          <connectionPointIn>
+            <connection refLocalId="2"/>
+            <connection refLocalId="3"/>
+          </connectionPointIn>
+          <connectionPointOut/>
+          <variable>done</variable>
+        </coil>
+        <rightPowerRail localId="5">
+          <position x="400" y="0"/>
+          <connectionPointIn><connection refLocalId="4"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+</project>'''
+    sub = parse_plcopen_xml(xml).find_subroutine("Main")
+    ops = sub.rungs[0].ops
+    assert isinstance(ops[0], ContactNO)
+    assert isinstance(ops[1], ParallelGroup)
+    branch_names = {b[0].address.name for b in ops[1].branches}
+    assert branch_names == {"p", "q"}
+    assert isinstance(ops[2], OutCoil)
