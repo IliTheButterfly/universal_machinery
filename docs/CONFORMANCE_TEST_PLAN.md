@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1044 tests**.
+counts are snapshotted; the current passing total is **1078 tests**.
 
 ## Reading this document
 
@@ -119,7 +119,7 @@ Status legend:
 | Inline ST conditions   | ✅ | tests/parsers/test_sfc_condition_lowering.py — full AND / NOT / OR lowering to LD ops |
 | Named-reference cond.  | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_named_reference_condition_round_trips_as_textual_name |
 | Explicit `<selectionDivergence>` / `<simultaneousDivergence>` | ❌ | Deferred -- current emission uses plain multi-connection wires |
-| Action blocks (`<actionBlock>` with `connectionPointOutAction`) | ❌ | Deferred |
+| Action blocks (`<actionBlock>` with `connectionPointOutAction`) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all 12 IEC §2.6.4.4 qualifiers (N/R/S/L/D/P/P0/P1/DS/DL/SD/SL), `duration=` time literal round-trip, multi-action blocks |
 | `<macroStep>` / `<jumpStep>` | ❌ | Deferred |
 
 ## §4 Languages
@@ -244,4 +244,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1044 / 1044 passing**.
+status: **1078 / 1078 passing**.
