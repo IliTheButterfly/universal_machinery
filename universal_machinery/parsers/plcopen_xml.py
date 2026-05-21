@@ -1602,6 +1602,8 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
     in_outs:    list[Var] = []
     local_vars: list[Var] = []
     global_vars: list[Var] = []
+    external_vars: list[Var] = []
+    temp_vars: list[Var] = []
     return_type: Optional[TagType] = None
 
     interface = _child(pou_elem, "interface")
@@ -1624,10 +1626,11 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
                 in_outs.extend(vars_)
             elif direction is VarDirection.GLOBAL:
                 global_vars.extend(vars_)
+            elif direction is VarDirection.EXTERNAL:
+                external_vars.extend(vars_)
+            elif direction is VarDirection.TEMP:
+                temp_vars.extend(vars_)
             else:
-                # LOCAL, EXTERNAL, TEMP all funnel into local_vars
-                # -- the IL keeps a single ``local_vars`` slot and
-                # discriminates by ``Var.direction`` if needed.
                 local_vars.extend(vars_)
 
     st_body: Optional[list] = None
@@ -1657,6 +1660,7 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
         name=name, kind=kind, main=main, comment=comment,
         inputs=inputs, outputs=outputs, in_outs=in_outs,
         local_vars=local_vars, global_vars=global_vars,
+        external_vars=external_vars, temp_vars=temp_vars,
         return_type=return_type,
         rungs=rungs,
         st_body=st_body, fbd_body=fbd_body, sfc=sfc_body,

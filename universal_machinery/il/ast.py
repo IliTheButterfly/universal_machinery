@@ -328,6 +328,13 @@ class Subroutine:
     # practice but accepted by IEC and the PLCopen TC6 v2.01 XSD's
     # ``<globalVars>`` block inside ``<interface>``.
     global_vars: list[Var] = field(default_factory=list)
+    # VAR_EXTERNAL: per IEC §2.4.3, references to globals declared
+    # elsewhere (Resource / Configuration scope), made visible in
+    # this POU.  Emitted as ``<externalVars>`` per the TC6 v2.01 XSD.
+    external_vars: list[Var] = field(default_factory=list)
+    # VAR_TEMP: scratch variables that don't persist across scans.
+    # Emitted as ``<tempVars>`` per the TC6 v2.01 XSD.
+    temp_vars: list[Var] = field(default_factory=list)
     return_type: Optional[TagType] = None
     sfc: Optional["SfcNetwork"] = None
     st_body: Optional[list["Statement"]] = None
