@@ -1517,7 +1517,9 @@ def _vars_by_direction(sub: Subroutine,
     if direction is VarDirection.IN_OUT:   return sub.in_outs
     if direction is VarDirection.LOCAL:    return sub.local_vars
     if direction is VarDirection.GLOBAL:   return sub.global_vars
-    return ()                              # EXTERNAL/TEMP not on Subroutine yet
+    if direction is VarDirection.EXTERNAL: return sub.external_vars
+    if direction is VarDirection.TEMP:     return sub.temp_vars
+    return ()
 
 
 # -----------------------------------------------------------------------------

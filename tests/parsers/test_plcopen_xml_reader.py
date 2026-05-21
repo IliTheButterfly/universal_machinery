@@ -475,3 +475,97 @@ def test_empty_pou_scope_global_vars_does_not_emit_block():
     p = program(subroutines=[prog("Main", main=True)])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     assert "<globalVars" not in xml
+
+
+# -----------------------------------------------------------------------------
+# VAR_EXTERNAL + VAR_TEMP (IEC §2.4.3): previously declared ✅ in
+# the conformance plan but ``_vars_by_direction`` returned ``()``
+# for them and the IL had no dedicated fields.  Both directions
+# now have first-class storage and emit + read round-trip.
+# -----------------------------------------------------------------------------
+
+
+def test_var_external_round_trips_through_plcopen_xml():
+    """``Subroutine.external_vars`` -> ``<externalVars>`` block;
+    reader recovers it back into the same field."""
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].external_vars = [
+        var("global_ref_a", TagType.INT),
+        var("global_ref_b", TagType.BOOL),
+    ]
+    p2 = _round_trip(p)
+    sub = p2.find_subroutine("Main")
+    assert [v.name for v in sub.external_vars] == [
+        "global_ref_a", "global_ref_b",
+    ]
+    # Stays distinct from locals / globals
+    assert sub.local_vars == []
+    assert sub.global_vars == []
+
+
+def test_var_temp_round_trips_through_plcopen_xml():
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].temp_vars = [
+        var("scratch", TagType.REAL),
+    ]
+    p2 = _round_trip(p)
+    sub = p2.find_subroutine("Main")
+    assert [v.name for v in sub.temp_vars] == ["scratch"]
+    assert sub.temp_vars[0].data_type is TagType.REAL
+
+
+def test_var_external_emits_externalVars_block():
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].external_vars = [var("e", TagType.INT)]
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    assert "<externalVars>" in xml
+
+
+def test_var_temp_emits_tempVars_block():
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].temp_vars = [var("t", TagType.INT)]
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    assert "<tempVars>" in xml
+
+
+def test_var_external_and_temp_xsd_validate():
+    from universal_machinery.emitters.plcopen_xml import validate_plcopen_xml
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].external_vars = [var("e", TagType.INT)]
+    p.subroutines[0].temp_vars = [var("t", TagType.REAL)]
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+
+
+def test_var_external_and_temp_alongside_locals_and_globals():
+    """A POU can carry every direction at once -- nothing
+    cross-contaminates between buckets after round-trip."""
+    p = program(subroutines=[prog("Main", main=True,
+        local_vars=[var("l", TagType.INT)])])
+    p.subroutines[0].global_vars = [var("g", TagType.INT)]
+    p.subroutines[0].external_vars = [var("e", TagType.INT)]
+    p.subroutines[0].temp_vars = [var("t", TagType.INT)]
+    p2 = _round_trip(p)
+    sub = p2.find_subroutine("Main")
+    assert [v.name for v in sub.local_vars] == ["l"]
+    assert [v.name for v in sub.global_vars] == ["g"]
+    assert [v.name for v in sub.external_vars] == ["e"]
+    assert [v.name for v in sub.temp_vars] == ["t"]
+
+
+def test_var_external_and_temp_serialise_through_json():
+    from universal_machinery.serialisation import to_dict, from_dict
+    p = program(subroutines=[prog("Main", main=True)])
+    p.subroutines[0].external_vars = [var("ext", TagType.INT)]
+    p.subroutines[0].temp_vars = [var("tmp", TagType.REAL)]
+    p2 = from_dict(to_dict(p))
+    sub = p2.find_subroutine("Main")
+    assert [v.name for v in sub.external_vars] == ["ext"]
+    assert [v.name for v in sub.temp_vars] == ["tmp"]
+
+
+def test_empty_external_and_temp_do_not_emit_blocks():
+    p = program(subroutines=[prog("Main", main=True)])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    assert "<externalVars" not in xml
+    assert "<tempVars" not in xml
