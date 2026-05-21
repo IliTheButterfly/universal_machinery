@@ -74,6 +74,7 @@ from ..il import (
 from ..il.ops import (
     BinaryMath, Compare, ContactFallingEdge, ContactNC, ContactNO,
     ContactRisingEdge, OutCoil, OutReset, OutSet, ParallelGroup,
+    STD_FUNCTION_NAMES, StdFunc,
 )
 
 
@@ -1502,6 +1503,45 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                     lhs=_compare_operand_from_text(lhs_text),
                     rhs=_compare_operand_from_text(rhs_text),
                     dst=_compare_operand_from_text(dst_text),
+                )
+            if type_name in STD_FUNCTION_NAMES:
+                # StdFunc dispatch: walk the block's <inputVariables>
+                # to collect each operand text in pin-name order
+                # (IN for 1-arg, IN1/IN2/... for multi-arg).
+                inputs_elem = _child(elem, "inputVariables")
+                ordered_input_text: list[str] = []
+                if inputs_elem is not None:
+                    pin_texts: dict[str, str] = {}
+                    for pin in _children(inputs_elem, "variable"):
+                        fp = pin.get("formalParameter") or ""
+                        if fp in ("EN", "ENO"):
+                            continue
+                        refs = _collect_refs(_child(pin, "connectionPointIn"))
+                        text = ""
+                        for ref in refs:
+                            src = elements_by_id.get(ref)
+                            if (src is not None
+                                    and kind_by_id.get(ref) == "inVariable"):
+                                expr = _child(src, "expression")
+                                text = (expr.text or "").strip() if expr is not None else ""
+                                break
+                        pin_texts[fp] = text
+                    # Order: IN first, then IN1, IN2, IN3, ...
+                    if "IN" in pin_texts:
+                        ordered_input_text.append(pin_texts["IN"])
+                    i = 1
+                    while f"IN{i}" in pin_texts:
+                        ordered_input_text.append(pin_texts[f"IN{i}"])
+                        i += 1
+                dst_text = _trace_block_out_consumer(
+                    node_id, "OUT", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                return StdFunc(
+                    name=type_name,
+                    inputs=tuple(_compare_operand_from_text(t)
+                                  for t in ordered_input_text),
+                    output=_compare_operand_from_text(dst_text),
                 )
             if type_name == "MOVE":
                 # Trace IN back to its producing inVariable for

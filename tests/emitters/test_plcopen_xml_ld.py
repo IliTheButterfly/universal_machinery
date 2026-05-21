@@ -99,22 +99,22 @@ def test_multiple_rungs_each_get_own_power_rails():
 
 
 def test_mixed_rung_falls_back_to_ST_translation():
-    """A rung containing a non-LD op (one of the still-deferred
-    op types) keeps going through ST text emission.
+    """A rung containing a still-deferred op type keeps going
+    through ST text emission.
 
-    Compare, Move, and BinaryMath have moved to native LD via
-    ``<block>``; StdFunc (and Call) remain on the ST-fallback
-    path pending their own slices."""
-    from universal_machinery.builders import abs_
+    Compare / Move / BinaryMath / StdFunc all have native LD
+    lowerings now via ``<block>``; ``Call`` (POU invocation)
+    remains on the ST-fallback path pending its own slice."""
+    from universal_machinery.builders import call
     p = program(subroutines=[prog("Main", main=True, rungs=[
-        rung(abs_(tag("a"), tag("r"))),
+        rung(call("OtherPou")),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
     # Not LD body
     assert "<LD>" not in xml
-    # ST text body present (the ABS call lowers as `r := ABS(a);`)
-    assert "ABS" in xml
+    # ST text body present (the Call lowers via the ST emitter)
+    assert "OtherPou" in xml
 
 
 # -----------------------------------------------------------------------------
@@ -1190,3 +1190,98 @@ def test_reader_recovers_parallel_group_from_hand_rolled_multi_incoming():
     branch_names = {b[0].address.name for b in ops[1].branches}
     assert branch_names == {"p", "q"}
     assert isinstance(ops[2], OutCoil)
+
+
+# -----------------------------------------------------------------------------
+# StdFunc in LD (IEC §2.5.2 standard-library function calls):
+# every IEC stdlib function (ABS / SQRT / AND / OR / SEL / LIMIT /
+# MUX / SHL / SHR / ROR / ROL / sin / cos / type-conversions / etc.)
+# now lowers to a ``<block typeName=NAME>`` with variable IN /
+# IN1..INn pin wiring + ``<outVariable>`` for the output.
+# -----------------------------------------------------------------------------
+
+
+def test_stdfunc_one_input_round_trips_via_IN_pin():
+    """A single-input StdFunc (ABS) uses the unindexed ``IN``
+    pin per IEC convention; round-trip preserves name + arg."""
+    from universal_machinery.builders import abs_
+    from universal_machinery.il.ops import StdFunc
+    from universal_machinery.il import TagRef
+    rungs = _round_trip([
+        rung(abs_(tag("a"), tag("r"))),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, StdFunc)
+    assert op.name == "ABS"
+    assert op.inputs == (TagRef("a"),)
+    assert op.output == TagRef("r")
+
+
+def test_stdfunc_two_input_round_trips_via_IN1_IN2_pins():
+    from universal_machinery.builders import and_
+    from universal_machinery.il.ops import StdFunc
+    from universal_machinery.il import TagRef
+    rungs = _round_trip([
+        rung(and_(tag("a"), tag("b"), tag("r"))),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, StdFunc)
+    assert op.name == "AND"
+    assert op.inputs == (TagRef("a"), TagRef("b"))
+
+
+def test_stdfunc_three_input_round_trips_via_IN1_IN2_IN3():
+    from universal_machinery.builders import sel
+    from universal_machinery.il.ops import StdFunc
+    from universal_machinery.il import TagRef
+    rungs = _round_trip([
+        rung(sel(tag("c"), tag("lo"), tag("hi"), tag("out"))),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, StdFunc)
+    assert op.name == "SEL"
+    assert op.inputs == (TagRef("c"), TagRef("lo"), TagRef("hi"))
+    assert op.output == TagRef("out")
+
+
+def test_stdfunc_emits_block_with_function_name_as_typeName():
+    from universal_machinery.builders import abs_
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(abs_(tag("a"), tag("r"))),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="ABS"' in xml
+
+
+def test_stdfunc_rung_emits_native_LD_not_ST_fallback():
+    from universal_machinery.builders import abs_
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(abs_(tag("a"), tag("r"))),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_stdfunc_two_input_uses_IN1_IN2_pin_naming_in_xml():
+    from universal_machinery.builders import and_
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(and_(tag("a"), tag("b"), tag("r"))),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    assert 'formalParameter="IN1"' in xml
+    assert 'formalParameter="IN2"' in xml
+
+
+def test_stdfunc_one_input_uses_IN_pin_naming_in_xml():
+    from universal_machinery.builders import abs_
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(abs_(tag("a"), tag("r"))),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    # Single-input form uses "IN" (no index) per IEC convention
+    assert 'formalParameter="IN"' in xml
+    # And NOT IN1
+    assert 'formalParameter="IN1"' not in xml

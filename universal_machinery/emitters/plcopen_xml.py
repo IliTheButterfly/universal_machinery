@@ -75,6 +75,7 @@ from ..il import (
 from ..il.ops import (
     BinaryMath, Compare, ContactFallingEdge, ContactNC, ContactNO,
     ContactRisingEdge, Move, OutCoil, OutReset, OutSet, ParallelGroup,
+    StdFunc,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1228,6 +1229,12 @@ _NATIVE_LD_OPS = (
     # sources feeding IN1 / IN2 and an ``<outVariable>``
     # destination receiving OUT (IEC §2.5.2.5).
     BinaryMath,
+    # StdFunc (IEC §2.5.2 standard-library function calls --
+    # ABS / SQRT / AND / OR / SEL / LIMIT / MUX / etc.) lowers
+    # into ``<block typeName=NAME>`` with N ``<inVariable>``
+    # operand sources (IN1 .. INn) and a single ``<outVariable>``
+    # destination.
+    StdFunc,
 )
 
 
@@ -1557,6 +1564,71 @@ def _emit_ld_binary_math_block_xml(op: "BinaryMath", block_type: str,
     ]
 
 
+def _emit_ld_std_func_block_xml(op: "StdFunc", in_ids: list[int],
+                                   block_id: int, out_id: int,
+                                   parent_ids: list[int],
+                                   x: float, y: float) -> list[str]:
+    """Lower one StdFunc op into N ``<inVariable>`` + ``<block
+    typeName=NAME>`` + ``<outVariable>`` embedded in LD.
+
+    Pin naming follows IEC §2.5.2 convention: a one-argument
+    function uses ``IN``; multi-argument functions use ``IN1`` /
+    ``IN2`` / ...  This matches the FBD emitter's existing FB
+    instance call convention (lifted from ``lowering/fbd_to_st.py``).
+    """
+    n = len(op.inputs)
+    pin_names = (["IN"] if n == 1
+                  else [f"IN{i + 1}" for i in range(n)])
+    lines: list[str] = []
+    for i, src in enumerate(op.inputs):
+        text = _ld_expression_text(src)
+        lines.append(
+            f'<inVariable localId="{in_ids[i]}">'
+            f'<position x="{x:g}" y="{y + (i - (n - 1) / 2.0) * 20:g}"/>'
+            f'<connectionPointOut/>'
+            f'<expression>{escape(text)}</expression>'
+            f'</inVariable>'
+        )
+    en_conn = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    input_pins = (
+        f'<variable formalParameter="EN">'
+        f'<connectionPointIn>{en_conn}</connectionPointIn>'
+        f'</variable>'
+    )
+    for i, in_id in enumerate(in_ids):
+        input_pins += (
+            f'<variable formalParameter="{pin_names[i]}">'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{in_id}"/>'
+            f'</connectionPointIn>'
+            f'</variable>'
+        )
+    lines.append(
+        f'<block localId="{block_id}" typeName="{escape(op.name)}">'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>{input_pins}</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>'
+        f'<variable formalParameter="ENO"><connectionPointOut/></variable>'
+        f'<variable formalParameter="OUT"><connectionPointOut/></variable>'
+        f'</outputVariables>'
+        f'</block>'
+    )
+    dst_text = _ld_expression_text(op.output)
+    lines.append(
+        f'<outVariable localId="{out_id}">'
+        f'<position x="{x + _LD_OP_WIDTH * 2:g}" y="{y:g}"/>'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{block_id}" formalParameter="OUT"/>'
+        f'</connectionPointIn>'
+        f'<expression>{escape(dst_text)}</expression>'
+        f'</outVariable>'
+    )
+    return lines
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -1622,6 +1694,16 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
             out_id = next_local_id; next_local_id += 1
             lines.extend(_emit_ld_move_block_xml(
                 op, in_id, block_id, out_id, cursor_ids, x, y,
+            ))
+            cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 3
+        elif isinstance(op, StdFunc):
+            in_ids = [next_local_id + i for i in range(len(op.inputs))]
+            next_local_id += len(op.inputs)
+            block_id = next_local_id; next_local_id += 1
+            out_id = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_std_func_block_xml(
+                op, in_ids, block_id, out_id, cursor_ids, x, y,
             ))
             cursor_ids = [block_id]
             x += _LD_OP_WIDTH * 3
