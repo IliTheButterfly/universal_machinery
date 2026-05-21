@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **955 tests**.
+counts are snapshotted; the current passing total is **979 tests**.
 
 ## Reading this document
 
@@ -213,19 +213,24 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
    XML through matiec / Beremiz / OpenPLC editor as a subprocess
    and confirms they accept + re-emit it.  External-tooling
    dependency makes this a follow-up.
-2. ⚠️ *Partial.* **Semantic type checking** for rung ops, ST AST
-   bodies, SFC transition conditions, and struct field / array
-   element access landed -- ``Move`` / ``BinaryMath`` /
-   ``Compare`` / coil ops on LD rungs, plus Assignment / IF /
-   WHILE / REPEAT / FOR / CASE statements inside ``st_body``,
-   plus contacts and compares inside each ``Transition.condition``,
-   plus chained ``FieldAccess`` / ``IndexAccess`` expressions
-   (``axes[3].position``, ``robot.head.angle``) walking through
-   ``StructType`` / ``ArrayType`` UDTs, all type-check against
-   IEC §6.5 compatibility buckets.  Still deferred: pin types
-   on FBD ``<block>`` elements, FunctionCallExpr return-type
-   inference (signature database TBD), and constant evaluation
-   + range checks on SUBRANGE types.
+2. ⚠️ *Partial.* **Semantic type checking** covers rung ops, ST AST
+   bodies, SFC transition conditions, struct field / array
+   element access, and FunctionCallExpr return-type inference --
+   ``Move`` / ``BinaryMath`` / ``Compare`` / coil ops on LD rungs,
+   plus Assignment / IF / WHILE / REPEAT / FOR / CASE statements
+   inside ``st_body``, plus contacts and compares inside each
+   ``Transition.condition``, plus chained ``FieldAccess`` /
+   ``IndexAccess`` expressions (``axes[3].position``,
+   ``robot.head.angle``) walking through ``StructType`` /
+   ``ArrayType`` UDTs, plus user-defined ``FUNCTION`` return types,
+   IEC ``<SRC>_TO_<DST>`` / ``<SRC>_TRUNC_<DST>`` conversions, and
+   a fixed-return-type table for ~30 §2.5.2 builtins (SQRT/SIN/
+   COS/... -> REAL, LEN/FIND -> INT, LEFT/RIGHT/CONCAT/... ->
+   STRING, ADD_TIME / SUB_TIME / ... -> TIME).  Still deferred:
+   pin types on FBD ``<block>`` elements, polymorphic builtins
+   (ABS / MIN / MAX / SEL / LIMIT / MUX -- return type depends
+   on input types), and constant evaluation + range checks on
+   SUBRANGE types.
 3. **Hardware-in-the-loop**.  Per `docs/ARCHITECTURE.md`: the
    ultimate verification posture is emulator-validated-by-hardware;
    the corpus here is the seed.
@@ -237,4 +242,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **955 / 955 passing**.
+status: **979 / 979 passing**.

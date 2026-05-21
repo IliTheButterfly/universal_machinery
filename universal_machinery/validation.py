@@ -1155,6 +1155,86 @@ _LITERAL_KIND_TO_TYPE = {
 }
 
 
+#: Return-type table for IEC §2.5.2 standard functions with a
+#: fixed (non-polymorphic) result type.  Polymorphic functions
+#: (ABS, MIN, MAX, SEL, LIMIT, MUX -- result type depends on input)
+#: aren't in the table; their FunctionCallExpr leaves the inferrer
+#: returning ``None`` so callers skip the check.
+_STDLIB_FIXED_RETURN_TYPES: dict[str, str] = {
+    # §2.5.2.4 numerical (transcendentals all yield REAL)
+    "SQRT": "REAL", "LN":   "REAL", "LOG":  "REAL", "EXP":  "REAL",
+    "SIN":  "REAL", "COS":  "REAL", "TAN":  "REAL",
+    "ASIN": "REAL", "ACOS": "REAL", "ATAN": "REAL",
+    # §2.5.2.9 character-string -- LEN returns INT; the rest
+    # return STRING.
+    "LEN":    "INT",
+    "LEFT":   "STRING", "RIGHT":   "STRING", "MID":     "STRING",
+    "CONCAT": "STRING", "INSERT":  "STRING", "DELETE":  "STRING",
+    "REPLACE": "STRING", "FIND":   "INT",
+    # §2.5.2.10 time/date arithmetic
+    "ADD_TIME":  "TIME", "SUB_TIME": "TIME",
+    "MUL_TIME":  "TIME", "DIV_TIME": "TIME",
+    "MULTIME":   "TIME", "DIVTIME":  "TIME",
+    "ADD_TOD_TIME": "TOD", "SUB_TOD_TIME": "TOD",
+    "ADD_DT_TIME":  "DT",  "SUB_DT_TIME":  "DT",
+    "SUB_DATE_DATE": "TIME", "SUB_TOD_TOD": "TIME", "SUB_DT_DT": "TIME",
+    "CONCAT_DATE_TOD": "DT",
+    "DT_TO_DATE": "DATE", "DT_TO_TOD": "TOD", "DT_TO_TIME": "TIME",
+    # TRUNC defaults to DINT per IEC
+    "TRUNC": "DINT",
+}
+
+
+def _function_return_type(name: str, prog: Program) -> Optional[str]:
+    """Resolve a function-call name to its return type-name.
+
+    Lookup order:
+
+      1. User-defined FUNCTION POUs in ``Program.subroutines``.
+      2. IEC type-conversion convention: ``<SRC>_TO_<DST>`` and
+         ``<SRC>_TRUNC_<DST>`` -- the destination drives the
+         result type.  ``REAL_TRUNC_INT`` returns INT, etc.
+      3. The fixed-return-type table for §2.5.2 builtins with
+         a known result.
+
+    Returns ``None`` for unknown names and polymorphic functions
+    (ABS / MIN / MAX / SEL / LIMIT / MUX -- their result type
+    depends on input types and lives in a follow-up slice).
+    """
+    # 1. User-defined FUNCTION
+    callee = prog.find_subroutine(name)
+    if callee is not None and callee.kind is PouKind.FUNCTION:
+        if callee.return_type is not None:
+            # ``return_type`` is a DataType; resolve via the
+            # existing helpers.
+            resolved = _resolve_named_type(prog, callee.return_type)
+            return _tagtype_name(resolved)
+        return None
+    # 2. Type-conversion convention: <SRC>_TO_<DST>
+    if "_TO_" in name:
+        dst = name.rsplit("_TO_", 1)[-1]
+        # Validate against the elementary-type set so we don't
+        # mis-parse ``MY_TO_VENDOR`` as a real conversion.
+        from .il import TagType
+        try:
+            TagType(dst)
+            return dst
+        except ValueError:
+            pass
+    # ``<SRC>_TRUNC_<DST>`` -- destination is the part after
+    # ``_TRUNC_``
+    if "_TRUNC_" in name:
+        dst = name.rsplit("_TRUNC_", 1)[-1]
+        from .il import TagType
+        try:
+            TagType(dst)
+            return dst
+        except ValueError:
+            pass
+    # 3. Fixed table
+    return _STDLIB_FIXED_RETURN_TYPES.get(name)
+
+
 def _root_var_datatype(expr, sub: Subroutine, prog: Program):
     """Walk a chained FieldAccess / IndexAccess expression back to
     its root ``VarRef``, then look up the variable's full
@@ -1285,8 +1365,9 @@ def _infer_st_expr_type(expr, env: dict[str, str],
         # Logical operators take BOOL inputs (or bit-strings) and
         # produce the same family.  Preserve lhs type.
         return lhs_t or rhs_t
-    # FunctionCallExpr: skip -- a return-type database would land
-    # in a follow-up slice.
+    if isinstance(expr, FunctionCallExpr):
+        return _function_return_type(expr.name, prog)
+    # Otherwise: unhandled expression kind -> skip.
     return None
 
 
