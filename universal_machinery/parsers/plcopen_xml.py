@@ -72,7 +72,7 @@ from ..il import (
     TagRef, TagType, TaskSpec, Transition, Var, VarDirection,
 )
 from ..il.ops import (
-    BinaryMath, Compare, ContactFallingEdge, ContactNC, ContactNO,
+    BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
     ContactRisingEdge, OutCoil, OutReset, OutSet, ParallelGroup,
     STD_FUNCTION_NAMES, StdFunc,
 )
@@ -1558,6 +1558,76 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                 return Move(
                     src=_compare_operand_from_text(src_text),
                     dst=_compare_operand_from_text(dst_text),
+                )
+            if type_name:
+                # Anything else with a typeName is treated as a
+                # ``Call`` (POU invocation).  We collect every
+                # non-EN/ENO input pin as a named input binding,
+                # and every outVariable consuming a non-ENO
+                # output pin as a named output binding.  If the
+                # block carries an ``instanceName``, it's an FB
+                # call; if a pin shares the block's typeName, its
+                # consumer is the function's return value.
+                instance_name = elem.get("instanceName") or None
+                inputs_elem = _child(elem, "inputVariables")
+                input_bindings: list[tuple[str, "object"]] = []
+                if inputs_elem is not None:
+                    for pin in _children(inputs_elem, "variable"):
+                        fp = pin.get("formalParameter") or ""
+                        if fp in ("EN", "ENO") or not fp:
+                            continue
+                        refs = _collect_refs(_child(pin, "connectionPointIn"))
+                        text = ""
+                        for ref in refs:
+                            src = elements_by_id.get(ref)
+                            if (src is not None
+                                    and kind_by_id.get(ref) == "inVariable"):
+                                expr = _child(src, "expression")
+                                text = (expr.text or "").strip() if expr is not None else ""
+                                break
+                        input_bindings.append(
+                            (fp, _compare_operand_from_text(text))
+                        )
+                # Walk outVariables to find pins that consume the
+                # block's named outputs.  Group by formalParameter:
+                #   - pin name == typeName -> return_to slot
+                #   - any other pin name -> output binding
+                output_bindings: list[tuple[str, "object"]] = []
+                return_to = None
+                for cid, refs in incoming_by_id.items():
+                    if kind_by_id.get(cid) != "outVariable":
+                        continue
+                    out_elem = elements_by_id[cid]
+                    cp_in = _child(out_elem, "connectionPointIn")
+                    if cp_in is None:
+                        continue
+                    for conn in _children(cp_in, "connection"):
+                        try:
+                            ref_id = int(conn.get("refLocalId", ""))
+                        except ValueError:
+                            continue
+                        if ref_id != node_id:
+                            continue
+                        fp = conn.get("formalParameter") or ""
+                        if fp in ("EN", "ENO") or not fp:
+                            continue
+                        expr_elem = _child(out_elem, "expression")
+                        text = (expr_elem.text or "").strip() if expr_elem is not None else ""
+                        operand = _compare_operand_from_text(text)
+                        if fp == type_name:
+                            return_to = operand
+                        else:
+                            output_bindings.append((fp, operand))
+                instance_loc = (
+                    _compare_operand_from_text(instance_name)
+                    if instance_name else None
+                )
+                return Call(
+                    target=type_name,
+                    inputs=tuple(input_bindings),
+                    outputs=tuple(output_bindings),
+                    instance=instance_loc,
+                    return_to=return_to,
                 )
             return None
         if kind == "coil":
