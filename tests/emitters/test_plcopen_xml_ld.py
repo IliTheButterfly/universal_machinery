@@ -505,6 +505,175 @@ def test_reader_recovers_negated_edge_from_hand_rolled_xml():
 
 
 # -----------------------------------------------------------------------------
+# Compare ops in LD (IEC §2.5.2.8): the comparison family lowers
+# to ``<block typeName="GT|GE|EQ|LE|LT|NE">`` embedded in the LD
+# body, with two ``<inVariable>`` operand sources.  The block's
+# OUT pin replaces a contact's output in the rung gate chain.
+# Previously any rung containing a Compare dropped to ST text.
+# -----------------------------------------------------------------------------
+
+
+def test_compare_rung_emits_native_LD_not_ST_fallback():
+    """A rung with a Compare op stays in ``<LD>`` rather than
+    dropping to the legacy ST-text fallback emit path."""
+    from universal_machinery.il.ops import Compare
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(Compare(op=">", lhs="X001", rhs="50"), coil("Y001")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+def test_compare_emits_block_typeName_and_in_variables():
+    from universal_machinery.il.ops import Compare
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(Compare(op=">", lhs="X001", rhs="50"), coil("Y001")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="GT"' in xml
+    # Two <inVariable> producers, one each for the lhs/rhs operands
+    assert xml.count("<inVariable") == 2
+    assert "<expression>X001</expression>" in xml
+    assert "<expression>50</expression>" in xml
+
+
+@pytest.mark.parametrize("symbol,block_name", [
+    ("==", "EQ"),
+    ("!=", "NE"),
+    ("<",  "LT"),
+    ("<=", "LE"),
+    (">",  "GT"),
+    (">=", "GE"),
+])
+def test_each_compare_op_maps_to_iec_block_typename(symbol, block_name):
+    """All six IEC §2.5.2.8 comparison ops emit with the right
+    ``<block typeName=...>``."""
+    from universal_machinery.il.ops import Compare
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(Compare(op=symbol, lhs="a", rhs="b"), coil("Y")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert f'typeName="{block_name}"' in xml
+
+
+def test_compare_round_trips_through_LD():
+    """Emit a Compare-gated rung, parse it back, and verify the
+    IL ``Compare`` op is recovered with its symbol and operands."""
+    from universal_machinery.il.ops import Compare
+    rungs = _round_trip([
+        rung(Compare(op=">", lhs="X001", rhs="50"), coil("Y001")),
+    ])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], Compare)
+    assert ops[0].op == ">"
+    # lhs should round-trip as an Address (X001 is CLICK-style)
+    assert isinstance(ops[0].lhs, Address)
+    assert ops[0].lhs.raw == "X001"
+    # rhs is a numeric literal, stays as raw text
+    assert ops[0].rhs == "50"
+    assert isinstance(ops[1], OutCoil)
+
+
+@pytest.mark.parametrize("symbol", ["==", "!=", "<", "<=", ">", ">="])
+def test_every_compare_op_round_trips(symbol):
+    from universal_machinery.il.ops import Compare
+    rungs = _round_trip([
+        rung(Compare(op=symbol, lhs="a", rhs="b"), coil("Y")),
+    ])
+    assert isinstance(rungs[0].ops[0], Compare)
+    assert rungs[0].ops[0].op == symbol
+
+
+def test_compare_block_wires_EN_to_leftRail():
+    """The Compare block consumes the rung's boolean signal via
+    its ``EN`` input.  Pinning so the forward-walk LD reader can
+    discover the block by traversing leftPowerRail's consumers."""
+    from universal_machinery.il.ops import Compare
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(Compare(op=">", lhs="a", rhs="b"), coil("Y")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    # The block's EN formal parameter connection wires back to
+    # leftPowerRail localId=0.
+    import re
+    block_m = re.search(r"<block [^>]*typeName=\"GT\".*?</block>",
+                         xml, re.S)
+    assert block_m is not None
+    en_m = re.search(
+        r'<variable formalParameter="EN">\s*'
+        r'<connectionPointIn>\s*<connection refLocalId="0"/>',
+        block_m.group(0),
+    )
+    assert en_m is not None
+
+
+def test_reader_recovers_compare_from_hand_rolled_GT_block():
+    """A document with a hand-rolled ``<block typeName="GT">`` in
+    an LD body recovers as an IL Compare op even when the emit
+    side wasn't ours."""
+    from universal_machinery.il.ops import Compare
+    xml = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body><LD>
+        <leftPowerRail localId="0">
+          <position x="0" y="0"/>
+          <connectionPointOut formalParameter="OUT"/>
+        </leftPowerRail>
+        <inVariable localId="1">
+          <position x="100" y="0"/>
+          <connectionPointOut/>
+          <expression>a</expression>
+        </inVariable>
+        <inVariable localId="2">
+          <position x="100" y="40"/>
+          <connectionPointOut/>
+          <expression>b</expression>
+        </inVariable>
+        <block localId="3" typeName="LT">
+          <position x="200" y="0"/>
+          <inputVariables>
+            <variable formalParameter="EN">
+              <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            </variable>
+            <variable formalParameter="IN1">
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+            </variable>
+            <variable formalParameter="IN2">
+              <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+            </variable>
+          </inputVariables>
+          <inOutVariables/>
+          <outputVariables>
+            <variable formalParameter="OUT"><connectionPointOut/></variable>
+          </outputVariables>
+        </block>
+        <coil localId="4">
+          <position x="300" y="0"/>
+          <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+          <connectionPointOut/>
+          <variable>Y</variable>
+        </coil>
+        <rightPowerRail localId="5">
+          <position x="400" y="0"/>
+          <connectionPointIn><connection refLocalId="4"/></connectionPointIn>
+        </rightPowerRail>
+      </LD></body>
+    </pou>
+  </pous></types>
+</project>'''
+    sub = parse_plcopen_xml(xml).find_subroutine("Main")
+    assert isinstance(sub.rungs[0].ops[0], Compare)
+    assert sub.rungs[0].ops[0].op == "<"
+
+
+# -----------------------------------------------------------------------------
 # ParallelGroup (OR branches inside a rung).  Previously any rung
 # carrying a ParallelGroup dropped to ST-text fallback; native LD
 # now emits the branches with multi-incoming wires at the join.
