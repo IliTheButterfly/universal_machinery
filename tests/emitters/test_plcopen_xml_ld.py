@@ -99,24 +99,21 @@ def test_multiple_rungs_each_get_own_power_rails():
 
 
 def test_mixed_rung_falls_back_to_ST_translation():
-    """A rung containing a still-deferred op type keeps going
-    through ST text emission.
-
-    Compare / Move / BinaryMath / StdFunc / Call / TON / TOF /
-    TP all have native LD lowerings now via ``<block>``; the
-    counter family (CTU / CTD / CTUD) and the bistables / edge
-    triggers (SR / RS / R_TRIG / F_TRIG) remain on the
-    ST-fallback path pending their slices."""
-    from universal_machinery.builders import sr
+    """A rung containing a control-flow op (Jump / Label / Return
+    / End) still falls back to ST text -- those primitives don't
+    have obvious native-LD shapes.  All dataflow ops (Compare,
+    Move, BinaryMath, StdFunc, Call, TON/TOF/TP, CTU/CTD/CTUD,
+    SR/RS, R_TRIG/F_TRIG) are now native LD."""
+    from universal_machinery.builders import jump
     p = program(subroutines=[prog("Main", main=True, rungs=[
-        rung(sr("Q1", "S1", "R1")),
+        rung(jump("TARGET")),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
     # Not LD body
     assert "<LD>" not in xml
     # ST text body present
-    assert "Q1" in xml
+    assert "TARGET" in xml
 
 
 # -----------------------------------------------------------------------------
@@ -1602,3 +1599,97 @@ def test_ctud_emits_separate_CU_CD_inVariable_sources():
     # Both CU and CD have their own inVariable
     assert "<expression>up</expression>" in xml
     assert "<expression>dn</expression>" in xml
+
+
+# -----------------------------------------------------------------------------
+# IEC §2.5.2.3.3 bistables (SR / RS) + edge triggers (R_TRIG /
+# F_TRIG) in LD: each lowers to ``<block typeName=...>`` with
+# named bool inputs from auxiliary inVariables.  Bistables' Q1
+# output is the instance name (one storage serves both roles).
+# -----------------------------------------------------------------------------
+
+
+def test_sr_round_trips_with_S1_R_and_Q1_output():
+    from universal_machinery.builders import sr
+    from universal_machinery.il.ops import SR
+    from universal_machinery.il import Address
+    rungs = _round_trip([rung(sr("Q1", "S1", "R1"))])
+    op = rungs[0].ops[0]
+    assert isinstance(op, SR)
+    assert op.q1 == Address("Q1")
+    assert op.s1 == Address("S1")
+    assert op.r == Address("R1")
+
+
+def test_rs_round_trips_with_R1_S_and_Q1_output():
+    from universal_machinery.builders import rs
+    from universal_machinery.il.ops import RS
+    from universal_machinery.il import Address
+    rungs = _round_trip([rung(rs("Q2", "R2", "S2"))])
+    op = rungs[0].ops[0]
+    assert isinstance(op, RS)
+    assert op.q1 == Address("Q2")
+    assert op.r1 == Address("R2")
+    assert op.s == Address("S2")
+
+
+def test_r_trig_round_trips_with_state_clk_and_q():
+    from universal_machinery.builders import r_trig
+    from universal_machinery.il.ops import RTrig
+    from universal_machinery.il import TagRef
+    rungs = _round_trip([
+        rung(r_trig("PrevCLK", "CLK", "EdgeQ")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, RTrig)
+    assert op.state == TagRef("PrevCLK")
+    assert op.clk == TagRef("CLK")
+    assert op.q == TagRef("EdgeQ")
+
+
+def test_f_trig_round_trips_with_state_clk_and_q():
+    from universal_machinery.builders import f_trig
+    from universal_machinery.il.ops import FTrig
+    from universal_machinery.il import TagRef
+    rungs = _round_trip([
+        rung(f_trig("PrevCLK", "CLK", "EdgeQ")),
+    ])
+    op = rungs[0].ops[0]
+    assert isinstance(op, FTrig)
+
+
+def test_sr_emits_block_with_instanceName_eq_q1():
+    """Per IEC §2.5.2.3.3 the SR FB's Q1 storage IS its instance
+    name -- the block's ``instanceName`` attribute carries Q1's
+    address."""
+    from universal_machinery.builders import sr
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(sr("MotorOn", "StartBtn", "StopBtn")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="SR"' in xml
+    assert 'instanceName="MotorOn"' in xml
+
+
+def test_r_trig_emits_block_with_instanceName_eq_state():
+    from universal_machinery.builders import r_trig
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(r_trig("PrevState", "CLK", "Q")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert 'typeName="R_TRIG"' in xml
+    assert 'instanceName="PrevState"' in xml
+
+
+def test_bistable_or_edge_trigger_rung_emits_native_LD_not_ST_fallback():
+    from universal_machinery.builders import sr, r_trig
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(sr("Q1", "S1", "R1")),
+        rung(r_trig("Prev", "CLK", "Q")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml

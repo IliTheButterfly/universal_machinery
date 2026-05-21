@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1227 tests**.
+counts are snapshotted; the current passing total is **1234 tests**.
 
 ## Reading this document
 
@@ -137,7 +137,8 @@ Status legend:
 | LD Call ops (POU invocation via `<block typeName=<target>>` with named formalParameter bindings) | ✅ | tests/emitters/test_plcopen_xml_ld.py — unparameterised subroutine, function with return_to, and FB call with `instanceName` + outputs all round-trip; function-return pin uses target name as formalParameter |
 | LD timer FBs (TON / TOF / TP via `<block typeName=TON|TOF|TP instanceName=<addr>>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2.3.1 timer family round-trips with IN <- rung gate, PT <- `T#<ms>ms` inVariable, Q/ET <- outVariables; multi-ms-range presets preserved |
 | LD counter FBs (CTU / CTD / CTUD via `<block typeName=CTU|CTD|CTUD instanceName=<addr>>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2.3.2 counter family round-trips; CTU's CU and CTD's CD come from the rung gate, all other bool inputs (R / LD, plus CTUD's CU/CD) come from auxiliary inVariables.  Reader picks up "orphan" CTUD rungs whose primary inputs don't trace back to leftRail |
-| LD with remaining mixed FBD blocks (bistables / edge triggers inside rungs) | ⚠️ | Falls back to ST text emission for the IEC §2.5.2.3.3 bistables / edge triggers (SR / RS / R_TRIG / F_TRIG); tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text (now exercised by `sr(...)`) |
+| LD bistables + edge triggers (SR / RS / R_TRIG / F_TRIG via `<block typeName=... instanceName=<addr>>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2.3.3 bistables (Q1 storage = instance name) + edge triggers (state = instance name).  All bool inputs come from auxiliary inVariables; Q / Q1 outputs to outVariables |
+| LD control-flow ops (Jump / Label / Return / End) | ⚠️ | Falls back to ST text emission -- these primitives are rung-level branching control with no obvious native-LD shape; tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text |
 | FBD (Function Block Diagram) | ✅ | tests/emitters/test_plcopen_xml_fbd.py, tests/parsers/test_plcopen_xml_reader_fbd.py, tests/lowering/test_fbd_to_st.py |
 | ST (Structured Text) | ✅ | tests/il/test_st_ast.py, tests/parsers/test_st_text_parser.py — emit + parse round-trip |
 | SFC | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
@@ -254,4 +255,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1227 / 1227 passing**.
+status: **1234 / 1234 passing**.

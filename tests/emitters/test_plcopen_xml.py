@@ -204,16 +204,13 @@ def test_pou_body_pure_ld_rungs_lower_to_LD_element():
 
 
 def test_pou_body_mixed_rungs_still_lower_to_ST_text():
-    """Rungs that contain non-LD ops keep going through the ST
-    translator until that op type's native LD lowering lands.
-
-    Compare / Move / BinaryMath / StdFunc / Call / TON / TOF /
-    TP are now native LD via ``<block>`` -- this test now uses
-    ``CTU`` (up-counter FB), which is still on the ST-fallback
-    path pending the counter-FB slice."""
-    from universal_machinery.builders import sr
+    """Rungs containing control-flow ops (Jump / Label / Return /
+    End) keep going through the ST translator.  Those don't have
+    obvious LD-block analogues -- they're rung-level branching
+    primitives lowered into ST control-flow statements."""
+    from universal_machinery.builders import jump
     p = prog("Main", main=True, rungs=[
-        rung(sr("Q1", "S1", "R1")),
+        rung(jump("END_OF_SCAN")),
     ])
     xml = emit_pou_xml(p)
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
@@ -226,20 +223,18 @@ def test_pou_body_mixed_rungs_still_lower_to_ST_text():
 def test_st_body_escapes_xml_special_chars():
     """Ops that produce <, >, & in ST text must be XML-escaped.
 
-    Uses ``CTU`` (up-counter FB) since it's on the remaining
-    ST-fallback path (the IEC §2.5.2.3.2 counter family + the
-    bistables / edge triggers in §2.5.2.3.3 aren't yet native
-    LD)."""
-    from universal_machinery.builders import sr
+    Uses ``Jump`` (control-flow) since it's on the ST-fallback
+    path -- every dataflow op family is now native LD."""
+    from universal_machinery.builders import jump
     p = prog("Main", main=True, rungs=[
-        rung(sr("Q1", "S1", "R1")),
+        rung(jump("TARGET")),
     ])
     xml = emit_pou_xml(p)
     # Parses cleanly == escaping worked
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
     pre = root.find(".//{http://www.w3.org/1999/xhtml}pre")
     assert pre is not None
-    assert "Q1" in pre.text
+    assert "TARGET" in pre.text
 
 
 # -----------------------------------------------------------------------------
