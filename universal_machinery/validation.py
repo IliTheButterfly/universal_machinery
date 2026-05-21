@@ -1047,6 +1047,153 @@ def _operand_type(prog: Program, env: dict[str, str], value) -> Optional[str]:
     return None  # literal / something else
 
 
+def _producer_pin_type(element, pin_name: Optional[str],
+                       prog: Program,
+                       env: dict[str, str]) -> Optional[str]:
+    """Type of the output pin that ``element`` exposes (the
+    producer side of an FBD wire).
+
+    Element kinds:
+      - InVariable / InOutVariable: parse ``expression`` --
+        treats it as a variable name (look up in env) or as a
+        literal (skip).
+      - FbBlock: look up the referenced POU in
+        ``Program.subroutines``.  If it's a user-defined
+        FUNCTION_BLOCK / FUNCTION, find the matching output Var
+        by formal-parameter name (or use the FUNCTION's
+        ``return_type`` if the pin name matches the convention
+        "OUT" / unspecified).
+
+    Returns ``None`` when the producer is a built-in (TON / ADD /
+    etc. -- no signature database yet), an unresolved variable
+    name, or a literal expression -- callers skip the check.
+    """
+    from .il import (
+        FbBlock, InOutVariable, InVariable, OutVariable,
+    )
+    if isinstance(element, (InVariable, InOutVariable)):
+        # Heuristic: look up the operand as a variable name.
+        # Literals and complex expressions return None.
+        expr = element.expression.strip()
+        # Strip any IEC unary minus / NOT prefix
+        if expr.startswith("-") or expr.upper().startswith("NOT "):
+            return None
+        return env.get(expr)
+    if isinstance(element, FbBlock):
+        callee = prog.find_subroutine(element.type_name)
+        if callee is None:
+            return None
+        # Find the named output pin
+        if pin_name is not None:
+            for v in callee.outputs + callee.in_outs:
+                if v.name == pin_name:
+                    resolved = _resolve_named_type(prog, v.data_type)
+                    return _tagtype_name(resolved)
+            # No matching output -- might be the FUNCTION return slot
+        if callee.kind is PouKind.FUNCTION and callee.return_type is not None:
+            resolved = _resolve_named_type(prog, callee.return_type)
+            return _tagtype_name(resolved)
+        return None
+    return None
+
+
+def _consumer_pin_type(block, formal_parameter: str,
+                       prog: Program) -> Optional[str]:
+    """Type the block's named input pin expects.
+
+    Only user-defined POU calls resolve -- we look up the callee
+    in ``Program.subroutines`` and find the matching VAR_INPUT /
+    VAR_IN_OUT.  Builtin block names (TON, ADD, etc.) return
+    None until we plumb in a builtin signature database.
+    """
+    callee = prog.find_subroutine(block.type_name)
+    if callee is None:
+        return None
+    for v in callee.inputs + callee.in_outs:
+        if v.name == formal_parameter:
+            resolved = _resolve_named_type(prog, v.data_type)
+            return _tagtype_name(resolved)
+    return None
+
+
+def _check_fbd_pin_types(prog: Program) -> list[ValidationError]:
+    """Type-check FBD pin connections against the referenced POU's
+    interface (user-defined FUNCTION / FUNCTION_BLOCK only).
+
+    For each ``FbBlock`` whose ``type_name`` resolves to a
+    declared POU, walk every input pin:
+
+      1. Look up the consumer's expected type from the callee's
+         VAR_INPUT / VAR_IN_OUT.
+      2. Resolve the producer's output type:
+           - InVariable / InOutVariable: variable-name lookup
+           - FbBlock pointing to a user-defined POU: output
+             var lookup
+      3. If both sides resolve and the buckets don't match,
+         emit ``fbd-pin-type-mismatch``.
+
+    Builtin blocks (TON / ADD / AND / etc.) are skipped pending
+    a signature database -- their pin types are polymorphic and
+    vendor-specific.
+    """
+    from .il import (
+        FbBlock, FbdNetwork,
+    )
+    errors: list[ValidationError] = []
+
+    for sub in prog.subroutines:
+        net: Optional[FbdNetwork] = sub.fbd_body
+        if net is None:
+            continue
+        env = _build_type_env(prog, sub)
+        elements_by_id: dict[int, object] = {
+            e.local_id: e for e in net.elements
+        }
+
+        for block in net.elements:
+            if not isinstance(block, FbBlock):
+                continue
+            # Only check user-defined POU calls
+            if prog.find_subroutine(block.type_name) is None:
+                continue
+            for pin in block.inputs + block.in_outs:
+                conn = pin.connection
+                if conn is None:
+                    continue
+                consumer_t = _consumer_pin_type(
+                    block, pin.formal_parameter, prog,
+                )
+                if consumer_t is None:
+                    continue
+                producer = elements_by_id.get(conn.source_id)
+                if producer is None:
+                    # Unresolved connection -- structural check
+                    # already flagged it
+                    continue
+                producer_t = _producer_pin_type(
+                    producer, conn.source_pin, prog, env,
+                )
+                if producer_t is None:
+                    continue
+                if not _are_types_compatible(consumer_t, producer_t):
+                    errors.append(ValidationError(
+                        code="fbd-pin-type-mismatch",
+                        message=(
+                            f"FBD pin "
+                            f"{block.type_name!r}.{pin.formal_parameter!r} "
+                            f"expects type {consumer_t!r} but "
+                            f"connection from local_id "
+                            f"{conn.source_id} carries "
+                            f"{producer_t!r}"
+                        ),
+                        location=(f"Subroutine '{sub.name}' / "
+                                   f"fbd_body / block "
+                                   f"{block.local_id}"),
+                    ))
+
+    return errors
+
+
 def _check_op_types(prog: Program) -> list[ValidationError]:
     """Type-check the rung ops in every POU's body.
 
@@ -1867,6 +2014,9 @@ def validate(prog: Program) -> list[ValidationError]:
          FOR index numericity, SUBRANGE literal-bounds checks)
      17. Semantic type checking on SFC transition conditions
          (contacts must be BOOL, compares must balance)
+     18. Semantic type checking on FBD pin connections
+         (producer output type compatible with consumer pin type
+         for user-defined POU calls)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -1886,6 +2036,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_op_types(prog))
     errors.extend(_check_st_types(prog))
     errors.extend(_check_sfc_condition_types(prog))
+    errors.extend(_check_fbd_pin_types(prog))
     return errors
 
 
