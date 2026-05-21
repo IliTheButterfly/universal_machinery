@@ -73,8 +73,8 @@ from ..il import (
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, CTD, CTU, CTUD, OutCoil, OutReset, OutSet,
-    ParallelGroup, STD_FUNCTION_NAMES, StdFunc, TOF, TON, TP,
+    ContactRisingEdge, CTD, CTU, CTUD, FTrig, OutCoil, OutReset, OutSet,
+    ParallelGroup, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc, TOF, TON, TP,
 )
 
 
@@ -1558,6 +1558,47 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                 return Move(
                     src=_compare_operand_from_text(src_text),
                     dst=_compare_operand_from_text(dst_text),
+                )
+            if type_name in ("SR", "RS", "R_TRIG", "F_TRIG"):
+                instance = elem.get("instanceName") or ""
+                if type_name == "SR":
+                    s1_text = _trace_block_pin_operand(
+                        elem, "S1", elements_by_id, kind_by_id
+                    )
+                    r_text = _trace_block_pin_operand(
+                        elem, "R", elements_by_id, kind_by_id
+                    )
+                    return SR(
+                        q1=_compare_operand_from_text(instance),
+                        s1=_compare_operand_from_text(s1_text),
+                        r=_compare_operand_from_text(r_text),
+                    )
+                if type_name == "RS":
+                    r1_text = _trace_block_pin_operand(
+                        elem, "R1", elements_by_id, kind_by_id
+                    )
+                    s_text = _trace_block_pin_operand(
+                        elem, "S", elements_by_id, kind_by_id
+                    )
+                    return RS(
+                        q1=_compare_operand_from_text(instance),
+                        r1=_compare_operand_from_text(r1_text),
+                        s=_compare_operand_from_text(s_text),
+                    )
+                # R_TRIG / F_TRIG: state <- instance; CLK input
+                # traces back to inVariable; Q output to outVariable.
+                clk_text = _trace_block_pin_operand(
+                    elem, "CLK", elements_by_id, kind_by_id
+                )
+                q_text = _trace_block_out_consumer(
+                    node_id, "Q", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                cls = RTrig if type_name == "R_TRIG" else FTrig
+                return cls(
+                    state=_compare_operand_from_text(instance),
+                    clk=_compare_operand_from_text(clk_text),
+                    q=_compare_operand_from_text(q_text),
                 )
             if type_name in ("CTU", "CTD", "CTUD"):
                 instance = elem.get("instanceName") or ""

@@ -74,8 +74,8 @@ from ..il import (
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, CTD, CTU, CTUD, Move, OutCoil, OutReset, OutSet,
-    ParallelGroup, StdFunc, TOF, TON, TP,
+    ContactRisingEdge, CTD, CTU, CTUD, FTrig, Move, OutCoil, OutReset,
+    OutSet, ParallelGroup, RS, RTrig, SR, StdFunc, TOF, TON, TP,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1251,6 +1251,12 @@ _NATIVE_LD_OPS = (
     # with CU / CD / R / LD / PV inputs and Q / QU / QD / CV
     # outputs depending on the specific counter type.
     CTU, CTD, CTUD,
+    # IEC §2.5.2.3.3 bistables (SR / RS) and edge triggers
+    # (R_TRIG / F_TRIG).  Each lowers to
+    # ``<block typeName=SR|RS|R_TRIG|F_TRIG instanceName=...>``
+    # with named bool inputs.  Bistables carry their Q1 output
+    # via the instance name (one storage serves both roles).
+    SR, RS, RTrig, FTrig,
 )
 
 
@@ -1968,6 +1974,107 @@ def _emit_ld_counter_block_xml(op, block_type: str, ids: dict,
     return lines
 
 
+def _emit_ld_bistable_edge_block_xml(op, block_type: str, ids: dict,
+                                         parent_ids: list[int],
+                                         x: float, y: float) -> list[str]:
+    """Lower one IEC §2.5.2.3.3 bistable (SR / RS) or edge-trigger
+    (R_TRIG / F_TRIG) FB into ``<inVariable>``s + ``<block>`` +
+    ``<outVariable>`` for the Q / Q1 output.
+
+    All bool inputs come from auxiliary ``<inVariable>`` elements
+    (not from the rung gate) -- this keeps the per-input Loc text
+    on the wire so the reader can recover it, and matches the
+    "orphan block" rung shape supported by ``_parse_ld_body``.
+
+    For SR/RS the FB's Q1 storage IS the instance name (one bit
+    serves both roles per IEC), so the explicit Q1 outVariable
+    duplicates the storage name -- emitted for round-trip
+    clarity.
+    """
+    if block_type == "SR":
+        instance_text = _ld_expression_text(op.q1)
+        primary_pin = "S1"
+        primary_text = _ld_expression_text(op.s1)
+        other_pin = "R"
+        other_text = _ld_expression_text(op.r)
+        output_pin = "Q1"
+        output_expr = instance_text
+    elif block_type == "RS":
+        instance_text = _ld_expression_text(op.q1)
+        primary_pin = "R1"
+        primary_text = _ld_expression_text(op.r1)
+        other_pin = "S"
+        other_text = _ld_expression_text(op.s)
+        output_pin = "Q1"
+        output_expr = instance_text
+    else:  # R_TRIG / F_TRIG
+        instance_text = _ld_expression_text(op.state)
+        primary_pin = "CLK"
+        primary_text = _ld_expression_text(op.clk)
+        other_pin = None
+        other_text = None
+        output_pin = "Q"
+        output_expr = _ld_expression_text(op.q)
+    lines: list[str] = []
+    # Primary input inVariable
+    lines.append(
+        f'<inVariable localId="{ids["primary"]}">'
+        f'<position x="{x:g}" y="{y:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(primary_text)}</expression>'
+        f'</inVariable>'
+    )
+    input_pins = (
+        f'<variable formalParameter="{primary_pin}">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{ids["primary"]}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+    )
+    if other_text is not None and other_pin is not None:
+        lines.append(
+            f'<inVariable localId="{ids["other"]}">'
+            f'<position x="{x:g}" y="{y + 20:g}"/>'
+            f'<connectionPointOut/>'
+            f'<expression>{escape(other_text)}</expression>'
+            f'</inVariable>'
+        )
+        input_pins += (
+            f'<variable formalParameter="{other_pin}">'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{ids["other"]}"/>'
+            f'</connectionPointIn>'
+            f'</variable>'
+        )
+    output_pins = (
+        f'<variable formalParameter="{output_pin}">'
+        f'<connectionPointOut/>'
+        f'</variable>'
+    )
+    lines.append(
+        f'<block localId="{ids["block"]}" typeName="{block_type}" '
+        f'instanceName={quoteattr(instance_text)}>'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>{input_pins}</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>{output_pins}</outputVariables>'
+        f'</block>'
+    )
+    out_id = ids.get("q_out")
+    if out_id is not None:
+        lines.append(
+            f'<outVariable localId="{out_id}">'
+            f'<position x="{x + _LD_OP_WIDTH * 2:g}" y="{y:g}"/>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{ids["block"]}" '
+            f'formalParameter="{output_pin}"/>'
+            f'</connectionPointIn>'
+            f'<expression>{escape(output_expr)}</expression>'
+            f'</outVariable>'
+        )
+    return lines
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -2035,6 +2142,26 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
                 op, in_id, block_id, out_id, cursor_ids, x, y,
             ))
             cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 3
+        elif isinstance(op, (SR, RS, RTrig, FTrig)):
+            if isinstance(op, SR):
+                block_type = "SR"
+            elif isinstance(op, RS):
+                block_type = "RS"
+            elif isinstance(op, RTrig):
+                block_type = "R_TRIG"
+            else:
+                block_type = "F_TRIG"
+            ids: dict = {}
+            ids["primary"] = next_local_id; next_local_id += 1
+            if block_type in ("SR", "RS"):
+                ids["other"] = next_local_id; next_local_id += 1
+            ids["block"] = next_local_id; next_local_id += 1
+            ids["q_out"] = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_bistable_edge_block_xml(
+                op, block_type, ids, cursor_ids, x, y,
+            ))
+            cursor_ids = [ids["block"]]
             x += _LD_OP_WIDTH * 3
         elif isinstance(op, (CTU, CTD, CTUD)):
             block_type = type(op).__name__
