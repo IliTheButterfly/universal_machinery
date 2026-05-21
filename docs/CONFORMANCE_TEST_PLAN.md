@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1078 tests**.
+counts are snapshotted; the current passing total is **1095 tests**.
 
 ## Reading this document
 
@@ -115,10 +115,10 @@ Status legend:
 |------------------------|--------|---------------|
 | Steps + initial flag   | ✅ | tests/il/test_pou_db_sfc.py, tests/emitters/test_plcopen_xml_sfc.py |
 | Transitions            | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_round_trip_three_step_pipeline |
-| Simultaneous convergence/divergence (multi-from / multi-to via plain wires) | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_round_trip_multi_from_transition_simultaneous_convergence |
+| Simultaneous convergence/divergence | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_simultaneous_divergence_emits_marker_with_per_branch_pins, test_simultaneous_convergence_emits_marker_with_multi_inputs |
 | Inline ST conditions   | ✅ | tests/parsers/test_sfc_condition_lowering.py — full AND / NOT / OR lowering to LD ops |
 | Named-reference cond.  | ✅ | tests/emitters/test_plcopen_xml_sfc.py::test_named_reference_condition_round_trips_as_textual_name |
-| Explicit `<selectionDivergence>` / `<simultaneousDivergence>` | ❌ | Deferred -- current emission uses plain multi-connection wires |
+| Explicit `<selectionDivergence>` / `<simultaneousDivergence>` / `<selectionConvergence>` / `<simultaneousConvergence>` markers | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all four shapes emit + read with formalParameter pin wiring; reader traces through chained markers; combined diamond + fork-join networks round-trip |
 | Action blocks (`<actionBlock>` with `connectionPointOutAction`) | ✅ | tests/emitters/test_plcopen_xml_sfc.py — all 12 IEC §2.6.4.4 qualifiers (N/R/S/L/D/P/P0/P1/DS/DL/SD/SL), `duration=` time literal round-trip, multi-action blocks |
 | `<macroStep>` / `<jumpStep>` | ❌ | Deferred |
 
@@ -244,4 +244,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1078 / 1078 passing**.
+status: **1095 / 1095 passing**.

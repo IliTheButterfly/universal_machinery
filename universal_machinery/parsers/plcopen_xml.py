@@ -1004,12 +1004,23 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     gate formatter.  Round-trips that go through a real condition
     parser (a follow-up slice) will replace this with structured
     ops.
+
+    Divergence / convergence markers (``<simultaneousDivergence>``,
+    ``<simultaneousConvergence>``, ``<selectionDivergence>``,
+    ``<selectionConvergence>``) are dissolved during ref
+    resolution -- they don't appear in the IL graph, but the
+    multi-to / multi-from they imply round-trip into multi-tuple
+    ``Transition.from_steps`` / ``to_steps`` correctly.
     """
     steps_raw: list[tuple[int, str, bool, str, list[int]]] = []
     transitions_raw: list[tuple[int, str, list[int]]] = []
     # step_localId -> accumulated list of parsed Actions (a single
     # step can have multiple action blocks attached; we union them).
     actions_by_step_id: dict[int, list[Action]] = {}
+    # marker localId -> list of upstream refLocalIds.  Used during
+    # the second pass to "trace through" markers when reconstructing
+    # the step ↔ transition graph.
+    marker_incoming: dict[int, list[int]] = {}
 
     # First pass: parse element-level attributes and incoming refs.
     for child in sfc_elem:
@@ -1034,8 +1045,35 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
             src_id, parsed_actions = _parse_action_block(child)
             if src_id is not None and parsed_actions:
                 actions_by_step_id.setdefault(src_id, []).extend(parsed_actions)
-        # selectionDivergence / simultaneousDivergence / macroStep /
-        # jumpStep are deferred -- silently skipped.
+        elif local in {"simultaneousDivergence", "simultaneousConvergence",
+                        "selectionDivergence", "selectionConvergence"}:
+            marker_id = _parse_local_id(child)
+            # Convergence shapes have multiple <connectionPointIn>
+            # elements (one per source); divergence shapes have a
+            # single <connectionPointIn> with one ref.  We union
+            # everything into a flat list of source localIds.
+            sources: list[int] = []
+            for cpin in _children(child, "connectionPointIn"):
+                sources.extend(_collect_refs(cpin))
+            marker_incoming[marker_id] = sources
+        # macroStep / jumpStep still deferred -- silently skipped.
+
+    def _trace_to_endpoints(ref_id: int, depth: int = 0) -> list[int]:
+        """Resolve a ``refLocalId=`` by following marker indirection
+        until we hit a non-marker (step / transition) id.
+
+        Returns a list because convergence markers expand one ref
+        into multiple endpoints.  Depth guard defends against
+        pathological cycles in malformed documents.
+        """
+        if depth > 16:
+            return []
+        if ref_id not in marker_incoming:
+            return [ref_id]
+        out: list[int] = []
+        for src in marker_incoming[ref_id]:
+            out.extend(_trace_to_endpoints(src, depth + 1))
+        return out
 
     # Build localId -> kind/name maps for the reverse lookup.
     name_by_step_id: dict[int, str] = {
@@ -1043,7 +1081,8 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     }
     trans_id_set: set[int] = {tid for tid, _c, _inc in transitions_raw}
 
-    # Second pass: derive each transition's from_steps + to_steps.
+    # Second pass: derive each transition's from_steps + to_steps,
+    # tracing through any markers along the way.
     steps: list[Step] = []
     for sid, name, initial, comment, _incoming in steps_raw:
         steps.append(Step(
@@ -1054,16 +1093,25 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
         ))
 
     # For each transition, the from_steps are the steps whose
-    # localIds appear in the transition's incoming-connection list.
-    # The to_steps are the steps whose incoming-connection list
-    # references this transition's localId.
+    # localIds appear in (or trace through markers from) the
+    # transition's incoming-connection list.  The to_steps are
+    # the steps whose incoming-connection list (after marker
+    # resolution) references this transition's localId.
     transitions: list[Transition] = []
     for tid, cond_text, incoming in transitions_raw:
-        from_steps = [name_by_step_id[src] for src in incoming
-                       if src in name_by_step_id]
+        resolved_sources: list[int] = []
+        for ref in incoming:
+            resolved_sources.extend(_trace_to_endpoints(ref))
+        from_steps: list[str] = []
+        for src in resolved_sources:
+            if src in name_by_step_id and name_by_step_id[src] not in from_steps:
+                from_steps.append(name_by_step_id[src])
         to_steps: list[str] = []
         for sid, sname, _i, _c, s_incoming in steps_raw:
-            if tid in s_incoming:
+            resolved = []
+            for r in s_incoming:
+                resolved.extend(_trace_to_endpoints(r))
+            if tid in resolved:
                 to_steps.append(sname)
         # Lower the textual condition to structured IL LD ops:
         # parse via the ST expression parser, then convert the
