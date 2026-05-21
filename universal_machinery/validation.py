@@ -1185,7 +1185,33 @@ _STDLIB_FIXED_RETURN_TYPES: dict[str, str] = {
 }
 
 
-def _function_return_type(name: str, prog: Program) -> Optional[str]:
+#: Polymorphic IEC §2.5.2 builtins whose return type depends on
+#: a specific operand's type.  The integer in the tuple is the
+#: 0-based index of the "controlling" argument; the result type
+#: tracks that arg's inferred type.
+#:
+#: For ABS/MIN/MAX, the controlling arg is the first numeric
+#: input.  For SEL(g, in0, in1), the controlling arg is ``in0``
+#: (index 1) -- IEC requires in0 and in1 to match, so picking
+#: either works.  For LIMIT(lo, value, hi), the controlling arg
+#: is ``value`` (index 1).  For MUX(k, in0, in1, ...), the
+#: controlling arg is the first ``inN`` (index 1) -- IEC requires
+#: all inN to share a type.
+_POLYMORPHIC_BUILTINS: dict[str, int] = {
+    "ABS":   0,
+    "MIN":   0,
+    "MAX":   0,
+    "SEL":   1,
+    "LIMIT": 1,
+    "MUX":   1,
+}
+
+
+def _function_return_type(name: str, prog: Program,
+                          call_expr=None,
+                          env: Optional[dict[str, str]] = None,
+                          sub: Optional[Subroutine] = None,
+                          ) -> Optional[str]:
     """Resolve a function-call name to its return type-name.
 
     Lookup order:
@@ -1196,10 +1222,13 @@ def _function_return_type(name: str, prog: Program) -> Optional[str]:
          result type.  ``REAL_TRUNC_INT`` returns INT, etc.
       3. The fixed-return-type table for §2.5.2 builtins with
          a known result.
+      4. Polymorphic builtins (ABS / MIN / MAX / SEL / LIMIT /
+         MUX) inherit their return type from a controlling
+         operand.  Requires ``call_expr`` / ``env`` / ``sub`` to
+         walk into the args; without them, polymorphic names
+         resolve to ``None`` (skip).
 
-    Returns ``None`` for unknown names and polymorphic functions
-    (ABS / MIN / MAX / SEL / LIMIT / MUX -- their result type
-    depends on input types and lives in a follow-up slice).
+    Returns ``None`` for unknown / vendor-extension / FB names.
     """
     # 1. User-defined FUNCTION
     callee = prog.find_subroutine(name)
@@ -1232,7 +1261,18 @@ def _function_return_type(name: str, prog: Program) -> Optional[str]:
         except ValueError:
             pass
     # 3. Fixed table
-    return _STDLIB_FIXED_RETURN_TYPES.get(name)
+    fixed = _STDLIB_FIXED_RETURN_TYPES.get(name)
+    if fixed is not None:
+        return fixed
+    # 4. Polymorphic builtins: walk into the controlling arg
+    if (name in _POLYMORPHIC_BUILTINS
+            and call_expr is not None
+            and env is not None):
+        idx = _POLYMORPHIC_BUILTINS[name]
+        args = call_expr.positional
+        if 0 <= idx < len(args):
+            return _infer_st_expr_type(args[idx], env, prog, sub)
+    return None
 
 
 def _root_var_datatype(expr, sub: Subroutine, prog: Program):
@@ -1366,7 +1406,9 @@ def _infer_st_expr_type(expr, env: dict[str, str],
         # produce the same family.  Preserve lhs type.
         return lhs_t or rhs_t
     if isinstance(expr, FunctionCallExpr):
-        return _function_return_type(expr.name, prog)
+        return _function_return_type(
+            expr.name, prog, call_expr=expr, env=env, sub=sub,
+        )
     # Otherwise: unhandled expression kind -> skip.
     return None
 

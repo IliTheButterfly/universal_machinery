@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **979 tests**.
+counts are snapshotted; the current passing total is **997 tests**.
 
 ## Reading this document
 
@@ -215,7 +215,8 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
    dependency makes this a follow-up.
 2. ⚠️ *Partial.* **Semantic type checking** covers rung ops, ST AST
    bodies, SFC transition conditions, struct field / array
-   element access, and FunctionCallExpr return-type inference --
+   element access, FunctionCallExpr return-type inference, and
+   polymorphic-builtin operand-aware inference --
    ``Move`` / ``BinaryMath`` / ``Compare`` / coil ops on LD rungs,
    plus Assignment / IF / WHILE / REPEAT / FOR / CASE statements
    inside ``st_body``, plus contacts and compares inside each
@@ -223,14 +224,15 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
    ``IndexAccess`` expressions (``axes[3].position``,
    ``robot.head.angle``) walking through ``StructType`` /
    ``ArrayType`` UDTs, plus user-defined ``FUNCTION`` return types,
-   IEC ``<SRC>_TO_<DST>`` / ``<SRC>_TRUNC_<DST>`` conversions, and
-   a fixed-return-type table for ~30 §2.5.2 builtins (SQRT/SIN/
+   IEC ``<SRC>_TO_<DST>`` / ``<SRC>_TRUNC_<DST>`` conversions, a
+   fixed-return-type table for ~30 §2.5.2 builtins (SQRT/SIN/
    COS/... -> REAL, LEN/FIND -> INT, LEFT/RIGHT/CONCAT/... ->
-   STRING, ADD_TIME / SUB_TIME / ... -> TIME).  Still deferred:
-   pin types on FBD ``<block>`` elements, polymorphic builtins
-   (ABS / MIN / MAX / SEL / LIMIT / MUX -- return type depends
-   on input types), and constant evaluation + range checks on
-   SUBRANGE types.
+   STRING, ADD_TIME / SUB_TIME / ... -> TIME), and operand-aware
+   inference for the six polymorphic builtins (``ABS`` /
+   ``MIN`` / ``MAX`` inherit from the first input, ``SEL`` /
+   ``LIMIT`` / ``MUX`` from the value input).  Still deferred:
+   pin types on FBD ``<block>`` elements and constant evaluation
+   + range checks on SUBRANGE types.
 3. **Hardware-in-the-loop**.  Per `docs/ARCHITECTURE.md`: the
    ultimate verification posture is emulator-validated-by-hardware;
    the corpus here is the seed.
@@ -242,4 +244,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **979 / 979 passing**.
+status: **997 / 997 passing**.
