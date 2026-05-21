@@ -62,14 +62,30 @@ class ContactNC:
 
 @dataclass(frozen=True)
 class ContactRisingEdge:
-    """One-shot rising-edge contact (also called Positive Transition / |P|)."""
+    """One-shot rising-edge contact (also called Positive Transition / |P|).
+
+    ``negated`` (default False) corresponds to the PLCopen TC6
+    XSD's combination of ``negated="true"`` plus ``edge="rising"``
+    on a single ``<contact>`` element -- a rare-but-valid LD
+    shape meaning "edge-detected NOT signal" (a one-shot that
+    fires when the input falls to FALSE *and* the previous scan
+    held the negated form TRUE).  Vendor support varies; the IL
+    keeps the flag so PLCopen documents that carry it round-trip
+    losslessly.
+    """
     address: Loc
+    negated: bool = False
 
 
 @dataclass(frozen=True)
 class ContactFallingEdge:
-    """One-shot falling-edge contact (Negative Transition / |N|)."""
+    """One-shot falling-edge contact (Negative Transition / |N|).
+
+    ``negated`` mirrors ContactRisingEdge's flag; see that class's
+    docstring for the precise PLCopen XSD shape.
+    """
     address: Loc
+    negated: bool = False
 
 
 # -----------------------------------------------------------------------------

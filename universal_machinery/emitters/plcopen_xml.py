@@ -1259,9 +1259,14 @@ _LD_LEFT_X = 20.0
 def _emit_ld_contact_xml(op, this_id: int, parent_ids: list[int],
                             x: float, y: float) -> str:
     """Render one contact (NO / NC / rising / falling) with its
-    incoming references."""
+    incoming references.  Edge contacts may also carry the
+    ``negated=true`` flag (the XSD allows the combination on a
+    single ``<contact>`` element)."""
     attrs = []
     if isinstance(op, ContactNC):
+        attrs.append('negated="true"')
+    elif (isinstance(op, (ContactRisingEdge, ContactFallingEdge))
+            and getattr(op, "negated", False)):
         attrs.append('negated="true"')
     if isinstance(op, ContactRisingEdge):
         attrs.append('edge="rising"')
