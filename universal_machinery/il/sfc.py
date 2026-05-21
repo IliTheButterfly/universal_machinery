@@ -40,15 +40,27 @@ class Action:
       P0 / P1    Falling / rising edge pulse
       SD, DS, SL Composite (set-delayed, delayed-set, stored-limited)
 
+    Body: an Action carries either a ``target`` reference (named
+    action POU / boolean coil) OR an ``inline_body`` (an embedded
+    ST statement list) -- PLCopen's ``<action>`` body is a choice
+    between ``<reference name=>`` and ``<inline>...</inline>``.
+    If both are present, ``inline_body`` wins for emission.
+
     ``target`` drives one of:
       - an ``Address`` (boolean coil) -- typical case
       - a string naming another POU to invoke while the step is active
+
+    ``inline_body`` is a tuple of ST statement AST nodes (the same
+    types ``Subroutine.st_body`` carries).  When set, the action's
+    body is written into PLCopen XML as ``<inline><ST><xhtml:pre>
+    ...</pre></ST></inline>`` -- portable across conformant tools.
     """
 
     qualifier: str
-    target: "Address | str"
+    target: "Address | str" = ""
     time_ms: Optional[int] = None      # required for L / D / SD / DS / SL
     comment: str = ""
+    inline_body: tuple[object, ...] = ()    # tuple[Statement, ...] -- ST AST nodes
 
 
 @dataclass(frozen=True)

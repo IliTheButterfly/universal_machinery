@@ -964,24 +964,73 @@ def _parse_action_block(ab_elem: ET.Element) -> tuple[Optional[int], list[Action
                       else "N")
         time_ms = _parse_duration_ms(a_elem.get("duration"))
         comment = _extract_documentation(a_elem)
-        # target: <reference name=> (action POU / boolean var) or
-        # <inline> (deferred -- we don't model inline action bodies).
+        # Body is a choice: <reference> or <inline>.
         ref_elem = _child(a_elem, "reference")
-        if ref_elem is None:
-            # Inline action body -- skip until a future slice models it.
-            continue
-        target_name = ref_elem.get("name")
-        if not target_name:
-            raise PlcopenParseError(
-                "<action><reference> missing required name="
-            )
-        actions.append(Action(
-            qualifier=qualifier,
-            target=target_name,
-            time_ms=time_ms,
-            comment=comment,
-        ))
+        inline_elem = _child(a_elem, "inline")
+        if ref_elem is not None:
+            target_name = ref_elem.get("name")
+            if not target_name:
+                raise PlcopenParseError(
+                    "<action><reference> missing required name="
+                )
+            actions.append(Action(
+                qualifier=qualifier,
+                target=target_name,
+                time_ms=time_ms,
+                comment=comment,
+            ))
+        elif inline_elem is not None:
+            # Inline body: a ppx:body choice that we currently
+            # only handle for <ST> content (LD / FBD / SFC inner
+            # bodies are not modelled on the IL side yet).
+            # Extract the textual ST source from the <ST><xhtml:pre>
+            # body, then parse it via the ST text parser.
+            inline_body = _parse_inline_action_body(inline_elem)
+            actions.append(Action(
+                qualifier=qualifier,
+                target="",
+                time_ms=time_ms,
+                comment=comment,
+                inline_body=inline_body,
+            ))
+        # else: action with neither <reference> nor <inline> --
+        # malformed but we tolerate it by dropping the entry.
     return source_id, actions
+
+
+def _parse_inline_action_body(inline_elem: ET.Element) -> tuple:
+    """Walk an ``<inline>`` element inside an ``<action>`` and
+    return a tuple of ST statement AST nodes parsed from the
+    embedded ``<ST><xhtml:pre>...</pre></ST>`` text.
+
+    Bodies in other languages (``<LD>``, ``<FBD>``, ``<SFC>``)
+    aren't yet modelled on the IL side -- we return an empty
+    tuple in those cases rather than failing.
+    """
+    st_elem = _child(inline_elem, "ST")
+    if st_elem is None:
+        return ()
+    # Find the xhtml:pre inside <ST> -- xmlschema preserves the
+    # xhtml namespace, so we strip namespaces when matching.
+    pre_text = ""
+    for child in st_elem:
+        if _strip_ns(child.tag) == "pre":
+            pre_text = (child.text or "").strip()
+            break
+    if not pre_text:
+        # Sometimes the text content is directly on <ST>
+        pre_text = (st_elem.text or "").strip()
+    if not pre_text:
+        return ()
+    from .st_text import parse_st_body, StParseError
+    try:
+        statements = parse_st_body(pre_text)
+    except StParseError:
+        # Couldn't parse -- conformance over strictness on read.
+        # Future enhancement: store the raw text so emit can
+        # round-trip it verbatim.  For now, drop the body.
+        return ()
+    return tuple(statements)
 
 
 def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
