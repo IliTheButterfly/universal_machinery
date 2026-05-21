@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1029 tests**.
+counts are snapshotted; the current passing total is **1044 tests**.
 
 ## Reading this document
 
@@ -76,12 +76,12 @@ Status legend:
 | IEC §  | Type   | Status | Test fixtures |
 |--------|--------|--------|---------------|
 | §6.4   | BOOL   | ✅ | tests/il/test_il.py, tests/parsers/test_plcopen_xml_reader.py |
-| §6.4   | BYTE / WORD / DWORD / LWORD | ✅ | tests/il/test_std_function_registry.py |
+| §6.4   | BYTE / WORD / DWORD / LWORD | ✅ | tests/il/test_elementary_types.py (LWORD round-trip), tests/il/test_std_function_registry.py |
 | §6.4   | SINT / INT / DINT / LINT    | ✅ | tests/il/test_std_function_registry.py |
 | §6.4   | USINT / UINT / UDINT / ULINT| ✅ | tests/il/test_std_function_registry.py |
 | §6.4   | REAL / LREAL                | ✅ | tests/il/test_il.py |
-| §6.4   | TIME / DATE / TOD / DT      | ✅ | tests/il/test_std_function_registry.py — only via conversion fn coverage; deeper time-value tests pending |
-| §6.4   | STRING / WSTRING            | ✅ | tests/il/test_std_function_registry.py |
+| §6.4   | TIME / DATE / TOD / DT      | ✅ | tests/il/test_elementary_types.py — all four members in TagType with round-trip + XSD validation |
+| §6.4   | STRING / WSTRING            | ✅ | tests/il/test_elementary_types.py — WSTRING round-trip + XSD-compliant lowercase `<string/>` / `<wstring/>` emission |
 
 ## §2.5.2 Standard library
 
@@ -244,4 +244,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1029 / 1029 passing**.
+status: **1044 / 1044 passing**.

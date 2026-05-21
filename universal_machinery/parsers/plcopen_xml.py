@@ -180,13 +180,26 @@ def _require_child(elem: ET.Element, name: str,
 # -----------------------------------------------------------------------------
 
 
+#: Per the PLCopen TC6 XSD, ``<string>`` / ``<wstring>`` use
+#: lowercase element names (unlike the rest of the elementary
+#: type group).  Map them back to the matching uppercase
+#: ``TagType`` enum value so the reader sees them as STRING /
+#: WSTRING.
+_XSD_LOWERCASE_ELEMENTARY_ALIASES = {
+    "string":  TagType.STRING,
+    "wstring": TagType.WSTRING,
+}
+
+
 def _parse_type_element(type_elem: ET.Element):
     """Read a ``<type>`` element's first child as a ``DataType``.
 
     Handles both shapes:
 
       - Elementary type: ``<INT/>`` / ``<BOOL/>`` / ``<REAL/>`` /
-        etc.  Tag name matches ``TagType.value``.
+        etc.  Tag name matches ``TagType.value``.  Lowercase
+        ``<string/>`` and ``<wstring/>`` (PLCopen schema's
+        non-uppercase exceptions) map back to STRING / WSTRING.
       - User-defined-type reference: ``<derived name="MyStruct"/>``
         becomes a ``NamedType("MyStruct")`` -- the validator
         resolves the reference against ``Program.user_types``.
@@ -204,6 +217,9 @@ def _parse_type_element(type_elem: ET.Element):
         if not name:
             raise PlcopenParseError("<derived> missing required name=")
         return NamedType(name=name)
+    aliased = _XSD_LOWERCASE_ELEMENTARY_ALIASES.get(local)
+    if aliased is not None:
+        return aliased
     try:
         return TagType(local)
     except ValueError:

@@ -186,6 +186,14 @@ def _iec_type_element(t) -> str:
     / etc. resolve via the type's ``name``.
     """
     if isinstance(t, TagType):
+        # PLCopen TC6 v2.01 schema uses lowercase tag names for
+        # the variable-length character-string types
+        # (``<string/>`` and ``<wstring/>``); everything else uses
+        # the uppercase IEC keyword.
+        if t is TagType.STRING:
+            return "<string/>"
+        if t is TagType.WSTRING:
+            return "<wstring/>"
         return f"<{t.value}/>"
     if isinstance(t, NamedType):
         return f'<derived name="{escape(t.name)}"/>'
