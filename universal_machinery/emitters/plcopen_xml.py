@@ -73,7 +73,7 @@ from ..il import (
     TagType, TaskSpec, Transition, Var, VarDirection, is_signed_subrange,
 )
 from ..il.ops import (
-    ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
+    Compare, ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
     OutCoil, OutReset, OutSet, ParallelGroup,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
@@ -1214,7 +1214,34 @@ def _emit_sfc_network_content(net) -> str:
 _NATIVE_LD_OPS = (
     ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
     OutCoil, OutSet, OutReset, ParallelGroup,
+    # Compare ops lower into FBD ``<block typeName="GT|GE|EQ|LE|LT|NE">``
+    # elements embedded in the LD body, with two ``<inVariable>``
+    # operand sources and the block's OUT pin feeding the rung gate.
+    Compare,
 )
+
+
+#: IL Compare.op symbol -> IEC §2.5.2.8 comparison function name.
+#: Used for ``<block typeName=...>`` when lowering a Compare into LD.
+_COMPARE_OP_TO_BLOCK_NAME = {
+    "==": "EQ",
+    "!=": "NE",
+    "<":  "LT",
+    "<=": "LE",
+    ">":  "GT",
+    ">=": "GE",
+}
+
+
+def _ld_expression_text(value) -> str:
+    """Render an IL Value (Address / TagRef / str literal) as the
+    textual operand that an ``<inVariable>`` / ``<outVariable>``
+    body carries in PLCopen XML."""
+    if isinstance(value, Address):
+        return value.raw
+    if isinstance(value, TagRef):
+        return value.name
+    return str(value)
 
 
 def _is_pure_ld_rung(rung: Rung) -> bool:
@@ -1309,6 +1336,76 @@ def _emit_ld_coil_xml(op, this_id: int, parent_ids: list[int],
     )
 
 
+def _emit_ld_compare_block_xml(op: "Compare", block_type: str,
+                                 in1_id: int, in2_id: int, block_id: int,
+                                 parent_ids: list[int],
+                                 x: float, y: float) -> list[str]:
+    """Lower one Compare op into ``<inVariable>`` × 2 +
+    ``<block typeName=GT|GE|EQ|LE|LT|NE>`` embedded in LD.
+
+    Wiring:
+      - ``in1_id`` -> block's ``IN1`` formal parameter
+      - ``in2_id`` -> block's ``IN2`` formal parameter
+      - upstream rung (``parent_ids``, typically the leftPowerRail
+        or a preceding contact) feeds the block's ``EN`` input
+      - block's ``OUT`` is read by the next downstream LD op as
+        if it were a contact's connectionPointOut
+
+    Wiring the rung's boolean signal into ``EN`` keeps the
+    forward-walking LD reader happy (it traces consumers from the
+    leftRail) and matches the convention every conformant PLCopen
+    tool uses for Compare-in-LD.
+
+    The XSD allows ``<block>`` / ``<inVariable>`` inside an
+    ``<LD>`` body (the commonObjects group is shared between
+    LD and FBD).
+    """
+    lhs_text = _ld_expression_text(op.lhs)
+    rhs_text = _ld_expression_text(op.rhs)
+    en_conn = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    return [
+        f'<inVariable localId="{in1_id}">'
+        f'<position x="{x:g}" y="{y - 20:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(lhs_text)}</expression>'
+        f'</inVariable>',
+        f'<inVariable localId="{in2_id}">'
+        f'<position x="{x:g}" y="{y + 20:g}"/>'
+        f'<connectionPointOut/>'
+        f'<expression>{escape(rhs_text)}</expression>'
+        f'</inVariable>',
+        f'<block localId="{block_id}" typeName="{block_type}">'
+        f'<position x="{x + _LD_OP_WIDTH:g}" y="{y:g}"/>'
+        f'<inputVariables>'
+        f'<variable formalParameter="EN">'
+        f'<connectionPointIn>{en_conn}</connectionPointIn>'
+        f'</variable>'
+        f'<variable formalParameter="IN1">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{in1_id}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+        f'<variable formalParameter="IN2">'
+        f'<connectionPointIn>'
+        f'<connection refLocalId="{in2_id}"/>'
+        f'</connectionPointIn>'
+        f'</variable>'
+        f'</inputVariables>'
+        f'<inOutVariables/>'
+        f'<outputVariables>'
+        f'<variable formalParameter="ENO">'
+        f'<connectionPointOut/>'
+        f'</variable>'
+        f'<variable formalParameter="OUT">'
+        f'<connectionPointOut/>'
+        f'</variable>'
+        f'</outputVariables>'
+        f'</block>',
+    ]
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -1364,6 +1461,23 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
                     branch_x_max = bx
             cursor_ids = branch_tails
             x = branch_x_max
+        elif isinstance(op, Compare):
+            # Lower Compare into FBD ``<block typeName="GT|...">``
+            # embedded in the LD body.  The block consumes its
+            # operands from two ``<inVariable>`` elements (one for
+            # each Value) and produces a boolean on OUT that takes
+            # the place of a contact's output in the rung gate
+            # chain.
+            block_type = _COMPARE_OP_TO_BLOCK_NAME.get(op.op, "EQ")
+            in1_id = next_local_id; next_local_id += 1
+            in2_id = next_local_id; next_local_id += 1
+            block_id = next_local_id; next_local_id += 1
+            lines.extend(_emit_ld_compare_block_xml(
+                op, block_type, in1_id, in2_id, block_id,
+                cursor_ids, x, y,
+            ))
+            cursor_ids = [block_id]
+            x += _LD_OP_WIDTH * 2
         else:
             # Non-native op (math / call / stdlib / etc.) -- shouldn't
             # be reached because _is_pure_ld_rung filtered the body

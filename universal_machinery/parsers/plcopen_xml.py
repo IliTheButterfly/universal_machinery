@@ -72,7 +72,7 @@ from ..il import (
     TagRef, TagType, TaskSpec, Transition, Var, VarDirection,
 )
 from ..il.ops import (
-    ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
+    Compare, ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
     OutCoil, OutReset, OutSet, ParallelGroup,
 )
 
@@ -1288,6 +1288,55 @@ def _parse_ld_variable_operand(elem: ET.Element):
     return TagRef(name=text)
 
 
+def _trace_block_pin_operand(block_elem: ET.Element, pin_name: str,
+                                elements_by_id: dict[int, ET.Element],
+                                kind_by_id: dict[int, str]) -> str:
+    """Follow a ``<block>``'s named input pin back to the
+    producing ``<inVariable>`` and return its ``<expression>``
+    text.  Falls back to ``""`` if the pin isn't wired or the
+    producer isn't an ``inVariable``."""
+    inputs = _child(block_elem, "inputVariables")
+    if inputs is None:
+        return ""
+    for pin in _children(inputs, "variable"):
+        if pin.get("formalParameter") != pin_name:
+            continue
+        refs = _collect_refs(_child(pin, "connectionPointIn"))
+        for ref in refs:
+            src = elements_by_id.get(ref)
+            if src is not None and kind_by_id.get(ref) == "inVariable":
+                expr = _child(src, "expression")
+                return (expr.text or "").strip() if expr is not None else ""
+        return ""
+    return ""
+
+
+def _compare_operand_from_text(text: str):
+    """One Compare operand text -> IL ``Value`` (Address / TagRef /
+    literal str).  Mirrors the smart-coercion in
+    ``_parse_ld_variable_operand`` but for the general Value type."""
+    if not text:
+        return ""
+    if text.startswith("%"):
+        return Address(text)
+    head = text.rstrip("0123456789")
+    if head.isalpha() and head.isupper() and head != text:
+        return Address(text)
+    # Numeric / TIME / string literals stay as raw strings -- the
+    # IL Value type accepts str for literals (per il/ops.py:Value).
+    try:
+        int(text)
+        return text  # numeric literal
+    except ValueError:
+        pass
+    try:
+        float(text)
+        return text
+    except ValueError:
+        pass
+    return TagRef(name=text)
+
+
 def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
     """Walk an ``<LD>`` body and group its elements into ``Rung``s.
 
@@ -1318,12 +1367,28 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
     for child in ld_elem:
         local = _strip_ns(child.tag)
         if local not in ("leftPowerRail", "rightPowerRail",
-                         "contact", "coil"):
+                         "contact", "coil", "block", "inVariable",
+                         "outVariable"):
             continue
         lid = _parse_local_id(child)
         elements_by_id[lid] = child
         kind_by_id[lid] = local
-        incoming_by_id[lid] = _collect_refs(_child(child, "connectionPointIn"))
+        if local == "block":
+            # A block's "incoming" is the union of every input
+            # pin's connection (EN, IN1, IN2, ...).  We collect
+            # all refs so the forward walk and the consumer
+            # adjacency can both navigate through blocks.
+            block_inputs = _child(child, "inputVariables")
+            refs: list[int] = []
+            if block_inputs is not None:
+                for pin in _children(block_inputs, "variable"):
+                    cp_in = _child(pin, "connectionPointIn")
+                    refs.extend(_collect_refs(cp_in))
+            incoming_by_id[lid] = refs
+        else:
+            incoming_by_id[lid] = _collect_refs(
+                _child(child, "connectionPointIn")
+            )
 
     # Inverse adjacency: producer localId -> list of consumer ids.
     consumers: dict[int, list[int]] = {lid: [] for lid in elements_by_id}
@@ -1331,6 +1396,16 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
         for src in sources:
             if src in consumers:
                 consumers[src].append(lid)
+
+    #: IEC §2.5.2.8 comparison block typeNames -> IL ``Compare.op``.
+    _COMPARE_BLOCK_TO_OP = {
+        "EQ": "==",
+        "NE": "!=",
+        "LT": "<",
+        "LE": "<=",
+        "GT": ">",
+        "GE": ">=",
+    }
 
     def _make_op_from_node(node_id: int):
         """Convert one LD element id (contact / coil) into its IL op."""
@@ -1347,6 +1422,30 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
             elif negated:
                 return ContactNC(addr)
             return ContactNO(addr)
+        if kind == "block":
+            # Currently we recognise the Compare family
+            # (GT / GE / EQ / LE / LT / NE).  Other ``typeName``s
+            # fall through to None so the walker treats the block
+            # as an opaque pass-through (its IL op isn't modelled
+            # yet -- math, calls, stdlib are follow-up slices).
+            type_name = elem.get("typeName", "")
+            if type_name in _COMPARE_BLOCK_TO_OP:
+                op_symbol = _COMPARE_BLOCK_TO_OP[type_name]
+                # Trace IN1 / IN2 pins back to the producing
+                # inVariable elements and recover their textual
+                # operand from the <expression> body.
+                lhs_text = _trace_block_pin_operand(
+                    elem, "IN1", elements_by_id, kind_by_id
+                )
+                rhs_text = _trace_block_pin_operand(
+                    elem, "IN2", elements_by_id, kind_by_id
+                )
+                return Compare(
+                    op=op_symbol,
+                    lhs=_compare_operand_from_text(lhs_text),
+                    rhs=_compare_operand_from_text(rhs_text),
+                )
+            return None
         if kind == "coil":
             addr = _parse_ld_variable_operand(elem)
             storage = elem.get("storage") or ""
