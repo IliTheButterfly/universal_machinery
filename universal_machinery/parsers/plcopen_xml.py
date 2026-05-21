@@ -1021,6 +1021,11 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     # the second pass to "trace through" markers when reconstructing
     # the step ↔ transition graph.
     marker_incoming: dict[int, list[int]] = {}
+    # jumpStep records: (target_name, [upstream refLocalIds]).
+    # A jumpStep's connectionPointIn names the upstream transition
+    # whose firing leads to the named target step; we use this to
+    # augment that transition's reconstructed ``to_steps``.
+    jump_steps_raw: list[tuple[str, list[int]]] = []
 
     # First pass: parse element-level attributes and incoming refs.
     for child in sfc_elem:
@@ -1056,7 +1061,15 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
             for cpin in _children(child, "connectionPointIn"):
                 sources.extend(_collect_refs(cpin))
             marker_incoming[marker_id] = sources
-        # macroStep / jumpStep still deferred -- silently skipped.
+        elif local == "jumpStep":
+            target_name = child.get("targetName")
+            if not target_name:
+                raise PlcopenParseError(
+                    "<jumpStep> missing required targetName="
+                )
+            incoming = _collect_refs(_child(child, "connectionPointIn"))
+            jump_steps_raw.append((target_name, incoming))
+        # macroStep still deferred -- silently skipped.
 
     def _trace_to_endpoints(ref_id: int, depth: int = 0) -> list[int]:
         """Resolve a ``refLocalId=`` by following marker indirection
@@ -1092,11 +1105,29 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
             comment=comment,
         ))
 
+    # jumpStep contributions: each jumpStep names an upstream
+    # transition (via its connectionPointIn) and a target step
+    # name; we add that step name to the transition's to_steps.
+    # Built once and consulted per-transition below.
+    jump_targets_by_trans: dict[int, list[str]] = {}
+    step_names = {name for _sid, name, _i, _c, _inc in steps_raw}
+    for target_name, incoming in jump_steps_raw:
+        if target_name not in step_names:
+            # Dangling jump target -- skip rather than fail; the
+            # document is malformed but we'd rather lose a wire
+            # than the whole network.
+            continue
+        for src_ref in incoming:
+            for ep in _trace_to_endpoints(src_ref):
+                if ep in trans_id_set:
+                    jump_targets_by_trans.setdefault(ep, []).append(target_name)
+
     # For each transition, the from_steps are the steps whose
     # localIds appear in (or trace through markers from) the
     # transition's incoming-connection list.  The to_steps are
     # the steps whose incoming-connection list (after marker
-    # resolution) references this transition's localId.
+    # resolution) references this transition's localId, plus any
+    # jumpStep that names a step and points at this transition.
     transitions: list[Transition] = []
     for tid, cond_text, incoming in transitions_raw:
         resolved_sources: list[int] = []
@@ -1113,6 +1144,9 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
                 resolved.extend(_trace_to_endpoints(r))
             if tid in resolved:
                 to_steps.append(sname)
+        for jt in jump_targets_by_trans.get(tid, ()):
+            if jt not in to_steps:
+                to_steps.append(jt)
         # Lower the textual condition to structured IL LD ops:
         # parse via the ST expression parser, then convert the
         # resulting Expression tree to a tuple of contacts / NOTs /

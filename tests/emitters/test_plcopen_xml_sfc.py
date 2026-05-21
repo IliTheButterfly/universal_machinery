@@ -976,3 +976,253 @@ def test_reader_traces_through_chained_markers():
     # The single transition should have from_steps=Start and to_steps=A
     assert sfc.transitions[0].from_steps == ("Start",)
     assert sfc.transitions[0].to_steps == ("A",)
+
+
+# -----------------------------------------------------------------------------
+# jumpStep (IEC §2.6.3 / PLCopen <jumpStep targetName=...>)
+# -----------------------------------------------------------------------------
+
+
+def test_forward_only_flow_does_not_emit_jump_step():
+    """A linear forward pipeline has no back-edge, so the
+    emitter shouldn't promote anything to a ``<jumpStep>``."""
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True), Step(name="B"), Step(name="C")],
+        transitions=[
+            Transition(from_steps=("A",), to_steps=("B",)),
+            Transition(from_steps=("B",), to_steps=("C",)),
+        ],
+    )
+    xml = _emit(net)
+    assert "<jumpStep " not in xml
+
+
+def test_back_edge_transition_emits_jump_step_with_target_name():
+    """A transition whose to_step appears earlier in
+    declaration order than its from_step (a "loop back" edge)
+    is promoted to a ``<jumpStep targetName=...>``."""
+    net = SfcNetwork(
+        steps=[Step(name="Init", initial=True), Step(name="Run"), Step(name="Done")],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Run",)),
+            Transition(from_steps=("Run",), to_steps=("Done",)),
+            Transition(from_steps=("Done",), to_steps=("Init",)),  # back-edge
+        ],
+    )
+    xml = _emit(net)
+    assert "<jumpStep " in xml
+    assert 'targetName="Init"' in xml
+    # The Init step's connectionPointIn should NOT carry the
+    # back-edge transition's localId -- the wire visually ends
+    # at the jumpStep, not at Init.
+    # Init is localId="0"; the back-edge transition is localId="5"
+    # (3 steps + 3 transitions = ids 0..5).  jumpStep is id 6.
+    assert "<step localId=\"0\" name=\"Init\" initialStep=\"true\">" in xml
+    # Init's connectionPointIn would normally include refLocalId="5"
+    # if we hadn't promoted -- with the promotion, it's absent.
+    init_block = xml.split("<step localId=\"0\"")[1].split("</step>")[0]
+    assert "refLocalId=\"5\"" not in init_block
+
+
+def test_back_edge_transition_round_trips_via_jump_step():
+    """Round-trip preserves the back-edge as a normal Transition
+    in the reconstructed IL -- the jumpStep is invisible to
+    callers above the parser."""
+    net = SfcNetwork(
+        steps=[Step(name="Init", initial=True), Step(name="Run"), Step(name="Done")],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Run",)),
+            Transition(from_steps=("Run",), to_steps=("Done",)),
+            Transition(from_steps=("Done",), to_steps=("Init",)),
+        ],
+    )
+    out = _round_trip(net)
+    by_pair = {(t.from_steps, t.to_steps) for t in out.transitions}
+    assert by_pair == {
+        (("Init",), ("Run",)),
+        (("Run",), ("Done",)),
+        (("Done",), ("Init",)),
+    }
+
+
+def test_jump_step_xsd_attributes_are_well_formed():
+    """The XSD requires both ``localId`` and ``targetName`` on
+    every ``<jumpStep>``; the emit shape pins those + the
+    standard ``<position>`` + ``<connectionPointIn>`` body."""
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True), Step(name="B")],
+        transitions=[
+            Transition(from_steps=("A",), to_steps=("B",)),
+            Transition(from_steps=("B",), to_steps=("A",)),
+        ],
+    )
+    xml = _emit(net)
+    # jumpStep element well-formed
+    assert "<jumpStep " in xml
+    assert "targetName=" in xml
+    assert "localId=" in xml
+    # Has the required <position> + <connectionPointIn>
+    js = xml.split("<jumpStep ")[1].split("</jumpStep>")[0]
+    assert "<position " in js
+    assert "<connectionPointIn>" in js
+
+
+def test_multiple_back_edges_each_get_their_own_jump_step():
+    """Two independent loops in one network both get jumpSteps."""
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True), Step(name="B"),
+                Step(name="C"), Step(name="D")],
+        transitions=[
+            Transition(from_steps=("A",), to_steps=("B",)),
+            Transition(from_steps=("B",), to_steps=("A",)),  # loop 1
+            Transition(from_steps=("C",), to_steps=("D",)),
+            Transition(from_steps=("D",), to_steps=("C",)),  # loop 2
+        ],
+    )
+    xml = _emit(net)
+    assert xml.count("<jumpStep ") == 2
+    assert 'targetName="A"' in xml
+    assert 'targetName="C"' in xml
+
+
+def test_back_edge_inside_selection_convergence_uses_marker_not_jump_step():
+    """When a back-edge target already has a selectionConvergence
+    marker (multiple incoming transitions), the marker wins -- the
+    transition routes through the sel_conv, not through a
+    jumpStep.  Otherwise we'd emit both routings for the same
+    wire."""
+    net = SfcNetwork(
+        steps=[Step(name="Init", initial=True),
+                Step(name="Run"), Step(name="Done")],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Run",)),
+            Transition(from_steps=("Run",), to_steps=("Done",)),
+            # Both "back to Init" and "another route to Init" --
+            # this should trigger sel_conv on Init, not jumpStep.
+            Transition(from_steps=("Done",), to_steps=("Init",)),
+            Transition(from_steps=("Run",), to_steps=("Init",)),
+        ],
+    )
+    xml = _emit(net)
+    # Init has 2 incoming -> sel_conv claims it; no jumpStep emitted
+    assert "<selectionConvergence " in xml
+    assert "<jumpStep " not in xml
+
+
+# ---- reader-only: hand-rolled jumpStep documents ----------------------------
+
+
+_HAND_ROLLED_JUMP_STEP = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body>
+        <SFC>
+          <step localId="0" name="Init" initialStep="true">
+            <position x="0" y="0"/>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <step localId="1" name="Run">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <transition localId="2">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+          <transition localId="3">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+          <jumpStep localId="4" targetName="Init">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+          </jumpStep>
+        </SFC>
+      </body>
+    </pou>
+  </pous></types>
+</project>'''
+
+
+def test_reader_resolves_jump_step_target_name_to_step():
+    p = parse_plcopen_xml(_HAND_ROLLED_JUMP_STEP)
+    sfc = p.find_subroutine("Main").sfc
+    # Two transitions: Init->Run and Run-(jump)->Init
+    by_pair = {(t.from_steps, t.to_steps) for t in sfc.transitions}
+    assert by_pair == {
+        (("Init",), ("Run",)),
+        (("Run",), ("Init",)),
+    }
+
+
+def test_reader_drops_dangling_jump_step_target():
+    """A jumpStep that names a step that doesn't exist in the
+    network is malformed -- we'd rather lose the wire than reject
+    the whole document."""
+    dangling = _HAND_ROLLED_JUMP_STEP.replace(
+        'targetName="Init"', 'targetName="DoesNotExist"'
+    )
+    p = parse_plcopen_xml(dangling)
+    sfc = p.find_subroutine("Main").sfc
+    # Init->Run still parses; the dangling jump's transition (3)
+    # ends up with no to_steps (just a degenerate transition).
+    by_pair = {(t.from_steps, t.to_steps) for t in sfc.transitions}
+    assert (("Init",), ("Run",)) in by_pair
+    assert (("Run",), ("DoesNotExist",)) not in by_pair
+
+
+def test_reader_jumpStep_through_marker_indirection():
+    """A jumpStep whose connectionPointIn refers to a marker
+    (e.g. simultaneousDivergence pin) still resolves correctly --
+    the marker-trace logic dissolves the indirection."""
+    chained = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body>
+        <SFC>
+          <step localId="0" name="Init" initialStep="true">
+            <position x="0" y="0"/>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <step localId="1" name="A">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="3" formalParameter="OUT0"/>
+            </connectionPointIn>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <transition localId="2">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+          <simultaneousDivergence localId="3">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+            <connectionPointOut formalParameter="OUT0"/>
+            <connectionPointOut formalParameter="OUT1"/>
+          </simultaneousDivergence>
+          <jumpStep localId="4" targetName="Init">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="3" formalParameter="OUT1"/>
+            </connectionPointIn>
+          </jumpStep>
+        </SFC>
+      </body>
+    </pou>
+  </pous></types>
+</project>'''
+    p = parse_plcopen_xml(chained)
+    sfc = p.find_subroutine("Main").sfc
+    # The single transition fans out to both A (direct) and Init
+    # (via the jumpStep that came off the sim_div's other branch).
+    assert sfc.transitions[0].from_steps == ("Init",)
+    assert set(sfc.transitions[0].to_steps) == {"A", "Init"}
