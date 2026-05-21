@@ -555,15 +555,15 @@ def _sfc_transition_position(idx: int) -> Position:
 
 
 def _emit_sfc_step_xml(step: Step, local_id: int,
-                       incoming: list[int]) -> str:
+                       incoming: list) -> str:
     """One ``<step>`` element.
 
-    ``incoming`` is the list of transition localIds whose outgoing
-    wires land on this step's incoming connection point.
+    ``incoming`` is the list of upstream sources for this step's
+    incoming connection point.  Each entry is either:
 
-    Steps with non-empty ``actions`` also emit a
-    ``<connectionPointOutAction>`` -- the action-block element
-    wires back here via that pin.
+      - an ``int`` localId (plain wire from a transition / marker)
+      - a ``tuple[int, str]`` ``(src_id, formal_parameter)`` --
+        used when the source is a divergence marker output pin
     """
     attrs = [
         f'localId="{local_id}"',
@@ -575,7 +575,7 @@ def _emit_sfc_step_xml(step: Step, local_id: int,
              f"  {_position_xml(_sfc_step_position(local_id))}"]
     if incoming:
         inner_conns = "\n".join(
-            f'    <connection refLocalId="{src}"/>' for src in incoming
+            _sfc_inner_connection_xml(src) for src in incoming
         )
         parts.append("  <connectionPointIn>")
         parts.append(inner_conns)
@@ -672,6 +672,99 @@ def _sfc_action_position(idx: int) -> Position:
                      y=20.0 + idx * _SFC_GRID_Y * 2)
 
 
+def _sfc_divergence_position(idx: int) -> Position:
+    """Divergence / convergence marker layout: column to the left
+    of the step ladder so the markers don't overlap step rows."""
+    return Position(x=_SFC_GRID_X - 100.0,
+                     y=20.0 + idx * _SFC_GRID_Y)
+
+
+def _emit_simultaneous_divergence_xml(local_id: int, source_id: int,
+                                       num_outs: int) -> str:
+    """``<simultaneousDivergence>`` -- one transition fanning out to
+    multiple parallel steps.
+
+    The single ``<connectionPointIn>`` references the upstream
+    transition; each of ``num_outs`` ``<connectionPointOut>`` pins
+    carries ``formalParameter="OUT<i>"`` so destination steps can
+    point back at this marker via the right branch.
+    """
+    parts = [f'<simultaneousDivergence localId="{local_id}">',
+             f"  {_position_xml(_sfc_divergence_position(local_id))}",
+             "  <connectionPointIn>",
+             f'    <connection refLocalId="{source_id}"/>',
+             "  </connectionPointIn>"]
+    for i in range(num_outs):
+        parts.append(
+            f'  <connectionPointOut formalParameter="OUT{i}"/>'
+        )
+    parts.append("</simultaneousDivergence>")
+    return "\n".join(parts)
+
+
+def _emit_simultaneous_convergence_xml(local_id: int,
+                                         source_ids: list[int]) -> str:
+    """``<simultaneousConvergence>`` -- multiple steps that must all
+    be active before the downstream transition fires.
+
+    Each ``<connectionPointIn>`` is its own element (XSD models
+    ``minOccurs=0 maxOccurs=unbounded`` for convergence inputs --
+    distinct from the single-element ``connectionPointIn`` on
+    most other shapes).  The single ``<connectionPointOut>``
+    feeds the downstream transition (which references this
+    convergence's localId in its own connectionPointIn).
+    """
+    parts = [f'<simultaneousConvergence localId="{local_id}">',
+             f"  {_position_xml(_sfc_divergence_position(local_id))}"]
+    for src in source_ids:
+        parts.append("  <connectionPointIn>")
+        parts.append(f'    <connection refLocalId="{src}"/>')
+        parts.append("  </connectionPointIn>")
+    parts.append("  <connectionPointOut/>")
+    parts.append("</simultaneousConvergence>")
+    return "\n".join(parts)
+
+
+def _emit_selection_divergence_xml(local_id: int, source_id: int,
+                                     num_outs: int) -> str:
+    """``<selectionDivergence>`` -- one step that branches into
+    several mutually-exclusive transitions (only one fires per
+    scan based on the guard).
+
+    Identical wire shape to simultaneousDivergence; the marker
+    type distinguishes XOR-fanout from AND-fanout for tools that
+    care about scheduling semantics.
+    """
+    parts = [f'<selectionDivergence localId="{local_id}">',
+             f"  {_position_xml(_sfc_divergence_position(local_id))}",
+             "  <connectionPointIn>",
+             f'    <connection refLocalId="{source_id}"/>',
+             "  </connectionPointIn>"]
+    for i in range(num_outs):
+        parts.append(
+            f'  <connectionPointOut formalParameter="OUT{i}"/>'
+        )
+    parts.append("</selectionDivergence>")
+    return "\n".join(parts)
+
+
+def _emit_selection_convergence_xml(local_id: int,
+                                      source_ids: list[int]) -> str:
+    """``<selectionConvergence>`` -- multiple transitions any one
+    of which (mutually exclusive at runtime) leads to the same
+    downstream step.
+    """
+    parts = [f'<selectionConvergence localId="{local_id}">',
+             f"  {_position_xml(_sfc_divergence_position(local_id))}"]
+    for src in source_ids:
+        parts.append("  <connectionPointIn>")
+        parts.append(f'    <connection refLocalId="{src}"/>')
+        parts.append("  </connectionPointIn>")
+    parts.append("  <connectionPointOut/>")
+    parts.append("</selectionConvergence>")
+    return "\n".join(parts)
+
+
 def _condition_to_inline_st(cond_ops) -> str:
     """Render a transition's IL condition tuple as a boolean ST
     expression.
@@ -690,22 +783,40 @@ def _condition_to_inline_st(cond_ops) -> str:
     return _fmt_gate(list(cond_ops))
 
 
+def _sfc_inner_connection_xml(src) -> str:
+    """One ``<connection refLocalId=... [formalParameter=...]/>``
+    line.  ``src`` is either a bare int (plain wire) or a 2-tuple
+    ``(local_id, formal_parameter)`` for divergence marker
+    outputs (which carry per-branch pin names like ``OUT0``).
+    """
+    if isinstance(src, tuple):
+        sid, fp = src
+        return (f'    <connection refLocalId="{sid}" '
+                f'formalParameter={quoteattr(fp)}/>')
+    return f'    <connection refLocalId="{src}"/>'
+
+
 def _emit_sfc_transition_xml(trans: Transition, local_id: int,
-                             from_steps_ids: list[int]) -> str:
+                             from_sources: list) -> str:
     """One ``<transition>`` element.
 
-    ``from_steps_ids`` is the list of step localIds whose outgoing
-    wires feed into this transition's incoming connection point.
+    ``from_sources`` is the list of upstream localIds feeding this
+    transition's incoming connection point.  Each entry is either:
+
+      - an ``int`` localId (the simple "step → transition" wire,
+        or the post-selection-divergence output pin)
+      - a ``tuple[int, str]`` ``(src_id, formal_parameter)`` --
+        used when the source is a marker output pin
+
     The condition lowers to ``<condition><inline name="cond">
     <ST><xhtml:pre>...</pre></ST></inline></condition>`` so any
     PLCopen-conformant tool can re-parse it.
     """
     parts = [f'<transition localId="{local_id}">',
              f"  {_position_xml(_sfc_transition_position(local_id))}"]
-    if from_steps_ids:
+    if from_sources:
         inner_conns = "\n".join(
-            f'    <connection refLocalId="{src}"/>'
-            for src in from_steps_ids
+            _sfc_inner_connection_xml(src) for src in from_sources
         )
         parts.append("  <connectionPointIn>")
         parts.append(inner_conns)
@@ -747,49 +858,193 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
     For steps with non-empty ``actions`` we additionally emit an
     ``<actionBlock>`` per step (one ``<action>`` child per IL
     ``Action``) wired back via the step's ``OUT_ACTION`` pin.
-    selectionDivergence / simultaneousDivergence shapes are still
-    deferred to a follow-up slice.
+
+    Branching shapes (IEC §2.6.3) emit explicit marker nodes:
+
+      - simultaneous divergence: a Transition with multiple
+        ``to_steps`` lowers to ``<simultaneousDivergence>``
+        between the transition and its destination steps
+      - simultaneous convergence: a Transition with multiple
+        ``from_steps`` lowers to ``<simultaneousConvergence>``
+        between the source steps and the transition
+      - selection divergence: a Step that's the only ``from_step``
+        of multiple Transitions lowers to
+        ``<selectionDivergence>`` between the step and those
+        transitions
+      - selection convergence: a Step that's the only ``to_step``
+        of multiple Transitions lowers to
+        ``<selectionConvergence>`` between those transitions and
+        the step
     """
     net = sub.sfc
     if net is None or (not net.steps and not net.transitions):
         return "<body>\n  <SFC/>\n</body>"
 
-    # localId allocation: steps first, then transitions, in
-    # declaration order.  Maps step name -> localId, transition
-    # index -> localId.
+    # ----- Phase 1: allocate localIds for steps + transitions.
     step_id_by_name: dict[str, int] = {
         s.name: i for i, s in enumerate(net.steps)
     }
     trans_id_by_index: dict[int, int] = {
         i: len(net.steps) + i for i, _ in enumerate(net.transitions)
     }
+    next_local_id = len(net.steps) + len(net.transitions)
 
-    # For each step, collect the localIds of transitions whose
-    # to_steps includes it.
-    step_incoming: dict[str, list[int]] = {s.name: [] for s in net.steps}
+    # ----- Phase 2: identify divergence/convergence markers.
+    # We detect the four shapes from the IL graph topology and
+    # allocate a marker localId for each, plus track the marker
+    # endpoints so step / transition wiring can route through them.
+    sim_div_for_trans: dict[int, int] = {}   # trans_index -> marker_id
+    sim_conv_for_trans: dict[int, int] = {}  # trans_index -> marker_id
+    sel_div_for_step: dict[str, int] = {}    # step_name -> marker_id
+    sel_conv_for_step: dict[str, int] = {}   # step_name -> marker_id
+
     for ti, tr in enumerate(net.transitions):
-        for to_name in tr.to_steps:
-            if to_name in step_incoming:
-                step_incoming[to_name].append(trans_id_by_index[ti])
+        if len(tr.from_steps) > 1:
+            sim_conv_for_trans[ti] = next_local_id
+            next_local_id += 1
+        if len(tr.to_steps) > 1:
+            sim_div_for_trans[ti] = next_local_id
+            next_local_id += 1
 
+    # Selection markers only apply to "single-to / single-from"
+    # transitions sharing a step -- multi-from/to transitions
+    # already get a simultaneous marker per above.
+    outgoing_by_step: dict[str, list[int]] = {s.name: [] for s in net.steps}
+    incoming_by_step: dict[str, list[int]] = {s.name: [] for s in net.steps}
+    for ti, tr in enumerate(net.transitions):
+        if len(tr.from_steps) == 1 and tr.from_steps[0] in outgoing_by_step:
+            outgoing_by_step[tr.from_steps[0]].append(ti)
+        if len(tr.to_steps) == 1 and tr.to_steps[0] in incoming_by_step:
+            incoming_by_step[tr.to_steps[0]].append(ti)
+
+    for s in net.steps:
+        if len(outgoing_by_step[s.name]) > 1:
+            sel_div_for_step[s.name] = next_local_id
+            next_local_id += 1
+        if len(incoming_by_step[s.name]) > 1:
+            sel_conv_for_step[s.name] = next_local_id
+            next_local_id += 1
+
+    # ----- Phase 3: compute connectionPointIn refs for steps + transitions.
+    # The presence of a marker reroutes the wiring through it:
+    # a step "downstream" of a sim_div sees the marker (with
+    # formalParameter pin), not the original transition.
+    trans_sources: dict[int, list] = {ti: [] for ti in range(len(net.transitions))}
+    step_sources: dict[str, list] = {s.name: [] for s in net.steps}
+
+    for ti, tr in enumerate(net.transitions):
+        # ---- transition's incoming side
+        if ti in sim_conv_for_trans:
+            # Multi-from -> the convergence node feeds the transition
+            trans_sources[ti].append(sim_conv_for_trans[ti])
+        else:
+            # Single-from (or empty) -- the source step feeds us
+            # directly, unless that step has selection-divergence
+            # outgoing in which case we route through the marker.
+            for src_name in tr.from_steps:
+                if src_name not in step_id_by_name:
+                    continue
+                if src_name in sel_div_for_step:
+                    # Find this transition's branch index among the
+                    # step's outgoing transitions.
+                    branch = outgoing_by_step[src_name].index(ti)
+                    trans_sources[ti].append(
+                        (sel_div_for_step[src_name], f"OUT{branch}")
+                    )
+                else:
+                    trans_sources[ti].append(step_id_by_name[src_name])
+
+    for ti, tr in enumerate(net.transitions):
+        # ---- transition's outgoing side: feeds each to_step
+        # (possibly through a sim_div, then possibly through a sel_conv).
+        for to_idx, to_name in enumerate(tr.to_steps):
+            if to_name not in step_sources:
+                continue
+            if ti in sim_div_for_trans:
+                # The destination step receives from the sim_div's
+                # branch pin, not the transition directly.
+                src = (sim_div_for_trans[ti], f"OUT{to_idx}")
+            else:
+                src = trans_id_by_index[ti]
+            # If the destination step has selection-convergence
+            # incoming, route through that marker.  Note: we add
+            # the transition's id (or the sim_div pin) to the
+            # sel_conv's incoming list, not the step's directly.
+            if to_name in sel_conv_for_step and len(tr.to_steps) == 1:
+                # We'll wire the sel_conv inputs after this loop;
+                # tag this source for that step's sel_conv.
+                pass  # handled below
+            else:
+                step_sources[to_name].append(src)
+
+    # Selection-convergence inputs: the marker's connectionPointIn
+    # list collects every transition feeding the destination step.
+    # The step itself just refs the marker.
+    sel_conv_inputs: dict[int, list] = {
+        local_id: [] for local_id in sel_conv_for_step.values()
+    }
+    for ti, tr in enumerate(net.transitions):
+        if len(tr.to_steps) != 1:
+            continue
+        to_name = tr.to_steps[0]
+        if to_name not in sel_conv_for_step:
+            continue
+        # source for this leg: either the transition directly,
+        # or through sim_div if it has one (rare; would mean a
+        # transition has 1 to_step AND multi to_steps -- impossible
+        # so this is just the transition).
+        sel_conv_inputs[sel_conv_for_step[to_name]].append(
+            trans_id_by_index[ti]
+        )
+
+    for s in net.steps:
+        if s.name in sel_conv_for_step:
+            step_sources[s.name].append(sel_conv_for_step[s.name])
+
+    # ----- Phase 4: emit everything.  Steps + transitions first,
+    # then markers, then action blocks (markers must precede
+    # action-block IDs since marker allocation came earlier).
     inner_parts: list[str] = []
     for s in net.steps:
         inner_parts.append(_emit_sfc_step_xml(
-            s, step_id_by_name[s.name], step_incoming[s.name]
+            s, step_id_by_name[s.name], step_sources[s.name]
         ))
     for ti, tr in enumerate(net.transitions):
-        from_ids = [step_id_by_name[name]
-                     for name in tr.from_steps
-                     if name in step_id_by_name]
         inner_parts.append(_emit_sfc_transition_xml(
-            tr, trans_id_by_index[ti], from_ids
+            tr, trans_id_by_index[ti], trans_sources[ti]
         ))
 
-    # Action blocks: one per step with non-empty actions.  Each
-    # block consumes one localId for itself plus one per child
-    # <action>; we allocate them after steps + transitions so
-    # the IDs stay unique within the body.
-    next_local_id = len(net.steps) + len(net.transitions)
+    # Marker emission: simultaneous div/conv tied to transitions,
+    # then selection div/conv tied to steps.
+    for ti in sorted(sim_conv_for_trans):
+        marker_id = sim_conv_for_trans[ti]
+        src_ids = [step_id_by_name[name]
+                   for name in net.transitions[ti].from_steps
+                   if name in step_id_by_name]
+        inner_parts.append(_emit_simultaneous_convergence_xml(
+            marker_id, src_ids
+        ))
+    for ti in sorted(sim_div_for_trans):
+        marker_id = sim_div_for_trans[ti]
+        num_outs = len(net.transitions[ti].to_steps)
+        inner_parts.append(_emit_simultaneous_divergence_xml(
+            marker_id, trans_id_by_index[ti], num_outs
+        ))
+    for name in net.steps:
+        s_name = name.name
+        if s_name in sel_div_for_step:
+            marker_id = sel_div_for_step[s_name]
+            num_outs = len(outgoing_by_step[s_name])
+            inner_parts.append(_emit_selection_divergence_xml(
+                marker_id, step_id_by_name[s_name], num_outs
+            ))
+        if s_name in sel_conv_for_step:
+            marker_id = sel_conv_for_step[s_name]
+            inner_parts.append(_emit_selection_convergence_xml(
+                marker_id, sel_conv_inputs[marker_id]
+            ))
+
+    # Action blocks: allocated after all markers so IDs stay unique.
     for s in net.steps:
         if not s.actions:
             continue

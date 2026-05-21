@@ -544,3 +544,435 @@ def test_unknown_time_literal_round_trips_as_None():
     raising -- conformance over strictness on the read path."""
     from universal_machinery.parsers.plcopen_xml import _parse_duration_ms
     assert _parse_duration_ms("not-a-duration") is None
+
+
+# -----------------------------------------------------------------------------
+# Divergence / convergence markers (IEC §2.6.3 / PLCopen
+# <simultaneousDivergence> / <simultaneousConvergence> /
+# <selectionDivergence> / <selectionConvergence>)
+# -----------------------------------------------------------------------------
+
+
+def _emit(net: SfcNetwork) -> str:
+    p = program(subroutines=[prog("Main", main=True, sfc=net)])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    return xml
+
+
+def test_linear_flow_emits_no_marker_elements():
+    """A plain three-step pipeline doesn't need any divergence /
+    convergence markers -- each transition has exactly one source
+    and one destination."""
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True), Step(name="B"), Step(name="C")],
+        transitions=[
+            Transition(from_steps=("A",), to_steps=("B",)),
+            Transition(from_steps=("B",), to_steps=("C",)),
+        ],
+    )
+    xml = _emit(net)
+    for marker in ("simultaneousDivergence", "simultaneousConvergence",
+                    "selectionDivergence", "selectionConvergence"):
+        assert marker not in xml
+
+
+# ---- simultaneous divergence ------------------------------------------------
+
+
+def test_simultaneous_divergence_emits_marker_with_per_branch_pins():
+    """One transition with multi to_steps lowers to a
+    ``<simultaneousDivergence>`` marker between the transition
+    and its destination steps; each destination references the
+    marker via ``OUT<i>`` formalParameter."""
+    net = SfcNetwork(
+        steps=[Step(name="Start", initial=True),
+                Step(name="A"), Step(name="B")],
+        transitions=[Transition(from_steps=("Start",),
+                                  to_steps=("A", "B"))],
+    )
+    xml = _emit(net)
+    assert "<simultaneousDivergence " in xml
+    assert 'formalParameter="OUT0"' in xml
+    assert 'formalParameter="OUT1"' in xml
+
+
+def test_simultaneous_divergence_round_trips_multi_to():
+    net = SfcNetwork(
+        steps=[Step(name="Start", initial=True),
+                Step(name="A"), Step(name="B")],
+        transitions=[Transition(from_steps=("Start",),
+                                  to_steps=("A", "B"))],
+    )
+    out = _round_trip(net)
+    assert out.transitions[0].from_steps == ("Start",)
+    assert set(out.transitions[0].to_steps) == {"A", "B"}
+
+
+def test_simultaneous_divergence_three_way_fanout_round_trips():
+    net = SfcNetwork(
+        steps=[Step(name="Start", initial=True),
+                Step(name="A"), Step(name="B"), Step(name="C")],
+        transitions=[Transition(from_steps=("Start",),
+                                  to_steps=("A", "B", "C"))],
+    )
+    out = _round_trip(net)
+    assert set(out.transitions[0].to_steps) == {"A", "B", "C"}
+
+
+# ---- simultaneous convergence ----------------------------------------------
+
+
+def test_simultaneous_convergence_emits_marker_with_multi_inputs():
+    """One transition with multi from_steps lowers to a
+    ``<simultaneousConvergence>`` marker; each from_step's
+    outgoing wire lands at one of the marker's inputs."""
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True),
+                Step(name="B", initial=True),
+                Step(name="Joined")],
+        transitions=[Transition(from_steps=("A", "B"),
+                                  to_steps=("Joined",))],
+    )
+    xml = _emit(net)
+    assert "<simultaneousConvergence " in xml
+    # Two <connectionPointIn> elements (one per source) is the
+    # distinctive convergence shape per the XSD.
+    assert xml.count("<connectionPointIn>") >= 2
+
+
+def test_simultaneous_convergence_round_trips_multi_from():
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True),
+                Step(name="B", initial=True),
+                Step(name="J")],
+        transitions=[Transition(from_steps=("A", "B"),
+                                  to_steps=("J",))],
+    )
+    out = _round_trip(net)
+    assert set(out.transitions[0].from_steps) == {"A", "B"}
+    assert out.transitions[0].to_steps == ("J",)
+
+
+# ---- selection divergence ---------------------------------------------------
+
+
+def test_selection_divergence_emits_marker_for_step_with_multiple_outgoing():
+    """A step that's the only ``from_step`` of multiple
+    transitions lowers to a ``<selectionDivergence>`` marker; each
+    branch transition references the marker via ``OUT<i>``."""
+    net = SfcNetwork(
+        steps=[Step(name="Decide", initial=True),
+                Step(name="Path1"), Step(name="Path2")],
+        transitions=[
+            Transition(from_steps=("Decide",), to_steps=("Path1",)),
+            Transition(from_steps=("Decide",), to_steps=("Path2",)),
+        ],
+    )
+    xml = _emit(net)
+    assert "<selectionDivergence " in xml
+    assert 'formalParameter="OUT0"' in xml
+    assert 'formalParameter="OUT1"' in xml
+
+
+def test_selection_divergence_round_trips_branch_targets():
+    net = SfcNetwork(
+        steps=[Step(name="Decide", initial=True),
+                Step(name="P1"), Step(name="P2"), Step(name="P3")],
+        transitions=[
+            Transition(from_steps=("Decide",), to_steps=("P1",)),
+            Transition(from_steps=("Decide",), to_steps=("P2",)),
+            Transition(from_steps=("Decide",), to_steps=("P3",)),
+        ],
+    )
+    out = _round_trip(net)
+    branch_targets = {t.to_steps[0] for t in out.transitions}
+    assert branch_targets == {"P1", "P2", "P3"}
+    for t in out.transitions:
+        assert t.from_steps == ("Decide",)
+
+
+# ---- selection convergence --------------------------------------------------
+
+
+def test_selection_convergence_emits_marker_for_step_with_multiple_incoming():
+    """A step that's the only ``to_step`` of multiple transitions
+    lowers to a ``<selectionConvergence>`` marker; the step itself
+    just references the marker."""
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True),
+                Step(name="B", initial=True),
+                Step(name="J")],
+        transitions=[
+            Transition(from_steps=("A",), to_steps=("J",)),
+            Transition(from_steps=("B",), to_steps=("J",)),
+        ],
+    )
+    xml = _emit(net)
+    assert "<selectionConvergence " in xml
+
+
+def test_selection_convergence_round_trips_join_sources():
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True),
+                Step(name="B", initial=True),
+                Step(name="C", initial=True),
+                Step(name="J")],
+        transitions=[
+            Transition(from_steps=("A",), to_steps=("J",)),
+            Transition(from_steps=("B",), to_steps=("J",)),
+            Transition(from_steps=("C",), to_steps=("J",)),
+        ],
+    )
+    out = _round_trip(net)
+    join = [t for t in out.transitions if t.to_steps == ("J",)]
+    assert {t.from_steps[0] for t in join} == {"A", "B", "C"}
+
+
+# ---- combined / interleaved patterns ----------------------------------------
+
+
+def test_selection_div_then_selection_conv_round_trip_full_diamond():
+    """Diamond: Decide branches to P1 / P2 (selection div), both
+    re-converge at Done (selection conv).  All four marker shapes
+    coexist in one body."""
+    net = SfcNetwork(
+        steps=[Step(name="Decide", initial=True),
+                Step(name="P1"), Step(name="P2"),
+                Step(name="Done")],
+        transitions=[
+            Transition(from_steps=("Decide",), to_steps=("P1",)),
+            Transition(from_steps=("Decide",), to_steps=("P2",)),
+            Transition(from_steps=("P1",), to_steps=("Done",)),
+            Transition(from_steps=("P2",), to_steps=("Done",)),
+        ],
+    )
+    xml = _emit(net)
+    assert "<selectionDivergence " in xml
+    assert "<selectionConvergence " in xml
+    out = _round_trip(net)
+    out_targets = {(t.from_steps, t.to_steps) for t in out.transitions}
+    assert out_targets == {
+        (("Decide",), ("P1",)),
+        (("Decide",), ("P2",)),
+        (("P1",), ("Done",)),
+        (("P2",), ("Done",)),
+    }
+
+
+def test_simultaneous_div_then_conv_round_trip_parallel_pair():
+    """Fork-join: Start forks to A and B (sim div), both join at
+    End (sim conv via multi-from transition)."""
+    net = SfcNetwork(
+        steps=[Step(name="Start", initial=True),
+                Step(name="A"), Step(name="B"),
+                Step(name="End")],
+        transitions=[
+            Transition(from_steps=("Start",), to_steps=("A", "B")),
+            Transition(from_steps=("A", "B"), to_steps=("End",)),
+        ],
+    )
+    xml = _emit(net)
+    assert "<simultaneousDivergence " in xml
+    assert "<simultaneousConvergence " in xml
+    out = _round_trip(net)
+    fork = next(t for t in out.transitions if t.from_steps == ("Start",))
+    join = next(t for t in out.transitions if t.to_steps == ("End",))
+    assert set(fork.to_steps) == {"A", "B"}
+    assert set(join.from_steps) == {"A", "B"}
+
+
+def test_marker_emission_keeps_existing_step_and_transition_localIds():
+    """Markers get fresh localIds after the steps + transitions
+    block; existing localId allocation order (steps 0..N-1, then
+    transitions N..N+M-1) stays unchanged."""
+    net = SfcNetwork(
+        steps=[Step(name="A", initial=True), Step(name="B"), Step(name="C")],
+        transitions=[Transition(from_steps=("A",), to_steps=("B", "C"))],
+    )
+    xml = _emit(net)
+    assert '<step localId="0" name="A" initialStep="true">' in xml
+    assert '<step localId="1" name="B">' in xml
+    assert '<step localId="2" name="C">' in xml
+    assert '<transition localId="3">' in xml
+    # Marker is the next available localId (4).
+    assert '<simultaneousDivergence localId="4">' in xml
+
+
+# ---- markers + actions on the same body -------------------------------------
+
+
+def test_action_block_localIds_skip_over_marker_ids():
+    """When both markers and action blocks are present, the
+    action-block localIds get allocated after the markers so all
+    IDs stay unique within the body."""
+    net = SfcNetwork(
+        steps=[Step(name="Start", initial=True,
+                      actions=(Action(qualifier="N",
+                                         target=Address("Q0.0")),)),
+                Step(name="A"), Step(name="B")],
+        transitions=[Transition(from_steps=("Start",),
+                                  to_steps=("A", "B"))],
+    )
+    xml = _emit(net)
+    # Steps 0..2, transition 3, sim_div 4, action block 5, action 6
+    assert '<actionBlock localId="5">' in xml
+    assert '<action localId="6" qualifier="N">' in xml
+
+
+# ---- reader-only: hand-rolled marker shapes ---------------------------------
+
+
+_HAND_ROLLED_SIM_DIV = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body>
+        <SFC>
+          <step localId="0" name="Start" initialStep="true">
+            <position x="0" y="0"/>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <step localId="1" name="A">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="4" formalParameter="OUT0"/>
+            </connectionPointIn>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <step localId="2" name="B">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="4" formalParameter="OUT1"/>
+            </connectionPointIn>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <transition localId="3">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="0"/>
+            </connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+          <simultaneousDivergence localId="4">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="3"/>
+            </connectionPointIn>
+            <connectionPointOut formalParameter="OUT0"/>
+            <connectionPointOut formalParameter="OUT1"/>
+          </simultaneousDivergence>
+        </SFC>
+      </body>
+    </pou>
+  </pous></types>
+</project>'''
+
+
+def test_reader_dissolves_hand_rolled_simultaneous_divergence():
+    p = parse_plcopen_xml(_HAND_ROLLED_SIM_DIV)
+    sfc = p.find_subroutine("Main").sfc
+    assert {t.from_steps[0] for t in sfc.transitions} == {"Start"}
+    assert set(sfc.transitions[0].to_steps) == {"A", "B"}
+
+
+_HAND_ROLLED_SEL_CONV = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body>
+        <SFC>
+          <step localId="0" name="A" initialStep="true">
+            <position x="0" y="0"/>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <step localId="1" name="B" initialStep="true">
+            <position x="0" y="0"/>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <step localId="2" name="J">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="5"/>
+            </connectionPointIn>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <transition localId="3">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+          <transition localId="4">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+          <selectionConvergence localId="5">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="3"/></connectionPointIn>
+            <connectionPointIn><connection refLocalId="4"/></connectionPointIn>
+            <connectionPointOut/>
+          </selectionConvergence>
+        </SFC>
+      </body>
+    </pou>
+  </pous></types>
+</project>'''
+
+
+def test_reader_dissolves_hand_rolled_selection_convergence():
+    """Two transitions feeding a selectionConvergence both end up
+    targeting the downstream step in IL ``to_steps``."""
+    p = parse_plcopen_xml(_HAND_ROLLED_SEL_CONV)
+    sfc = p.find_subroutine("Main").sfc
+    j_targets = [t for t in sfc.transitions if t.to_steps == ("J",)]
+    assert len(j_targets) == 2
+    assert {t.from_steps[0] for t in j_targets} == {"A", "B"}
+
+
+def test_reader_traces_through_chained_markers():
+    """A document where a simultaneousDivergence feeds another
+    marker before reaching the step.  The reader should
+    transitively follow the chain."""
+    chained = '''<?xml version="1.0"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="T"/>
+  <types><dataTypes/><pous>
+    <pou name="Main" pouType="program">
+      <body>
+        <SFC>
+          <step localId="0" name="Start" initialStep="true">
+            <position x="0" y="0"/>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <step localId="1" name="A">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="3" formalParameter="OUT0"/>
+            </connectionPointIn>
+            <connectionPointOut formalParameter="OUT"/>
+          </step>
+          <transition localId="2">
+            <position x="0" y="0"/>
+            <connectionPointIn><connection refLocalId="0"/></connectionPointIn>
+            <connectionPointOut/>
+          </transition>
+          <simultaneousDivergence localId="3">
+            <position x="0" y="0"/>
+            <connectionPointIn>
+              <connection refLocalId="2"/>
+            </connectionPointIn>
+            <connectionPointOut formalParameter="OUT0"/>
+          </simultaneousDivergence>
+        </SFC>
+      </body>
+    </pou>
+  </pous></types>
+</project>'''
+    p = parse_plcopen_xml(chained)
+    sfc = p.find_subroutine("Main").sfc
+    # The single transition should have from_steps=Start and to_steps=A
+    assert sfc.transitions[0].from_steps == ("Start",)
+    assert sfc.transitions[0].to_steps == ("A",)
