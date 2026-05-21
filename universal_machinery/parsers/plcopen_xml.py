@@ -1012,7 +1012,10 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     multi-to / multi-from they imply round-trip into multi-tuple
     ``Transition.from_steps`` / ``to_steps`` correctly.
     """
-    steps_raw: list[tuple[int, str, bool, str, list[int]]] = []
+    # Step records carry an optional pre-parsed inner SfcNetwork for
+    # ``<macroStep>`` elements (None for plain ``<step>``).
+    steps_raw: list[tuple[int, str, bool, str, list[int],
+                             "Optional[SfcNetwork]"]] = []
     transitions_raw: list[tuple[int, str, list[int]]] = []
     # step_localId -> accumulated list of parsed Actions (a single
     # step can have multiple action blocks attached; we union them).
@@ -1038,7 +1041,33 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
             initial = _parse_bool_attr(child, "initialStep")
             incoming = _collect_refs(_child(child, "connectionPointIn"))
             comment = _extract_documentation(child)
-            steps_raw.append((step_id, name, initial, comment, incoming))
+            steps_raw.append((step_id, name, initial, comment, incoming,
+                                None))
+        elif local == "macroStep":
+            step_id = _parse_local_id(child)
+            name = child.get("name")
+            if not name:
+                raise PlcopenParseError(
+                    "<macroStep> missing required name="
+                )
+            # macroStep can't carry an initialStep attribute in the
+            # XSD; its initial state is expressed by the nested
+            # network's own initial step(s).
+            incoming = _collect_refs(_child(child, "connectionPointIn"))
+            comment = _extract_documentation(child)
+            # Walk into the inner body and recurse on its <SFC>
+            # element.  A macroStep body could also hold <LD> /
+            # <FBD> / <ST>, but those aren't yet modelled as macro
+            # inner bodies on the IL side -- silently skip them
+            # rather than fail.
+            inner_net: "Optional[SfcNetwork]" = None
+            body_elem = _child(child, "body")
+            if body_elem is not None:
+                inner_sfc = _child(body_elem, "SFC")
+                if inner_sfc is not None:
+                    inner_net = _parse_sfc_body(inner_sfc)
+            steps_raw.append((step_id, name, False, comment, incoming,
+                                inner_net))
         elif local == "transition":
             trans_id = _parse_local_id(child)
             cond_elem = _child(child, "condition")
@@ -1090,19 +1119,20 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
 
     # Build localId -> kind/name maps for the reverse lookup.
     name_by_step_id: dict[int, str] = {
-        sid: name for sid, name, _i, _c, _inc in steps_raw
+        sid: name for sid, name, _i, _c, _inc, _m in steps_raw
     }
     trans_id_set: set[int] = {tid for tid, _c, _inc in transitions_raw}
 
     # Second pass: derive each transition's from_steps + to_steps,
     # tracing through any markers along the way.
     steps: list[Step] = []
-    for sid, name, initial, comment, _incoming in steps_raw:
+    for sid, name, initial, comment, _incoming, macro in steps_raw:
         steps.append(Step(
             name=name,
             initial=initial,
             actions=tuple(actions_by_step_id.get(sid, ())),
             comment=comment,
+            macro=macro,
         ))
 
     # jumpStep contributions: each jumpStep names an upstream
@@ -1110,7 +1140,7 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     # name; we add that step name to the transition's to_steps.
     # Built once and consulted per-transition below.
     jump_targets_by_trans: dict[int, list[str]] = {}
-    step_names = {name for _sid, name, _i, _c, _inc in steps_raw}
+    step_names = {name for _sid, name, _i, _c, _inc, _m in steps_raw}
     for target_name, incoming in jump_steps_raw:
         if target_name not in step_names:
             # Dangling jump target -- skip rather than fail; the
@@ -1138,7 +1168,7 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
             if src in name_by_step_id and name_by_step_id[src] not in from_steps:
                 from_steps.append(name_by_step_id[src])
         to_steps: list[str] = []
-        for sid, sname, _i, _c, s_incoming in steps_raw:
+        for sid, sname, _i, _c, s_incoming, _m in steps_raw:
             resolved = []
             for r in s_incoming:
                 resolved.extend(_trace_to_endpoints(r))

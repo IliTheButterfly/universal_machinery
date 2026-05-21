@@ -58,12 +58,21 @@ class Step:
     ``initial=True`` marks one or more steps that are active when the
     POU first starts (IEC requires exactly one initial step in a
     well-formed simple graph; parallel branches may declare several).
+
+    ``macro`` -- if set, this is a *macro step* (IEC §2.6.5): a
+    hierarchical step whose internal behaviour is itself an SFC
+    network.  When the macro step activates, control transfers
+    into its inner network's initial step(s); when the inner
+    network's final step(s) deactivate, the macro step is done.
+    Macro steps and plain steps can be freely mixed within a
+    single ``SfcNetwork``.
     """
 
     name: str
     initial: bool = False
     actions: tuple[Action, ...] = ()
     comment: str = ""
+    macro: "Optional[SfcNetwork]" = None
 
 
 @dataclass(frozen=True)
