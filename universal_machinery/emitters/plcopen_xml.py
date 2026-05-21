@@ -560,6 +560,10 @@ def _emit_sfc_step_xml(step: Step, local_id: int,
 
     ``incoming`` is the list of transition localIds whose outgoing
     wires land on this step's incoming connection point.
+
+    Steps with non-empty ``actions`` also emit a
+    ``<connectionPointOutAction>`` -- the action-block element
+    wires back here via that pin.
     """
     attrs = [
         f'localId="{local_id}"',
@@ -581,6 +585,11 @@ def _emit_sfc_step_xml(step: Step, local_id: int,
     # downstream transitions stay well-formed; the formalParameter
     # attribute is required.
     parts.append('  <connectionPointOut formalParameter="OUT"/>')
+    if step.actions:
+        # Action blocks attach via this separate pin; the schema
+        # requires a formalParameter so we use "OUT_ACTION".
+        parts.append('  <connectionPointOutAction '
+                     'formalParameter="OUT_ACTION"/>')
     if step.comment:
         parts.append(
             f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
@@ -588,6 +597,79 @@ def _emit_sfc_step_xml(step: Step, local_id: int,
         )
     parts.append("</step>")
     return "\n".join(parts)
+
+
+#: PLCopen TC6 v2.01 valid ``actionQualifierType`` enum values.
+#: An IL ``Action.qualifier`` outside this set falls back to ``N``
+#: (Non-stored) for emission so the XML stays XSD-valid.
+_ACTION_QUALIFIERS = frozenset({
+    "P1", "N", "P0", "R", "S", "L", "D", "P",
+    "DS", "DL", "SD", "SL",
+})
+
+
+def _action_target_text(target) -> str:
+    """One ``Action.target`` -> the textual ``reference name=``.
+
+    Per ``Action`` docstring, ``target`` is either an ``Address``
+    (boolean coil) or a string naming an action / FB.  We render
+    both the same way -- the ``<reference name=>`` body carries
+    the operand text.
+    """
+    if isinstance(target, Address):
+        return target.raw
+    return str(target)
+
+
+def _emit_sfc_action_block_xml(actions, local_id: int,
+                                 step_id: int) -> str:
+    """One ``<actionBlock>`` element attached to a step.
+
+    Wires back to the step via ``<connectionPointIn>`` →
+    ``refLocalId=step_id`` + ``formalParameter="OUT_ACTION"``.
+    Each IL ``Action`` becomes one ``<action>`` child with its
+    qualifier, optional duration, and a ``<reference name=>``
+    body for the target.
+    """
+    parts = [f'<actionBlock localId="{local_id}">',
+             f"  {_position_xml(_sfc_action_position(local_id))}",
+             "  <connectionPointIn>",
+             f'    <connection refLocalId="{step_id}" '
+             f'formalParameter="OUT_ACTION"/>',
+             "  </connectionPointIn>"]
+    next_action_id = local_id + 1
+    for action in actions:
+        qual = (action.qualifier
+                  if action.qualifier in _ACTION_QUALIFIERS
+                  else "N")
+        attrs = [f'localId="{next_action_id}"',
+                  f'qualifier="{qual}"']
+        if action.time_ms is not None:
+            attrs.append(f'duration="T#{action.time_ms}ms"')
+        next_action_id += 1
+        # Per XSD the inner <action> child uses <relPosition>, not
+        # <position>; the action block itself owns the absolute
+        # position, the action's relPosition is its offset from
+        # that anchor.
+        action_parts = [f"  <action {' '.join(attrs)}>",
+                         f'    <relPosition x="0" y="{(next_action_id - local_id - 1) * 20}"/>',
+                         f'    <reference name='
+                         f'{quoteattr(_action_target_text(action.target))}/>']
+        if action.comment:
+            action_parts.append(
+                f'    <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+                f'{escape(action.comment)}</p></documentation>'
+            )
+        action_parts.append("  </action>")
+        parts.extend(action_parts)
+    parts.append("</actionBlock>")
+    return "\n".join(parts)
+
+
+def _sfc_action_position(idx: int) -> Position:
+    """Action-block layout: rightward of the step column."""
+    return Position(x=_SFC_GRID_X + 200.0,
+                     y=20.0 + idx * _SFC_GRID_Y * 2)
 
 
 def _condition_to_inline_st(cond_ops) -> str:
@@ -662,9 +744,11 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
          ``to_steps``.  Each step's incoming-connection list is
          the union of all transitions that target it via ``to_steps``.
 
-    Actions, action blocks, selectionDivergence, and
-    simultaneousDivergence are not emitted in this slice -- a
-    follow-up adds the action block + divergence shapes.
+    For steps with non-empty ``actions`` we additionally emit an
+    ``<actionBlock>`` per step (one ``<action>`` child per IL
+    ``Action``) wired back via the step's ``OUT_ACTION`` pin.
+    selectionDivergence / simultaneousDivergence shapes are still
+    deferred to a follow-up slice.
     """
     net = sub.sfc
     if net is None or (not net.steps and not net.transitions):
@@ -700,6 +784,19 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
         inner_parts.append(_emit_sfc_transition_xml(
             tr, trans_id_by_index[ti], from_ids
         ))
+
+    # Action blocks: one per step with non-empty actions.  Each
+    # block consumes one localId for itself plus one per child
+    # <action>; we allocate them after steps + transitions so
+    # the IDs stay unique within the body.
+    next_local_id = len(net.steps) + len(net.transitions)
+    for s in net.steps:
+        if not s.actions:
+            continue
+        inner_parts.append(_emit_sfc_action_block_xml(
+            s.actions, next_local_id, step_id_by_name[s.name]
+        ))
+        next_local_id += 1 + len(s.actions)
 
     inner = "\n".join(_indent(p, "    ") for p in inner_parts)
     return f"<body>\n  <SFC>\n{inner}\n  </SFC>\n</body>"

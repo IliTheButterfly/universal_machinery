@@ -127,7 +127,7 @@ signed/unsigned classification of the underlying integer base.
 | Language | Status | Notes |
 | --- | --- | --- |
 | LD (Ladder Diagram) | ✅ | Modeled via `Rung` + LD-flavoured ops (Contact/Coil/Compare/etc.).  PLCopen XML emits native `<body><LD>` for pure-LD rungs (contacts + coils): one `<leftPowerRail>` → contact(s) → coil → `<rightPowerRail>` chain per rung, wired sink-side; rungs containing math / call / stdlib / parallel-group ops fall back to ST translation pending the mixed LD+FBD slice.  Reader recovers the same shape into `Subroutine.rungs` |
-| SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py`.  PLCopen XML emits native `<SFC><step localId= name= initialStep=>` + `<transition>` with sink-side connection graph reconstructing `from_steps` / `to_steps`; conditions embed inline ST via `<condition><inline name="cond"><ST><xhtml:pre>...`.  Reader picks up the same shape (including PLCopen `<reference>` and `<inline>` condition forms) and lowers AND / NOT / OR / paren chains over bare variable refs into structured LD ops (`ContactNO` / `ContactNC` / `ParallelGroup`) via the ST expression parser, so round-trip is AST-equal for the common condition shapes.  Action blocks + `<selectionDivergence>` / `<simultaneousDivergence>` deferred to a follow-up |
+| SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py`.  PLCopen XML emits native `<SFC><step localId= name= initialStep=>` + `<transition>` with sink-side connection graph reconstructing `from_steps` / `to_steps`; conditions embed inline ST via `<condition><inline name="cond"><ST><xhtml:pre>...`.  Reader picks up the same shape (including PLCopen `<reference>` and `<inline>` condition forms) and lowers AND / NOT / OR / paren chains over bare variable refs into structured LD ops (`ContactNO` / `ContactNC` / `ParallelGroup`) via the ST expression parser, so round-trip is AST-equal for the common condition shapes.  Action blocks per IEC §2.6.4.4 round-trip natively (`<actionBlock>` wired back to a step's `OUT_ACTION` pin; one `<action qualifier= duration=>` child per IL `Action`; all 12 qualifiers N/R/S/L/D/P/P0/P1/DS/DL/SD/SL XSD-valid; IEC TIME literals parse back to ms).  `<selectionDivergence>` / `<simultaneousDivergence>` deferred to a follow-up |
 | ST (Structured Text) | ✅ | First-class AST in [`il/st.py`](../universal_machinery/il/st.py): expressions (Literal, VarRef, FieldAccess, IndexAccess, UnaryExpr, BinaryExpr, FunctionCallExpr), statements (Assignment, IF/CASE/FOR/WHILE/REPEAT, RETURN/EXIT/CONTINUE, function-call statement).  `Subroutine.st_body` / `Method.st_body` carry ST programs; ST emitter renders the AST directly with IEC §3.3.1 operator precedence and parenthesisation |
 | IL (Instruction List, aka STL) | ❌ | Deprecated in IEC 3rd ed. but still common in older systems |
 | FBD (Function Block Diagram) | ✅ | First-class AST in [`il/fbd.py`](../universal_machinery/il/fbd.py): ``FbdNetwork`` containing ``FbBlock`` (function/FB call sites), ``InVariable``/``OutVariable``/``InOutVariable`` (variable connectors), ``FbdJump``/``FbdLabel``/``FbdReturn`` (control flow).  Wires stored sink-side as ``Connection(source_id, source_pin)`` matching PLCopen's connection model.  ``Subroutine.fbd_body`` / ``Method.fbd_body`` carry FBD bodies; PLCopen XML emits ``<FBD>`` with auto-layout positions, XSD-validated.  ST emission lowers via [`lowering/fbd_to_st.py`](../universal_machinery/lowering/fbd_to_st.py): topological sort + producer-expression resolution; stateless 2-input blocks (``ADD``/``MUL``/``AND``/``GT``/...) inline as ``BinaryExpr``, FB calls emit ``Inst(IN := src);`` + ``Inst.OUT`` dot-access, other functions route through temp vars.  ``FbdJump``/``FbdLabel``/``FbdReturn`` lower to real IEC §3.3.2.5 ``GotoStatement``/``LabelStatement``/``ReturnStatement`` |
@@ -205,9 +205,11 @@ Concrete slices to close the larger conformance gaps, in priority order:
        ST translation; routing those through ``<block>`` per the
        fbdObjects group makes the LD round-trip lossless for
        every Rung shape).
-     - SFC action blocks + selection/simultaneous divergence
-       elements (current SFC slice covers steps + transitions
-       only).
+     - SFC selection/simultaneous divergence elements
+       (action blocks per IEC §2.6.4.4 now round-trip; the
+       remaining divergence shapes use plain multi-connection
+       wires rather than the explicit `<selectionDivergence>` /
+       `<simultaneousDivergence>` markers).
      - Round-trip against PLCopen reference tools -- XSD validity
        is necessary but not sufficient for full cert.
 
@@ -304,4 +306,4 @@ verification path for any conformance claim.
 [`docs/CONFORMANCE_TEST_PLAN.md`](CONFORMANCE_TEST_PLAN.md) maps
 each row above to a concrete test fixture under `tests/` and
 tracks what the corpus does + doesn't yet cover.  Updated as
-slices land; the current pass count is 1044.
+slices land; the current pass count is 1078.

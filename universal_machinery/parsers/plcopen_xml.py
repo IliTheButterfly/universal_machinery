@@ -68,8 +68,8 @@ from ..il import (
     ConfigVar, Configuration, Connection, EnumType, FbBlock, FbdJump,
     FbdLabel, FbdNetwork, FbdReturn, InOutVariable, InVariable, NamedType,
     OutVariable, PouInstance, PouKind, Position, Program, Resource, Rung,
-    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagRef,
-    TagType, TaskSpec, Transition, Var, VarDirection,
+    Action, SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag,
+    TagRef, TagType, TaskSpec, Transition, Var, VarDirection,
 )
 from ..il.ops import ContactNC, ContactNO, OutCoil, OutReset, OutSet
 
@@ -872,6 +872,115 @@ def _collect_refs(cp_in: Optional[ET.Element]) -> list[int]:
     return out
 
 
+#: PLCopen TC6 v2.01 valid ``actionQualifierType`` enum values.
+#: A document carrying anything else is non-conformant; we
+#: tolerate it on read (fall back to "N") rather than reject the
+#: whole document, mirroring the emitter's policy.
+_VALID_ACTION_QUALIFIERS = frozenset({
+    "P1", "N", "P0", "R", "S", "L", "D", "P",
+    "DS", "DL", "SD", "SL",
+})
+
+
+def _parse_duration_ms(raw: Optional[str]) -> Optional[int]:
+    """``T#123ms`` / ``T#1s500ms`` / ``T#2s`` -> integer ms.
+
+    PLCopen action ``duration=`` carries an IEC TIME literal.  We
+    handle the common shapes used by emitters (``T#<ms>ms`` and
+    ``T#<sec>s[<ms>ms]``); anything we don't understand returns
+    ``None`` so the round-trip silently drops a duration we can't
+    re-emit reliably rather than blowing up the read.
+    """
+    if not raw:
+        return None
+    s = raw.strip().upper()
+    if s.startswith("T#"):
+        s = s[2:]
+    elif s.startswith("TIME#"):
+        s = s[5:]
+    total = 0
+    cur = ""
+    # crude lex: walk digits, then unit
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch.isdigit():
+            cur += ch
+            i += 1
+            continue
+        # unit: try ms first, then s, then m, then h
+        if s[i:i + 2] == "MS":
+            if not cur:
+                return None
+            total += int(cur)
+            cur = ""
+            i += 2
+        elif ch == "S":
+            if not cur:
+                return None
+            total += int(cur) * 1000
+            cur = ""
+            i += 1
+        elif ch == "M":
+            if not cur:
+                return None
+            total += int(cur) * 60_000
+            cur = ""
+            i += 1
+        elif ch == "H":
+            if not cur:
+                return None
+            total += int(cur) * 3_600_000
+            cur = ""
+            i += 1
+        elif ch in "_ ":
+            i += 1
+        else:
+            return None
+    if cur:
+        return None
+    return total
+
+
+def _parse_action_block(ab_elem: ET.Element) -> tuple[Optional[int], list[Action]]:
+    """One ``<actionBlock>`` -> (source_step_local_id, [Action, ...]).
+
+    The source step is the localId carried in this block's
+    ``<connectionPointIn>``; later we use it to attach the parsed
+    actions to the matching ``Step``.  Returns ``(None, [...])``
+    if the block isn't wired to a step (defensive -- shouldn't
+    happen in valid documents).
+    """
+    incoming = _collect_refs(_child(ab_elem, "connectionPointIn"))
+    source_id = incoming[0] if incoming else None
+    actions: list[Action] = []
+    for a_elem in _children(ab_elem, "action"):
+        qualifier_raw = a_elem.get("qualifier", "N")
+        qualifier = (qualifier_raw
+                      if qualifier_raw in _VALID_ACTION_QUALIFIERS
+                      else "N")
+        time_ms = _parse_duration_ms(a_elem.get("duration"))
+        comment = _extract_documentation(a_elem)
+        # target: <reference name=> (action POU / boolean var) or
+        # <inline> (deferred -- we don't model inline action bodies).
+        ref_elem = _child(a_elem, "reference")
+        if ref_elem is None:
+            # Inline action body -- skip until a future slice models it.
+            continue
+        target_name = ref_elem.get("name")
+        if not target_name:
+            raise PlcopenParseError(
+                "<action><reference> missing required name="
+            )
+        actions.append(Action(
+            qualifier=qualifier,
+            target=target_name,
+            time_ms=time_ms,
+            comment=comment,
+        ))
+    return source_id, actions
+
+
 def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     """Walk ``<step>`` and ``<transition>`` children, then
     reconstruct the IL's name-based step graph from the
@@ -898,6 +1007,9 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     """
     steps_raw: list[tuple[int, str, bool, str, list[int]]] = []
     transitions_raw: list[tuple[int, str, list[int]]] = []
+    # step_localId -> accumulated list of parsed Actions (a single
+    # step can have multiple action blocks attached; we union them).
+    actions_by_step_id: dict[int, list[Action]] = {}
 
     # First pass: parse element-level attributes and incoming refs.
     for child in sfc_elem:
@@ -918,8 +1030,12 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
                           if cond_elem is not None else "TRUE")
             incoming = _collect_refs(_child(child, "connectionPointIn"))
             transitions_raw.append((trans_id, cond_text, incoming))
+        elif local == "actionBlock":
+            src_id, parsed_actions = _parse_action_block(child)
+            if src_id is not None and parsed_actions:
+                actions_by_step_id.setdefault(src_id, []).extend(parsed_actions)
         # selectionDivergence / simultaneousDivergence / macroStep /
-        # jumpStep / actionBlock are deferred -- silently skipped.
+        # jumpStep are deferred -- silently skipped.
 
     # Build localId -> kind/name maps for the reverse lookup.
     name_by_step_id: dict[int, str] = {
@@ -930,7 +1046,12 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
     # Second pass: derive each transition's from_steps + to_steps.
     steps: list[Step] = []
     for sid, name, initial, comment, _incoming in steps_raw:
-        steps.append(Step(name=name, initial=initial, comment=comment))
+        steps.append(Step(
+            name=name,
+            initial=initial,
+            actions=tuple(actions_by_step_id.get(sid, ())),
+            comment=comment,
+        ))
 
     # For each transition, the from_steps are the steps whose
     # localIds appear in the transition's incoming-connection list.
