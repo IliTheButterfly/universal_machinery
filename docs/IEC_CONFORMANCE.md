@@ -127,7 +127,7 @@ signed/unsigned classification of the underlying integer base.
 | Language | Status | Notes |
 | --- | --- | --- |
 | LD (Ladder Diagram) | ✅ | Modeled via `Rung` + LD-flavoured ops (Contact/Coil/Compare/etc.) |
-| SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py` |
+| SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py`.  PLCopen XML emits native `<SFC><step localId= name= initialStep=>` + `<transition>` with sink-side connection graph reconstructing `from_steps` / `to_steps`; conditions embed inline ST via `<condition><inline name="cond"><ST><xhtml:pre>...`.  Reader picks up the same shape (including PLCopen `<reference>` and `<inline>` condition forms).  Action blocks + `<selectionDivergence>` / `<simultaneousDivergence>` deferred to a follow-up |
 | ST (Structured Text) | ✅ | First-class AST in [`il/st.py`](../universal_machinery/il/st.py): expressions (Literal, VarRef, FieldAccess, IndexAccess, UnaryExpr, BinaryExpr, FunctionCallExpr), statements (Assignment, IF/CASE/FOR/WHILE/REPEAT, RETURN/EXIT/CONTINUE, function-call statement).  `Subroutine.st_body` / `Method.st_body` carry ST programs; ST emitter renders the AST directly with IEC §3.3.1 operator precedence and parenthesisation |
 | IL (Instruction List, aka STL) | ❌ | Deprecated in IEC 3rd ed. but still common in older systems |
 | FBD (Function Block Diagram) | ✅ | First-class AST in [`il/fbd.py`](../universal_machinery/il/fbd.py): ``FbdNetwork`` containing ``FbBlock`` (function/FB call sites), ``InVariable``/``OutVariable``/``InOutVariable`` (variable connectors), ``FbdJump``/``FbdLabel``/``FbdReturn`` (control flow).  Wires stored sink-side as ``Connection(source_id, source_pin)`` matching PLCopen's connection model.  ``Subroutine.fbd_body`` / ``Method.fbd_body`` carry FBD bodies; PLCopen XML emits ``<FBD>`` with auto-layout positions, XSD-validated.  ST emission lowers via [`lowering/fbd_to_st.py`](../universal_machinery/lowering/fbd_to_st.py): topological sort + producer-expression resolution; stateless 2-input blocks (``ADD``/``MUL``/``AND``/``GT``/...) inline as ``BinaryExpr``, FB calls emit ``Inst(IN := src);`` + ``Inst.OUT`` dot-access, other functions route through temp vars.  ``FbdJump``/``FbdLabel``/``FbdReturn`` lower to real IEC §3.3.2.5 ``GotoStatement``/``LabelStatement``/``ReturnStatement`` |
@@ -200,8 +200,11 @@ Concrete slices to close the larger conformance gaps, in priority order:
    and globals-tag export.
 
    Next:
-     - Reader coverage for the remaining graphical bodies
-       (LD / SFC).
+     - LD body XML emission + reader (currently still
+       rung-translated to ST).
+     - SFC action blocks + selection/simultaneous divergence
+       elements (current SFC slice covers steps + transitions
+       only).
      - Round-trip against PLCopen reference tools -- XSD validity
        is necessary but not sufficient for full cert.
 

@@ -68,8 +68,8 @@ from ..il import (
     ConfigVar, Configuration, Connection, EnumType, FbBlock, FbdJump,
     FbdLabel, FbdNetwork, FbdReturn, InOutVariable, InVariable, NamedType,
     OutVariable, PouInstance, PouKind, Position, Program, Resource,
-    StructType, SubrangeType, Subroutine, Tag, TagType, TaskSpec, Var,
-    VarDirection,
+    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagType,
+    TaskSpec, Transition, Var, VarDirection,
 )
 
 
@@ -717,6 +717,157 @@ def _parse_fbd_body(fbd_elem: ET.Element) -> FbdNetwork:
     return FbdNetwork(elements=elements)
 
 
+# -----------------------------------------------------------------------------
+# SFC body parsing (IEC §2.6 / PLCopen <SFC>)
+# -----------------------------------------------------------------------------
+
+
+def _parse_sfc_condition(cond_elem: ET.Element) -> str:
+    """Extract a transition's condition as a textual ST
+    expression.
+
+    PLCopen allows three condition shapes:
+
+      - ``<reference name="X"/>`` -- a named transition declared
+        elsewhere in the resource; we render it as the bare name.
+      - ``<connectionPointIn>...</connectionPointIn>`` -- the
+        condition comes from an FBD-style wire; we capture the
+        source ref-localId as text (best-effort).
+      - ``<inline name="cond"><ST><xhtml:pre>...</...></ST></inline>``
+        -- inline ST text.  We strip the wrapper and return the
+        textual condition.
+
+    On unknown shape the function returns ``"TRUE"`` so partial-
+    import paths stay usable.  The textual condition lives on
+    ``Transition.condition`` not as IL ops -- a future slice
+    parses it via ``parse_st_expression``.
+    """
+    ref = _child(cond_elem, "reference")
+    if ref is not None:
+        name = ref.get("name")
+        return name or "TRUE"
+    inline = _child(cond_elem, "inline")
+    if inline is not None:
+        st = _child(inline, "ST")
+        if st is not None:
+            text = "".join(st.itertext()).strip()
+            return text or "TRUE"
+    return "TRUE"
+
+
+def _collect_refs(cp_in: Optional[ET.Element]) -> list[int]:
+    """All ``<connection refLocalId=>`` children of a
+    ``<connectionPointIn>``, returned as int localIds.  Empty /
+    missing wrappers yield ``[]``."""
+    if cp_in is None:
+        return []
+    out: list[int] = []
+    for c in _children(cp_in, "connection"):
+        raw = c.get("refLocalId")
+        if raw is None:
+            raise PlcopenParseError(
+                "<connection> in SFC <connectionPointIn> missing "
+                "refLocalId="
+            )
+        try:
+            out.append(int(raw))
+        except ValueError as exc:
+            raise PlcopenParseError(
+                f"<connection> non-integer refLocalId={raw!r}"
+            ) from exc
+    return out
+
+
+def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
+    """Walk ``<step>`` and ``<transition>`` children, then
+    reconstruct the IL's name-based step graph from the
+    connection-point references.
+
+    Algorithm:
+
+      1. First pass: collect all step / transition local IDs +
+         their primary attributes (name, initial flag, condition
+         text, incoming-connection list).
+      2. Second pass: for each transition, ``from_steps`` is the
+         list of step names whose localIds appear in its
+         ``<connectionPointIn>``.  ``to_steps`` is the inverse
+         lookup -- for every step, scan its
+         ``<connectionPointIn>`` for transition localIds and add
+         the step's name into those transitions' to_steps.
+
+    Conditions parse back as textual ST stored as a single
+    ``TagRef`` operand inside the IL Transition.condition tuple.
+    The emitter recovers this on re-emission via the standard
+    gate formatter.  Round-trips that go through a real condition
+    parser (a follow-up slice) will replace this with structured
+    ops.
+    """
+    steps_raw: list[tuple[int, str, bool, str, list[int]]] = []
+    transitions_raw: list[tuple[int, str, list[int]]] = []
+
+    # First pass: parse element-level attributes and incoming refs.
+    for child in sfc_elem:
+        local = _strip_ns(child.tag)
+        if local == "step":
+            step_id = _parse_local_id(child)
+            name = child.get("name")
+            if not name:
+                raise PlcopenParseError("<step> missing required name=")
+            initial = _parse_bool_attr(child, "initialStep")
+            incoming = _collect_refs(_child(child, "connectionPointIn"))
+            comment = _extract_documentation(child)
+            steps_raw.append((step_id, name, initial, comment, incoming))
+        elif local == "transition":
+            trans_id = _parse_local_id(child)
+            cond_elem = _child(child, "condition")
+            cond_text = (_parse_sfc_condition(cond_elem)
+                          if cond_elem is not None else "TRUE")
+            incoming = _collect_refs(_child(child, "connectionPointIn"))
+            transitions_raw.append((trans_id, cond_text, incoming))
+        # selectionDivergence / simultaneousDivergence / macroStep /
+        # jumpStep / actionBlock are deferred -- silently skipped.
+
+    # Build localId -> kind/name maps for the reverse lookup.
+    name_by_step_id: dict[int, str] = {
+        sid: name for sid, name, _i, _c, _inc in steps_raw
+    }
+    trans_id_set: set[int] = {tid for tid, _c, _inc in transitions_raw}
+
+    # Second pass: derive each transition's from_steps + to_steps.
+    steps: list[Step] = []
+    for sid, name, initial, comment, _incoming in steps_raw:
+        steps.append(Step(name=name, initial=initial, comment=comment))
+
+    # For each transition, the from_steps are the steps whose
+    # localIds appear in the transition's incoming-connection list.
+    # The to_steps are the steps whose incoming-connection list
+    # references this transition's localId.
+    transitions: list[Transition] = []
+    for tid, cond_text, incoming in transitions_raw:
+        from_steps = [name_by_step_id[src] for src in incoming
+                       if src in name_by_step_id]
+        to_steps: list[str] = []
+        for sid, sname, _i, _c, s_incoming in steps_raw:
+            if tid in s_incoming:
+                to_steps.append(sname)
+        # Render the textual condition as a single bare TagRef so
+        # the IL Transition.condition slot is non-empty -- the ST
+        # emitter's gate formatter renders it back to the same
+        # text.  Empty / "TRUE" conditions stay as empty tuples.
+        condition_ops: tuple = ()
+        if cond_text and cond_text.upper() != "TRUE":
+            from ..il.ops import ContactNO
+            from ..il import TagRef
+            condition_ops = (ContactNO(TagRef(name=cond_text)),)
+        transitions.append(Transition(
+            from_steps=tuple(from_steps),
+            to_steps=tuple(to_steps),
+            condition=condition_ops,
+        ))
+
+    return SfcNetwork(steps=steps, transitions=transitions)
+
+
 def _parse_body_text(body_elem: ET.Element) -> Optional[list]:
     """Return a ``Subroutine.st_body``-shaped list from a ``<body>``
     element, or ``None`` if the body kind isn't ST.
@@ -822,15 +973,19 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
 
     st_body: Optional[list] = None
     fbd_body: Optional[FbdNetwork] = None
+    sfc_body: Optional[SfcNetwork] = None
     body_elem = _child(pou_elem, "body")
     if body_elem is not None:
-        # Body-kind dispatch: prefer the structured form when
-        # the inner element identifies it.  ST is the textual
-        # fallback.  LD / SFC reader coverage is still deferred;
-        # those bodies leave both st_body and fbd_body as None.
+        # Body-kind dispatch: prefer the structured form when the
+        # inner element identifies it.  Order: FBD, SFC, then ST
+        # as the textual fallback.  LD reader coverage is still
+        # deferred; LD bodies leave all three slots as None.
         fbd_elem = _child(body_elem, "FBD")
+        sfc_elem = _child(body_elem, "SFC")
         if fbd_elem is not None:
             fbd_body = _parse_fbd_body(fbd_elem)
+        elif sfc_elem is not None:
+            sfc_body = _parse_sfc_body(sfc_elem)
         else:
             st_body = _parse_body_text(body_elem)
 
@@ -840,7 +995,7 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
         name=name, kind=kind, main=main, comment=comment,
         inputs=inputs, outputs=outputs, in_outs=in_outs,
         local_vars=local_vars, return_type=return_type,
-        st_body=st_body, fbd_body=fbd_body,
+        st_body=st_body, fbd_body=fbd_body, sfc=sfc_body,
     )
 
 

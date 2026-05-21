@@ -69,8 +69,8 @@ from ..il import (
     Configuration, Connection, DataBlock, EnumType, FbBlock, FbdJump,
     FbdLabel, FbdNetwork, FbdReturn, InOutVariable, InVariable, NamedType,
     OutVariable, PouInstance, PouKind, Position, Program, Resource,
-    StructType, SubrangeType, Subroutine, Tag, TagType, TaskSpec, Var,
-    VarDirection, is_signed_subrange,
+    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagType,
+    TaskSpec, Transition, Var, VarDirection, is_signed_subrange,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -522,6 +522,179 @@ def _emit_pou_body_fbd(sub: Subroutine) -> str:
 
 
 # -----------------------------------------------------------------------------
+# POU body (SFC) -- IEC §2.6 / PLCopen <SFC>
+# -----------------------------------------------------------------------------
+
+
+#: SFC layout grid.  Steps + transitions alternate down a column;
+#: each row occupies 100 px of vertical space.
+_SFC_GRID_X = 200.0
+_SFC_GRID_Y = 100.0
+
+
+def _sfc_step_position(idx: int) -> Position:
+    """Vertical step ladder, one step per two rows (the row between
+    is reserved for transitions)."""
+    return Position(x=_SFC_GRID_X, y=20.0 + idx * _SFC_GRID_Y * 2)
+
+
+def _sfc_transition_position(idx: int) -> Position:
+    """Transitions sit between consecutive step rows."""
+    return Position(x=_SFC_GRID_X, y=70.0 + idx * _SFC_GRID_Y * 2)
+
+
+def _emit_sfc_step_xml(step: Step, local_id: int,
+                       incoming: list[int]) -> str:
+    """One ``<step>`` element.
+
+    ``incoming`` is the list of transition localIds whose outgoing
+    wires land on this step's incoming connection point.
+    """
+    attrs = [
+        f'localId="{local_id}"',
+        f"name={quoteattr(step.name)}",
+    ]
+    if step.initial:
+        attrs.append('initialStep="true"')
+    parts = [f"<step {' '.join(attrs)}>",
+             f"  {_position_xml(_sfc_step_position(local_id))}"]
+    if incoming:
+        inner_conns = "\n".join(
+            f'    <connection refLocalId="{src}"/>' for src in incoming
+        )
+        parts.append("  <connectionPointIn>")
+        parts.append(inner_conns)
+        parts.append("  </connectionPointIn>")
+    # The schema requires a connectionPointOut on every step that
+    # has an outgoing wire.  We always include it so steps with
+    # downstream transitions stay well-formed; the formalParameter
+    # attribute is required.
+    parts.append('  <connectionPointOut formalParameter="OUT"/>')
+    if step.comment:
+        parts.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(step.comment)}</p></documentation>'
+        )
+    parts.append("</step>")
+    return "\n".join(parts)
+
+
+def _condition_to_inline_st(cond_ops) -> str:
+    """Render a transition's IL condition tuple as a boolean ST
+    expression.
+
+    The transition stores its guard as a sequence of LD-style
+    input ops (typically ``ContactNO`` / ``ContactNC`` /
+    ``Compare`` / ``ParallelGroup``).  We reuse the ST emitter's
+    gate formatter to render the AND-chain of contact terms as
+    a readable boolean expression embedded inside the
+    ``<transition><condition><inline>`` shape.  An empty
+    condition emits ``TRUE`` (unconditional transition).
+    """
+    if not cond_ops:
+        return "TRUE"
+    from .st import _fmt_gate
+    return _fmt_gate(list(cond_ops))
+
+
+def _emit_sfc_transition_xml(trans: Transition, local_id: int,
+                             from_steps_ids: list[int]) -> str:
+    """One ``<transition>`` element.
+
+    ``from_steps_ids`` is the list of step localIds whose outgoing
+    wires feed into this transition's incoming connection point.
+    The condition lowers to ``<condition><inline name="cond">
+    <ST><xhtml:pre>...</pre></ST></inline></condition>`` so any
+    PLCopen-conformant tool can re-parse it.
+    """
+    parts = [f'<transition localId="{local_id}">',
+             f"  {_position_xml(_sfc_transition_position(local_id))}"]
+    if from_steps_ids:
+        inner_conns = "\n".join(
+            f'    <connection refLocalId="{src}"/>'
+            for src in from_steps_ids
+        )
+        parts.append("  <connectionPointIn>")
+        parts.append(inner_conns)
+        parts.append("  </connectionPointIn>")
+    parts.append("  <connectionPointOut/>")
+    cond_text = _condition_to_inline_st(trans.condition)
+    parts.append("  <condition>")
+    parts.append('    <inline name="cond">')
+    parts.append('      <ST>')
+    parts.append(
+        f'        <xhtml:pre xmlns:xhtml="http://www.w3.org/1999/xhtml">'
+        f'{escape(cond_text)}</xhtml:pre>'
+    )
+    parts.append('      </ST>')
+    parts.append('    </inline>')
+    parts.append("  </condition>")
+    if trans.comment:
+        parts.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(trans.comment)}</p></documentation>'
+        )
+    parts.append("</transition>")
+    return "\n".join(parts)
+
+
+def _emit_pou_body_sfc(sub: Subroutine) -> str:
+    """Body XML for an SFC-bodied POU.
+
+    Allocates localIds for every step and transition (steps first,
+    then transitions, both numbered sequentially) and walks the
+    network twice:
+
+      1. Build the localId map.
+      2. For each transition, find its incoming step localIds
+         from ``from_steps`` and its outgoing step localIds from
+         ``to_steps``.  Each step's incoming-connection list is
+         the union of all transitions that target it via ``to_steps``.
+
+    Actions, action blocks, selectionDivergence, and
+    simultaneousDivergence are not emitted in this slice -- a
+    follow-up adds the action block + divergence shapes.
+    """
+    net = sub.sfc
+    if net is None or (not net.steps and not net.transitions):
+        return "<body>\n  <SFC/>\n</body>"
+
+    # localId allocation: steps first, then transitions, in
+    # declaration order.  Maps step name -> localId, transition
+    # index -> localId.
+    step_id_by_name: dict[str, int] = {
+        s.name: i for i, s in enumerate(net.steps)
+    }
+    trans_id_by_index: dict[int, int] = {
+        i: len(net.steps) + i for i, _ in enumerate(net.transitions)
+    }
+
+    # For each step, collect the localIds of transitions whose
+    # to_steps includes it.
+    step_incoming: dict[str, list[int]] = {s.name: [] for s in net.steps}
+    for ti, tr in enumerate(net.transitions):
+        for to_name in tr.to_steps:
+            if to_name in step_incoming:
+                step_incoming[to_name].append(trans_id_by_index[ti])
+
+    inner_parts: list[str] = []
+    for s in net.steps:
+        inner_parts.append(_emit_sfc_step_xml(
+            s, step_id_by_name[s.name], step_incoming[s.name]
+        ))
+    for ti, tr in enumerate(net.transitions):
+        from_ids = [step_id_by_name[name]
+                     for name in tr.from_steps
+                     if name in step_id_by_name]
+        inner_parts.append(_emit_sfc_transition_xml(
+            tr, trans_id_by_index[ti], from_ids
+        ))
+
+    inner = "\n".join(_indent(p, "    ") for p in inner_parts)
+    return f"<body>\n  <SFC>\n{inner}\n  </SFC>\n</body>"
+
+
+# -----------------------------------------------------------------------------
 # POU element
 # -----------------------------------------------------------------------------
 
@@ -560,9 +733,12 @@ def emit_pou_xml(sub: Subroutine) -> str:
         inner = "\n".join(_indent(s, "  ") for s in interface_inner)
         parts.append(f"  <interface>\n{inner}\n  </interface>")
 
-    # <body> -- pick FBD when authored as FBD, ST otherwise
+    # <body> dispatch -- pick the native graphical form when
+    # authored as one; fall through to ST translation otherwise.
     if sub.fbd_body is not None:
         parts.append(_indent(_emit_pou_body_fbd(sub), "  "))
+    elif sub.sfc is not None:
+        parts.append(_indent(_emit_pou_body_sfc(sub), "  "))
     else:
         parts.append(_indent(_emit_pou_body_st(sub), "  "))
 
