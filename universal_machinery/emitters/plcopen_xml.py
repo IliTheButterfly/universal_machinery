@@ -68,9 +68,12 @@ from ..il import (
     AccessVar, Address, AliasType, ArrayType, BlockPin, ConfigVar,
     Configuration, Connection, DataBlock, EnumType, FbBlock, FbdJump,
     FbdLabel, FbdNetwork, FbdReturn, InOutVariable, InVariable, NamedType,
-    OutVariable, PouInstance, PouKind, Position, Program, Resource,
-    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagType,
-    TaskSpec, Transition, Var, VarDirection, is_signed_subrange,
+    OutVariable, PouInstance, PouKind, Position, Program, Resource, Rung,
+    SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag, TagRef,
+    TagType, TaskSpec, Transition, Var, VarDirection, is_signed_subrange,
+)
+from ..il.ops import (
+    ContactNC, ContactNO, OutCoil, OutReset, OutSet,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -695,6 +698,162 @@ def _emit_pou_body_sfc(sub: Subroutine) -> str:
 
 
 # -----------------------------------------------------------------------------
+# POU body (LD) -- IEC §6.6 / PLCopen <LD>
+# -----------------------------------------------------------------------------
+
+
+#: Op kinds that can lower to native LD primitives.  Any rung
+#: containing an op outside this set falls back to ST-text
+#: emission so the body stays well-formed (mixed LD + FBD blocks
+#: are valid per the XSD but deferred -- a future slice routes
+#: math / call / stdlib ops through the FBD ``<block>`` shape).
+_NATIVE_LD_OPS = (ContactNO, ContactNC, OutCoil, OutSet, OutReset)
+
+
+def _is_pure_ld_rung(rung: Rung) -> bool:
+    """A rung is pure-LD if every op is a contact or coil
+    (no math, calls, stdlib, parallel groups, ...)."""
+    return all(isinstance(op, _NATIVE_LD_OPS) for op in rung.ops)
+
+
+def _is_pure_ld_body(rungs) -> bool:
+    """The whole body is LD-renderable iff every rung is
+    pure-LD and the body has at least one rung."""
+    return bool(rungs) and all(_is_pure_ld_rung(r) for r in rungs)
+
+
+def _ld_variable_text(addr) -> str:
+    """One contact / coil ``<variable>`` body -- the IEC operand
+    text.  Address wraps to its raw form; TagRef to its name."""
+    if isinstance(addr, Address):
+        return addr.raw
+    if isinstance(addr, TagRef):
+        return addr.name
+    return str(addr)
+
+
+#: LD layout grid: rungs stack vertically; ops chain horizontally
+#: across one rung.
+_LD_RUNG_HEIGHT = 100.0
+_LD_OP_WIDTH = 100.0
+_LD_LEFT_X = 20.0
+
+
+def _emit_ld_rung_xml(rung: Rung, rung_idx: int,
+                        next_local_id: int) -> tuple[list[str], int]:
+    """One rung lowered to:
+
+      leftPowerRail -> contact(s) -> coil -> rightPowerRail
+
+    Returns (xml_lines, new_next_local_id).  ``next_local_id`` is
+    threaded across rungs so localIds stay unique within the body.
+
+    Op order in the IL rung is left-to-right: leading contact-shape
+    ops form the gate, the trailing op (coil-shape) is the rung's
+    output.  We emit each op as its own element, wired sink-side
+    so the chain reads as a series circuit.
+    """
+    lines: list[str] = []
+    y = 20.0 + rung_idx * _LD_RUNG_HEIGHT
+
+    # leftPowerRail at the start of the rung
+    left_id = next_local_id; next_local_id += 1
+    lines.append(
+        f'<leftPowerRail localId="{left_id}">'
+        f'<position x="{_LD_LEFT_X:g}" y="{y:g}"/>'
+        f'<connectionPointOut formalParameter="OUT"/>'
+        '</leftPowerRail>'
+    )
+
+    # Walk the rung's ops left-to-right.  Each consumer pin
+    # references the previous producer's localId (sink-side
+    # wiring per PLCopen).
+    prev_id = left_id
+    op_x = _LD_LEFT_X + _LD_OP_WIDTH
+    coil_id: Optional[int] = None
+    for op in rung.ops:
+        if isinstance(op, (ContactNO, ContactNC)):
+            this_id = next_local_id; next_local_id += 1
+            negated = ' negated="true"' if isinstance(op, ContactNC) else ""
+            lines.append(
+                f'<contact localId="{this_id}"{negated}>'
+                f'<position x="{op_x:g}" y="{y:g}"/>'
+                f'<connectionPointIn>'
+                f'<connection refLocalId="{prev_id}"/>'
+                f'</connectionPointIn>'
+                f'<connectionPointOut/>'
+                f'<variable>{escape(_ld_variable_text(op.address))}</variable>'
+                '</contact>'
+            )
+            prev_id = this_id
+            op_x += _LD_OP_WIDTH
+        elif isinstance(op, (OutCoil, OutSet, OutReset)):
+            this_id = next_local_id; next_local_id += 1
+            attrs = []
+            if isinstance(op, OutSet):
+                attrs.append('storage="set"')
+            elif isinstance(op, OutReset):
+                attrs.append('storage="reset"')
+            attr_str = (" " + " ".join(attrs)) if attrs else ""
+            lines.append(
+                f'<coil localId="{this_id}"{attr_str}>'
+                f'<position x="{op_x:g}" y="{y:g}"/>'
+                f'<connectionPointIn>'
+                f'<connection refLocalId="{prev_id}"/>'
+                f'</connectionPointIn>'
+                f'<connectionPointOut/>'
+                f'<variable>{escape(_ld_variable_text(op.address))}</variable>'
+                '</coil>'
+            )
+            coil_id = this_id
+            op_x += _LD_OP_WIDTH
+
+    # rightPowerRail closing the rung
+    right_id = next_local_id; next_local_id += 1
+    # The right rail's incoming connection comes from the coil
+    # if present, else from the last contact (a "gate-only" rung
+    # with no coil is degenerate but representable).
+    incoming = coil_id if coil_id is not None else prev_id
+    if incoming != left_id:
+        lines.append(
+            f'<rightPowerRail localId="{right_id}">'
+            f'<position x="{op_x:g}" y="{y:g}"/>'
+            f'<connectionPointIn>'
+            f'<connection refLocalId="{incoming}"/>'
+            f'</connectionPointIn>'
+            '</rightPowerRail>'
+        )
+    else:
+        # Empty rung (rare; included for schema completeness)
+        lines.append(
+            f'<rightPowerRail localId="{right_id}">'
+            f'<position x="{op_x:g}" y="{y:g}"/>'
+            '</rightPowerRail>'
+        )
+    return lines, next_local_id
+
+
+def _emit_pou_body_ld(sub: Subroutine) -> str:
+    """Body XML for an LD-bodied POU.
+
+    Wraps ``sub.rungs`` in ``<body><LD>...</LD></body>``.  Every
+    rung becomes ``leftPowerRail → contacts → coil → rightPowerRail``
+    with localIds threaded sink-side so the resulting XML matches
+    PLCopen TC6's connection-graph model.
+    """
+    rungs = sub.rungs
+    if not rungs:
+        return "<body>\n  <LD/>\n</body>"
+    next_id = 0
+    all_lines: list[str] = []
+    for idx, rung in enumerate(rungs):
+        rung_lines, next_id = _emit_ld_rung_xml(rung, idx, next_id)
+        all_lines.extend(rung_lines)
+    inner = "\n".join(_indent(line, "    ") for line in all_lines)
+    return f"<body>\n  <LD>\n{inner}\n  </LD>\n</body>"
+
+
+# -----------------------------------------------------------------------------
 # POU element
 # -----------------------------------------------------------------------------
 
@@ -735,10 +894,16 @@ def emit_pou_xml(sub: Subroutine) -> str:
 
     # <body> dispatch -- pick the native graphical form when
     # authored as one; fall through to ST translation otherwise.
+    # LD rungs that contain only contacts + coils lower to native
+    # ``<LD>``; rungs with math / call / stdlib / etc. ops still
+    # go through the ST translator (mixed LD+FBD bodies are a
+    # follow-up slice).
     if sub.fbd_body is not None:
         parts.append(_indent(_emit_pou_body_fbd(sub), "  "))
     elif sub.sfc is not None:
         parts.append(_indent(_emit_pou_body_sfc(sub), "  "))
+    elif _is_pure_ld_body(sub.rungs):
+        parts.append(_indent(_emit_pou_body_ld(sub), "  "))
     else:
         parts.append(_indent(_emit_pou_body_st(sub), "  "))
 

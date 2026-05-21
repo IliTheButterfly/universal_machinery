@@ -196,8 +196,8 @@ def test_expression_precedence_renders_with_parens():
 
 def test_st_body_takes_precedence_over_rungs_in_xml():
     """If both ``st_body`` and ``rungs`` are set (validator
-    flags this), the XML body still picks ``st_body`` -- matches
-    the standalone ST emitter."""
+    flags this), the XML body still picks ``st_body`` over the
+    LD path -- matches the standalone ST emitter."""
     p_st = program(subroutines=[
         prog("Main", main=True,
              local_vars=[var("x", TagType.INT)],
@@ -210,7 +210,9 @@ def test_st_body_takes_precedence_over_rungs_in_xml():
     xml_st = emit_xml(p_st, time_now=_FIXED_TIME)
     xml_ld = emit_xml(p_ld, time_now=_FIXED_TIME)
     assert "x := 1;" in xml_st
-    assert "Y001 :=" in xml_ld
+    # Pure-LD rung lowers to native <LD> with a <coil><variable>Y001</...>
+    assert "<LD>" in xml_ld
+    assert "<variable>Y001</variable>" in xml_ld
 
 
 def test_st_body_with_xml_special_chars_is_escaped():

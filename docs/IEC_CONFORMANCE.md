@@ -126,7 +126,7 @@ signed/unsigned classification of the underlying integer base.
 
 | Language | Status | Notes |
 | --- | --- | --- |
-| LD (Ladder Diagram) | ✅ | Modeled via `Rung` + LD-flavoured ops (Contact/Coil/Compare/etc.) |
+| LD (Ladder Diagram) | ✅ | Modeled via `Rung` + LD-flavoured ops (Contact/Coil/Compare/etc.).  PLCopen XML emits native `<body><LD>` for pure-LD rungs (contacts + coils): one `<leftPowerRail>` → contact(s) → coil → `<rightPowerRail>` chain per rung, wired sink-side; rungs containing math / call / stdlib / parallel-group ops fall back to ST translation pending the mixed LD+FBD slice.  Reader recovers the same shape into `Subroutine.rungs` |
 | SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py`.  PLCopen XML emits native `<SFC><step localId= name= initialStep=>` + `<transition>` with sink-side connection graph reconstructing `from_steps` / `to_steps`; conditions embed inline ST via `<condition><inline name="cond"><ST><xhtml:pre>...`.  Reader picks up the same shape (including PLCopen `<reference>` and `<inline>` condition forms).  Action blocks + `<selectionDivergence>` / `<simultaneousDivergence>` deferred to a follow-up |
 | ST (Structured Text) | ✅ | First-class AST in [`il/st.py`](../universal_machinery/il/st.py): expressions (Literal, VarRef, FieldAccess, IndexAccess, UnaryExpr, BinaryExpr, FunctionCallExpr), statements (Assignment, IF/CASE/FOR/WHILE/REPEAT, RETURN/EXIT/CONTINUE, function-call statement).  `Subroutine.st_body` / `Method.st_body` carry ST programs; ST emitter renders the AST directly with IEC §3.3.1 operator precedence and parenthesisation |
 | IL (Instruction List, aka STL) | ❌ | Deprecated in IEC 3rd ed. but still common in older systems |
@@ -200,8 +200,11 @@ Concrete slices to close the larger conformance gaps, in priority order:
    and globals-tag export.
 
    Next:
-     - LD body XML emission + reader (currently still
-       rung-translated to ST).
+     - Mixed LD+FBD bodies (rungs containing math / call /
+       stdlib / parallel-group ops currently still fall back to
+       ST translation; routing those through ``<block>`` per the
+       fbdObjects group makes the LD round-trip lossless for
+       every Rung shape).
      - SFC action blocks + selection/simultaneous divergence
        elements (current SFC slice covers steps + transitions
        only).
