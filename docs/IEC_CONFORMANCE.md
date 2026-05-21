@@ -183,8 +183,12 @@ Concrete slices to close the larger conformance gaps, in priority order:
    multi-label clauses + ELSE, FOR/BY, WHILE, REPEAT/UNTIL,
    RETURN/EXIT/CONTINUE, GOTO + labels, function-call statements,
    and the full expression grammar including field/index access
-   and named-arg calls.  Parse failures degrade to a single
-   ``CommentStatement`` so a partial import stays usable.
+   and named-arg calls.  FBD bodies round-trip too: ``<block>``,
+   ``<inVariable>`` / ``<outVariable>`` / ``<inOutVariable>``,
+   ``<jump>`` / ``<label>`` / ``<return>`` plus all pin modifiers
+   (negated / edge / storage), positions, and execution-order
+   ids all survive the read pass.  Parse failures degrade to a
+   single ``CommentStatement`` so a partial import stays usable.
 
    ``validate_plcopen_xml(xml)`` validates emitted output against
    the bundled XSD (sourced from Beremiz's public mirror).
@@ -196,7 +200,8 @@ Concrete slices to close the larger conformance gaps, in priority order:
    and globals-tag export.
 
    Next:
-     - Reader coverage for graphical bodies (LD / FBD / SFC).
+     - Reader coverage for the remaining graphical bodies
+       (LD / SFC).
      - Round-trip against PLCopen reference tools -- XSD validity
        is necessary but not sufficient for full cert.
 

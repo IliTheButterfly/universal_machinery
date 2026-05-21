@@ -64,10 +64,12 @@ from typing import Iterable, Optional
 from xml.etree import ElementTree as ET
 
 from ..il import (
-    AccessVar, Address, AliasType, ArrayType, CommentStatement, ConfigVar,
-    Configuration, EnumType, NamedType, PouInstance, PouKind, Program,
-    Resource, StructType, SubrangeType, Subroutine, Tag, TagType, TaskSpec,
-    Var, VarDirection,
+    AccessVar, Address, AliasType, ArrayType, BlockPin, CommentStatement,
+    ConfigVar, Configuration, Connection, EnumType, FbBlock, FbdJump,
+    FbdLabel, FbdNetwork, FbdReturn, InOutVariable, InVariable, NamedType,
+    OutVariable, PouInstance, PouKind, Position, Program, Resource,
+    StructType, SubrangeType, Subroutine, Tag, TagType, TaskSpec, Var,
+    VarDirection,
 )
 
 
@@ -433,6 +435,288 @@ def _extract_documentation(elem: ET.Element) -> str:
 # -----------------------------------------------------------------------------
 
 
+# -----------------------------------------------------------------------------
+# FBD body parsing (IEC §6.7)
+# -----------------------------------------------------------------------------
+
+
+def _parse_position(elem: ET.Element) -> Optional[Position]:
+    """Read the optional ``<position x= y=/>`` child as an
+    ``il.Position``.
+
+    PLCopen requires ``<position>`` on every FBD element so the
+    schema is satisfied; we still return ``None`` when the
+    attribute coercion fails, so partial-import paths stay usable.
+    """
+    pos_elem = _child(elem, "position")
+    if pos_elem is None:
+        return None
+    x_s = pos_elem.get("x")
+    y_s = pos_elem.get("y")
+    if x_s is None or y_s is None:
+        return None
+    try:
+        return Position(x=float(x_s), y=float(y_s))
+    except ValueError:
+        return None
+
+
+def _parse_local_id(elem: ET.Element) -> int:
+    """Required ``localId`` attribute -> ``int``.  IEC's
+    ``xsd:unsignedLong`` accepts arbitrary non-negative integers;
+    we narrow to ``int`` and raise on malformed values."""
+    raw = elem.get("localId")
+    if raw is None:
+        raise PlcopenParseError(
+            f"<{_strip_ns(elem.tag)}> missing required localId="
+        )
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise PlcopenParseError(
+            f"<{_strip_ns(elem.tag)}> non-integer localId={raw!r}"
+        ) from exc
+
+
+def _parse_optional_execution_order(elem: ET.Element) -> Optional[int]:
+    raw = elem.get("executionOrderId")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise PlcopenParseError(
+            f"<{_strip_ns(elem.tag)}> non-integer executionOrderId="
+            f"{raw!r}"
+        ) from exc
+
+
+def _parse_connection_element(conn_elem: ET.Element) -> Connection:
+    """One ``<connection refLocalId= [formalParameter=]/>`` element.
+
+    Inverse of ``_connection_inner_xml`` from the emitter.
+    """
+    ref = conn_elem.get("refLocalId")
+    if ref is None:
+        raise PlcopenParseError(
+            "<connection> missing required refLocalId="
+        )
+    try:
+        source_id = int(ref)
+    except ValueError as exc:
+        raise PlcopenParseError(
+            f"<connection> non-integer refLocalId={ref!r}"
+        ) from exc
+    return Connection(
+        source_id=source_id,
+        source_pin=conn_elem.get("formalParameter"),
+    )
+
+
+def _parse_connection_point_in(
+    cp_elem: Optional[ET.Element],
+) -> Optional[Connection]:
+    """Pull a ``Connection`` out of a sink pin's
+    ``<connectionPointIn>`` wrapper, or ``None`` for unwired pins.
+
+    The schema allows the wrapper to be absent OR present-but-
+    empty; both shapes map to ``None``.
+    """
+    if cp_elem is None:
+        return None
+    conn_elem = _child(cp_elem, "connection")
+    if conn_elem is None:
+        return None
+    return _parse_connection_element(conn_elem)
+
+
+def _parse_bool_attr(elem: ET.Element, name: str,
+                     default: bool = False) -> bool:
+    raw = elem.get(name)
+    if raw is None:
+        return default
+    return raw.lower() == "true"
+
+
+def _parse_block_pin(var_elem: ET.Element,
+                     pin_side: str) -> BlockPin:
+    """One ``<variable formalParameter=>`` element inside a
+    ``<block>``'s input/output/inOut list.
+
+    ``pin_side`` is ``"input"``/``"in_out"``/``"output"`` -- the
+    sink-side pin shapes (input, in_out) read a
+    ``<connectionPointIn>``; the producer-side (output) doesn't
+    carry a wire (its connections live on the consumers).
+    """
+    formal = var_elem.get("formalParameter")
+    if formal is None:
+        raise PlcopenParseError(
+            "<variable> inside <block> missing formalParameter="
+        )
+    connection: Optional[Connection] = None
+    if pin_side in ("input", "in_out"):
+        connection = _parse_connection_point_in(
+            _child(var_elem, "connectionPointIn")
+        )
+    return BlockPin(
+        formal_parameter=formal,
+        connection=connection,
+        negated=_parse_bool_attr(var_elem, "negated"),
+        edge=var_elem.get("edge") or "",
+        storage=var_elem.get("storage") or "",
+    )
+
+
+def _parse_block_pins(parent: Optional[ET.Element],
+                      pin_side: str) -> list[BlockPin]:
+    if parent is None:
+        return []
+    return [_parse_block_pin(v, pin_side)
+            for v in _children(parent, "variable")]
+
+
+def _parse_block(elem: ET.Element) -> FbBlock:
+    """One ``<block typeName= instanceName=>`` element.
+
+    Inverse of ``_emit_block_xml``.
+    """
+    type_name = elem.get("typeName")
+    if not type_name:
+        raise PlcopenParseError("<block> missing required typeName=")
+    return FbBlock(
+        local_id=_parse_local_id(elem),
+        type_name=type_name,
+        instance_name=elem.get("instanceName"),
+        inputs=_parse_block_pins(_child(elem, "inputVariables"), "input"),
+        outputs=_parse_block_pins(_child(elem, "outputVariables"),
+                                    "output"),
+        in_outs=_parse_block_pins(_child(elem, "inOutVariables"), "in_out"),
+        position=_parse_position(elem),
+        execution_order=_parse_optional_execution_order(elem),
+        comment=_extract_documentation(elem),
+    )
+
+
+def _parse_in_variable(elem: ET.Element) -> InVariable:
+    expr = _child(elem, "expression")
+    expr_text = (expr.text or "").strip() if expr is not None else ""
+    return InVariable(
+        local_id=_parse_local_id(elem),
+        expression=expr_text,
+        position=_parse_position(elem),
+        execution_order=_parse_optional_execution_order(elem),
+        negated=_parse_bool_attr(elem, "negated"),
+        edge=elem.get("edge") or "",
+        storage=elem.get("storage") or "",
+        comment=_extract_documentation(elem),
+    )
+
+
+def _parse_out_variable(elem: ET.Element) -> OutVariable:
+    expr = _child(elem, "expression")
+    expr_text = (expr.text or "").strip() if expr is not None else ""
+    return OutVariable(
+        local_id=_parse_local_id(elem),
+        expression=expr_text,
+        connection=_parse_connection_point_in(
+            _child(elem, "connectionPointIn")
+        ),
+        position=_parse_position(elem),
+        execution_order=_parse_optional_execution_order(elem),
+        negated=_parse_bool_attr(elem, "negated"),
+        edge=elem.get("edge") or "",
+        storage=elem.get("storage") or "",
+        comment=_extract_documentation(elem),
+    )
+
+
+def _parse_inout_variable(elem: ET.Element) -> InOutVariable:
+    expr = _child(elem, "expression")
+    expr_text = (expr.text or "").strip() if expr is not None else ""
+    return InOutVariable(
+        local_id=_parse_local_id(elem),
+        expression=expr_text,
+        connection=_parse_connection_point_in(
+            _child(elem, "connectionPointIn")
+        ),
+        position=_parse_position(elem),
+        execution_order=_parse_optional_execution_order(elem),
+        negated_in=_parse_bool_attr(elem, "negatedIn"),
+        negated_out=_parse_bool_attr(elem, "negatedOut"),
+        edge_in=elem.get("edgeIn") or "",
+        edge_out=elem.get("edgeOut") or "",
+        storage_in=elem.get("storageIn") or "",
+        storage_out=elem.get("storageOut") or "",
+        comment=_extract_documentation(elem),
+    )
+
+
+def _parse_fbd_label(elem: ET.Element) -> FbdLabel:
+    label = elem.get("label")
+    if label is None:
+        raise PlcopenParseError("<label> missing required label=")
+    return FbdLabel(
+        local_id=_parse_local_id(elem),
+        label=label,
+        position=_parse_position(elem),
+        execution_order=_parse_optional_execution_order(elem),
+        comment=_extract_documentation(elem),
+    )
+
+
+def _parse_fbd_jump(elem: ET.Element) -> FbdJump:
+    label = elem.get("label")
+    if label is None:
+        raise PlcopenParseError("<jump> missing required label=")
+    return FbdJump(
+        local_id=_parse_local_id(elem),
+        label=label,
+        connection=_parse_connection_point_in(
+            _child(elem, "connectionPointIn")
+        ),
+        position=_parse_position(elem),
+        execution_order=_parse_optional_execution_order(elem),
+        comment=_extract_documentation(elem),
+    )
+
+
+def _parse_fbd_return(elem: ET.Element) -> FbdReturn:
+    return FbdReturn(
+        local_id=_parse_local_id(elem),
+        connection=_parse_connection_point_in(
+            _child(elem, "connectionPointIn")
+        ),
+        position=_parse_position(elem),
+        execution_order=_parse_optional_execution_order(elem),
+        comment=_extract_documentation(elem),
+    )
+
+
+_FBD_ELEMENT_PARSERS = {
+    "block":         _parse_block,
+    "inVariable":    _parse_in_variable,
+    "outVariable":   _parse_out_variable,
+    "inOutVariable": _parse_inout_variable,
+    "label":         _parse_fbd_label,
+    "jump":          _parse_fbd_jump,
+    "return":        _parse_fbd_return,
+}
+
+
+def _parse_fbd_body(fbd_elem: ET.Element) -> FbdNetwork:
+    """Walk every child of ``<FBD>`` and dispatch to the right
+    element parser.  Unknown elements are silently skipped (the
+    PLCopen schema allows ``commonObjects`` like ``<comment>`` /
+    ``<actionBlock>`` we don't model yet)."""
+    elements = []
+    for child in fbd_elem:
+        local = _strip_ns(child.tag)
+        parser = _FBD_ELEMENT_PARSERS.get(local)
+        if parser is not None:
+            elements.append(parser(child))
+    return FbdNetwork(elements=elements)
+
+
 def _parse_body_text(body_elem: ET.Element) -> Optional[list]:
     """Return a ``Subroutine.st_body``-shaped list from a ``<body>``
     element, or ``None`` if the body kind isn't ST.
@@ -537,13 +821,18 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
                 local_vars.extend(vars_)
 
     st_body: Optional[list] = None
+    fbd_body: Optional[FbdNetwork] = None
     body_elem = _child(pou_elem, "body")
     if body_elem is not None:
-        st_body = _parse_body_text(body_elem)
-        # If the body was non-ST (LD/FBD/SFC), st_body is None and
-        # the body content is lost in V1.  A follow-up slice will
-        # populate sub.rungs / sub.fbd_body / sub.sfc as
-        # appropriate.
+        # Body-kind dispatch: prefer the structured form when
+        # the inner element identifies it.  ST is the textual
+        # fallback.  LD / SFC reader coverage is still deferred;
+        # those bodies leave both st_body and fbd_body as None.
+        fbd_elem = _child(body_elem, "FBD")
+        if fbd_elem is not None:
+            fbd_body = _parse_fbd_body(fbd_elem)
+        else:
+            st_body = _parse_body_text(body_elem)
 
     comment = _extract_documentation(pou_elem)
 
@@ -551,7 +840,7 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
         name=name, kind=kind, main=main, comment=comment,
         inputs=inputs, outputs=outputs, in_outs=in_outs,
         local_vars=local_vars, return_type=return_type,
-        st_body=st_body,
+        st_body=st_body, fbd_body=fbd_body,
     )
 
 
