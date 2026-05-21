@@ -8,7 +8,16 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1234 tests**.
+counts are snapshotted; the current passing total is **1162 tests**.
+
+The plan is self-auditing:
+[`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
+parses every `tests/foo.py(::test_bar)?` pointer below and fails
+CI if any of them resolve to a missing file or a missing test
+function.  Wildcard pointers (`::test_prefix_*`) require at
+least one matching test in the cited file.  The snapshot-count
+line above must also stay consistent with the
+`status: N / N passing` line at the bottom of this document.
 
 ## Reading this document
 
@@ -255,4 +264,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1234 / 1234 passing**.
+status: **1162 / 1162 passing**.
