@@ -1351,6 +1351,69 @@ def _lvalue_type(target, env: dict[str, str],
     return None
 
 
+def _check_sfc_condition_types(prog: Program) -> list[ValidationError]:
+    """Type-check the IL ops inside each ``Transition.condition``.
+
+    The condition is a tuple of LD-style ops (ContactNO /
+    ContactNC / ParallelGroup / Compare / etc.).  We apply the
+    same IEC §6.5 rules as ``_check_op_types``:
+
+      - sfc-contact-not-bool      : ContactNO / ContactNC target
+                                     isn't BOOL.
+      - sfc-compare-type-mismatch : Compare operands cross IEC
+                                     §6.5 buckets.
+
+    ``ParallelGroup`` (OR branches) recurses into each branch.
+    Other op types are skipped -- SFC transition guards
+    overwhelmingly use contacts + compares; math / call / coil
+    ops on a transition would be a structural mistake the rung
+    checker can't see but which is rare enough to defer.
+    """
+    from .il.ops import (
+        Compare, ContactNC, ContactNO, ParallelGroup,
+    )
+    errors: list[ValidationError] = []
+
+    def _walk_ops(ops, env: dict[str, str], where: str) -> None:
+        for op in ops:
+            if isinstance(op, (ContactNO, ContactNC)):
+                addr_t = _operand_type(prog, env, op.address)
+                if not _is_bool(addr_t):
+                    errors.append(ValidationError(
+                        code="sfc-contact-not-bool",
+                        message=(f"SFC transition contact "
+                                 f"{type(op).__name__} target has "
+                                 f"non-BOOL type {addr_t!r}"),
+                        location=where,
+                    ))
+            elif isinstance(op, Compare):
+                lhs_t = _operand_type(prog, env, op.lhs)
+                rhs_t = _operand_type(prog, env, op.rhs)
+                if not _are_types_compatible(lhs_t, rhs_t):
+                    errors.append(ValidationError(
+                        code="sfc-compare-type-mismatch",
+                        message=(f"SFC transition compare operands "
+                                 f"have incompatible types "
+                                 f"lhs={lhs_t!r} rhs={rhs_t!r}"),
+                        location=where,
+                    ))
+            elif isinstance(op, ParallelGroup):
+                for branch in op.branches:
+                    _walk_ops(branch, env, where)
+
+    for sub in prog.subroutines:
+        if sub.sfc is None:
+            continue
+        env = _build_type_env(prog, sub)
+        for tr_idx, tr in enumerate(sub.sfc.transitions):
+            where = (f"Subroutine '{sub.name}' / SFC transition "
+                       f"{tr_idx} ({'+'.join(tr.from_steps)} -> "
+                       f"{'+'.join(tr.to_steps)})")
+            _walk_ops(tr.condition, env, where)
+
+    return errors
+
+
 def _check_sfc_wellformedness(prog: Program) -> list[ValidationError]:
     """Delegate to ``SfcNetwork.validate()`` for each POU's SFC body."""
     errors: list[ValidationError] = []
@@ -1403,6 +1466,8 @@ def validate(prog: Program) -> list[ValidationError]:
      16. Semantic type checking on ST AST bodies (Assignment
          target↔value compat, IF/WHILE/REPEAT condition is BOOL,
          FOR index numericity)
+     17. Semantic type checking on SFC transition conditions
+         (contacts must be BOOL, compares must balance)
     """
     errors: list[ValidationError] = []
     errors.extend(_check_tag_references(prog))
@@ -1421,6 +1486,7 @@ def validate(prog: Program) -> list[ValidationError]:
     errors.extend(_check_access_and_config_vars(prog))
     errors.extend(_check_op_types(prog))
     errors.extend(_check_st_types(prog))
+    errors.extend(_check_sfc_condition_types(prog))
     return errors
 
 
