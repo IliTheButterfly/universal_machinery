@@ -64,9 +64,10 @@ from typing import Iterable, Optional
 from xml.etree import ElementTree as ET
 
 from ..il import (
-    AccessVar, Address, CommentStatement, ConfigVar, Configuration,
-    PouInstance, PouKind, Program, Resource, Subroutine, Tag, TagType,
-    TaskSpec, Var, VarDirection,
+    AccessVar, Address, AliasType, ArrayType, CommentStatement, ConfigVar,
+    Configuration, EnumType, NamedType, PouInstance, PouKind, Program,
+    Resource, StructType, SubrangeType, Subroutine, Tag, TagType, TaskSpec,
+    Var, VarDirection,
 )
 
 
@@ -176,31 +177,174 @@ def _require_child(elem: ET.Element, name: str,
 # -----------------------------------------------------------------------------
 
 
-def _parse_type_element(type_elem: ET.Element) -> TagType:
-    """Read a ``<type>`` element's first child as an elementary
-    ``TagType``.
+def _parse_type_element(type_elem: ET.Element):
+    """Read a ``<type>`` element's first child as a ``DataType``.
 
-    V1 covers elementary types only -- ``<INT/>`` / ``<BOOL/>`` /
-    ``<REAL/>`` / etc.  User-defined types (``<derived
-    name="..."/>``) need the user-defined-type registry plumbed in;
-    that's a follow-up slice.  Unknown types fall back to ``INT``
-    with a warning embedded in the comment field of the owning
-    Var (V1 deliberately doesn't raise so a partial-import path
-    stays usable).
+    Handles both shapes:
+
+      - Elementary type: ``<INT/>`` / ``<BOOL/>`` / ``<REAL/>`` /
+        etc.  Tag name matches ``TagType.value``.
+      - User-defined-type reference: ``<derived name="MyStruct"/>``
+        becomes a ``NamedType("MyStruct")`` -- the validator
+        resolves the reference against ``Program.user_types``.
+
+    Unknown elementary tags fall back to ``TagType.INT`` rather than
+    raising, so partial-import paths stay usable.
     """
     children = list(type_elem)
     if not children:
         raise PlcopenParseError("<type> element has no body")
     child = children[0]
     local = _strip_ns(child.tag)
-    # Elementary type: the tag name matches TagType.value
+    if local == "derived":
+        name = child.get("name")
+        if not name:
+            raise PlcopenParseError("<derived> missing required name=")
+        return NamedType(name=name)
     try:
         return TagType(local)
     except ValueError:
-        # Unknown elementary type or a <derived/> reference -- fall
-        # through to INT.  A future slice replaces this with a real
-        # NamedType lookup.
         return TagType.INT
+
+
+# -----------------------------------------------------------------------------
+# User-defined type parsing (IEC §2.3.3)
+# -----------------------------------------------------------------------------
+
+
+def _parse_dimensions(array_elem: ET.Element) -> tuple[tuple[int, int], ...]:
+    """``<dimension lower=".." upper=".."/>`` children -> tuple of
+    ``(lo, hi)`` per axis."""
+    dims: list[tuple[int, int]] = []
+    for d in _children(array_elem, "dimension"):
+        lo_s = d.get("lower")
+        hi_s = d.get("upper")
+        if lo_s is None or hi_s is None:
+            raise PlcopenParseError(
+                "<dimension> missing required lower= / upper="
+            )
+        try:
+            dims.append((int(lo_s), int(hi_s)))
+        except ValueError as exc:
+            raise PlcopenParseError(
+                f"<dimension> non-integer bounds "
+                f"lower={lo_s!r}, upper={hi_s!r}"
+            ) from exc
+    return tuple(dims)
+
+
+def _parse_struct_members(struct_elem: ET.Element) -> tuple[Var, ...]:
+    """``<struct>`` body is a ``varListPlain`` of ``<variable>``
+    children -- one per field.  We parse each into a ``Var`` (with
+    direction LOCAL since IEC struct members don't carry one)."""
+    members: list[Var] = []
+    for v in _children(struct_elem, "variable"):
+        members.append(_parse_variable(v, VarDirection.LOCAL))
+    return tuple(members)
+
+
+def _parse_enum_values(enum_elem: ET.Element) -> tuple[str, ...]:
+    """``<enum><values><value name="A"/><value name="B"/></values></enum>``."""
+    values_wrap = _child(enum_elem, "values")
+    if values_wrap is None:
+        return ()
+    out: list[str] = []
+    for v in _children(values_wrap, "value"):
+        name = v.get("name")
+        if not name:
+            raise PlcopenParseError("<value> missing required name=")
+        out.append(name)
+    return tuple(out)
+
+
+def _parse_dataType(dt_elem: ET.Element):
+    """One ``<dataType name="...">`` declaration.
+
+    Dispatches on the first non-documentation child of the
+    nested ``<baseType>``:
+
+      <baseType><struct>...</struct></baseType>      -> StructType
+      <baseType><array>...</array></baseType>        -> ArrayType
+      <baseType><enum>...</enum></baseType>          -> EnumType
+      <baseType><subrangeSigned>...</...></baseType> -> SubrangeType
+      <baseType><subrangeUnsigned>...</...></...>    -> SubrangeType
+      <baseType><elementary/></baseType>             -> AliasType
+      <baseType><derived name=>/></baseType>         -> AliasType (NamedType base)
+    """
+    name = dt_elem.get("name")
+    if not name:
+        raise PlcopenParseError("<dataType> missing required name=")
+    base_wrap = _require_child(dt_elem, "baseType",
+                                 f"<dataType name={name!r}>")
+    body_children = [c for c in base_wrap
+                       if _strip_ns(c.tag) not in ("documentation", "addData")]
+    if not body_children:
+        raise PlcopenParseError(
+            f"<dataType name={name!r}> has empty <baseType>"
+        )
+    body = body_children[0]
+    local = _strip_ns(body.tag)
+    comment = _extract_documentation(dt_elem)
+
+    if local == "struct":
+        return StructType(
+            name=name,
+            members=_parse_struct_members(body),
+            comment=comment,
+        )
+
+    if local == "array":
+        bounds = _parse_dimensions(body)
+        elem_base = _require_child(body, "baseType",
+                                     f"<dataType name={name!r}> <array>")
+        # The element type lives inside the inner ``<baseType>``.
+        element_type = _parse_type_element(elem_base)
+        return ArrayType(
+            name=name,
+            element_type=element_type,
+            bounds=bounds,
+            comment=comment,
+        )
+
+    if local == "enum":
+        return EnumType(
+            name=name,
+            values=_parse_enum_values(body),
+            comment=comment,
+        )
+
+    if local in ("subrangeSigned", "subrangeUnsigned"):
+        rng = _require_child(body, "range",
+                               f"<dataType name={name!r}> <{local}>")
+        lo_s = rng.get("lower")
+        hi_s = rng.get("upper")
+        if lo_s is None or hi_s is None:
+            raise PlcopenParseError(
+                f"<range> missing lower= / upper= in subrange {name!r}"
+            )
+        try:
+            lower = int(lo_s); upper = int(hi_s)
+        except ValueError as exc:
+            raise PlcopenParseError(
+                f"<range> non-integer bounds in subrange {name!r}: "
+                f"lower={lo_s!r}, upper={hi_s!r}"
+            ) from exc
+        sub_base = _require_child(body, "baseType",
+                                    f"<dataType name={name!r}> <{local}>")
+        base_type = _parse_type_element(sub_base)
+        return SubrangeType(
+            name=name,
+            base=base_type,
+            lower=lower,
+            upper=upper,
+            comment=comment,
+        )
+
+    # Anything else inside <baseType> is either an elementary tag
+    # (``<INT/>``, etc.) or a ``<derived name=>`` reference -- in
+    # both cases the dataType is an alias.
+    base_type = _parse_type_element(base_wrap)
+    return AliasType(name=name, base=base_type, comment=comment)
 
 
 # -----------------------------------------------------------------------------
@@ -651,8 +795,17 @@ def parse_plcopen_xml(xml: str) -> Program:
 
     subroutines: list[Subroutine] = []
     tags: dict[str, Tag] = {}
+    user_types: list = []
 
     if types is not None:
+        # User-defined types come first so they're available for
+        # later type-resolution passes that walk POU variable
+        # interfaces and struct member types.
+        data_types_elem = _child(types, "dataTypes")
+        if data_types_elem is not None:
+            for dt in _children(data_types_elem, "dataType"):
+                user_types.append(_parse_dataType(dt))
+
         pous_elem = _child(types, "pous")
         if pous_elem is not None:
             for pou_elem in _children(pous_elem, "pou"):
@@ -671,6 +824,7 @@ def parse_plcopen_xml(xml: str) -> Program:
     return Program(
         subroutines=subroutines,
         tags=tags,
+        user_types=user_types,
         configurations=configurations,
         project_name=project_name,
         comment=project_comment,
