@@ -73,7 +73,8 @@ from ..il import (
     TagType, TaskSpec, Transition, Var, VarDirection, is_signed_subrange,
 )
 from ..il.ops import (
-    ContactNC, ContactNO, OutCoil, OutReset, OutSet,
+    ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
+    OutCoil, OutReset, OutSet,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1176,7 +1177,13 @@ def _emit_sfc_network_content(net) -> str:
 #: emission so the body stays well-formed (mixed LD + FBD blocks
 #: are valid per the XSD but deferred -- a future slice routes
 #: math / call / stdlib ops through the FBD ``<block>`` shape).
-_NATIVE_LD_OPS = (ContactNO, ContactNC, OutCoil, OutSet, OutReset)
+#:
+#: Edge contacts (rising / falling) emit via the standard
+#: ``<contact>`` element with the XSD-defined ``edge=`` attribute.
+_NATIVE_LD_OPS = (
+    ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
+    OutCoil, OutSet, OutReset,
+)
 
 
 def _is_pure_ld_rung(rung: Rung) -> bool:
@@ -1241,11 +1248,19 @@ def _emit_ld_rung_xml(rung: Rung, rung_idx: int,
     op_x = _LD_LEFT_X + _LD_OP_WIDTH
     coil_id: Optional[int] = None
     for op in rung.ops:
-        if isinstance(op, (ContactNO, ContactNC)):
+        if isinstance(op, (ContactNO, ContactNC,
+                            ContactRisingEdge, ContactFallingEdge)):
             this_id = next_local_id; next_local_id += 1
-            negated = ' negated="true"' if isinstance(op, ContactNC) else ""
+            attrs = []
+            if isinstance(op, ContactNC):
+                attrs.append('negated="true"')
+            if isinstance(op, ContactRisingEdge):
+                attrs.append('edge="rising"')
+            elif isinstance(op, ContactFallingEdge):
+                attrs.append('edge="falling"')
+            attr_str = (" " + " ".join(attrs)) if attrs else ""
             lines.append(
-                f'<contact localId="{this_id}"{negated}>'
+                f'<contact localId="{this_id}"{attr_str}>'
                 f'<position x="{op_x:g}" y="{y:g}"/>'
                 f'<connectionPointIn>'
                 f'<connection refLocalId="{prev_id}"/>'

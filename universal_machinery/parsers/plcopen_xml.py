@@ -71,7 +71,10 @@ from ..il import (
     Action, SfcNetwork, Step, StructType, SubrangeType, Subroutine, Tag,
     TagRef, TagType, TaskSpec, Transition, Var, VarDirection,
 )
-from ..il.ops import ContactNC, ContactNO, OutCoil, OutReset, OutSet
+from ..il.ops import (
+    ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
+    OutCoil, OutReset, OutSet,
+)
 
 
 #: PLCopen TC6 XML namespace (v2.01 schema).
@@ -1316,7 +1319,22 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
             if kind == "contact":
                 addr = _parse_ld_variable_operand(elem)
                 negated = _parse_bool_attr(elem, "negated")
-                ops.append(ContactNC(addr) if negated else ContactNO(addr))
+                # XSD ``edge=`` carries "rising" / "falling" / "none"
+                # (default).  IL distinguishes rising / falling via
+                # dedicated op classes -- ContactRisingEdge /
+                # ContactFallingEdge -- so we dispatch on the edge
+                # attr.  Negated edge contacts aren't modelled (the
+                # IL classes don't carry a negated flag); we drop
+                # negation in that case rather than failing.
+                edge = (elem.get("edge") or "none").lower()
+                if edge == "rising":
+                    ops.append(ContactRisingEdge(addr))
+                elif edge == "falling":
+                    ops.append(ContactFallingEdge(addr))
+                elif negated:
+                    ops.append(ContactNC(addr))
+                else:
+                    ops.append(ContactNO(addr))
                 cursor = chosen
                 continue
             if kind == "coil":
