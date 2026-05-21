@@ -72,8 +72,8 @@ from ..il import (
     TagRef, TagType, TaskSpec, Transition, Var, VarDirection,
 )
 from ..il.ops import (
-    Compare, ContactFallingEdge, ContactNC, ContactNO, ContactRisingEdge,
-    OutCoil, OutReset, OutSet, ParallelGroup,
+    BinaryMath, Compare, ContactFallingEdge, ContactNC, ContactNO,
+    ContactRisingEdge, OutCoil, OutReset, OutSet, ParallelGroup,
 )
 
 
@@ -1441,6 +1441,15 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
         "GE": ">=",
     }
 
+    #: IEC §2.5.2.5 arithmetic block typeNames -> IL ``BinaryMath.op``.
+    _BINARY_MATH_BLOCK_TO_OP = {
+        "ADD": "+",
+        "SUB": "-",
+        "MUL": "*",
+        "DIV": "/",
+        "MOD": "%",
+    }
+
     def _make_op_from_node(node_id: int):
         """Convert one LD element id (contact / coil) into its IL op."""
         elem = elements_by_id[node_id]
@@ -1475,6 +1484,24 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                     op=op_symbol,
                     lhs=_compare_operand_from_text(lhs_text),
                     rhs=_compare_operand_from_text(rhs_text),
+                )
+            if type_name in _BINARY_MATH_BLOCK_TO_OP:
+                op_symbol = _BINARY_MATH_BLOCK_TO_OP[type_name]
+                lhs_text = _trace_block_pin_operand(
+                    elem, "IN1", elements_by_id, kind_by_id
+                )
+                rhs_text = _trace_block_pin_operand(
+                    elem, "IN2", elements_by_id, kind_by_id
+                )
+                dst_text = _trace_block_out_consumer(
+                    node_id, "OUT", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                return BinaryMath(
+                    op=op_symbol,
+                    lhs=_compare_operand_from_text(lhs_text),
+                    rhs=_compare_operand_from_text(rhs_text),
+                    dst=_compare_operand_from_text(dst_text),
                 )
             if type_name == "MOVE":
                 # Trace IN back to its producing inVariable for
