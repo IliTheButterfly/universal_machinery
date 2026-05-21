@@ -184,6 +184,9 @@ class VarDirection(Enum):
     LOCAL     = "VAR"              # internal to the POU
     EXTERNAL  = "VAR_EXTERNAL"     # alias for a global / DataBlock member
     TEMP      = "VAR_TEMP"         # scratch, not persisted across scans
+    GLOBAL    = "VAR_GLOBAL"       # POU-scope global declaration (rare;
+                                   # most globals live at Resource /
+                                   # Configuration scope)
 
 
 @dataclass(frozen=True)
@@ -317,6 +320,14 @@ class Subroutine:
     outputs:    list[Var] = field(default_factory=list)
     in_outs:    list[Var] = field(default_factory=list)
     local_vars: list[Var] = field(default_factory=list)
+    # POU-scope VAR_GLOBAL declarations per IEC §2.4.3.  These differ
+    # from Resource / Configuration-level globals (carried by
+    # ``Resource.global_vars`` / ``Configuration.global_vars``): the
+    # POU-scope variant declares names visible only within this POU
+    # and one specifically-named external scope.  Rarely used in
+    # practice but accepted by IEC and the PLCopen TC6 v2.01 XSD's
+    # ``<globalVars>`` block inside ``<interface>``.
+    global_vars: list[Var] = field(default_factory=list)
     return_type: Optional[TagType] = None
     sfc: Optional["SfcNetwork"] = None
     st_body: Optional[list["Statement"]] = None
