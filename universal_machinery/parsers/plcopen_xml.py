@@ -2161,6 +2161,7 @@ def _parse_task(task_elem: ET.Element) -> TaskSpec:
         interval=task_elem.get("interval"),
         single=task_elem.get("single"),
         interrupt=task_elem.get("interrupt"),
+        comment=_extract_documentation(task_elem),
     )
 
 
@@ -2173,7 +2174,12 @@ def _parse_pou_instance(pi_elem: ET.Element,
             f"<pouInstance> requires both name= and typeName=; "
             f"got name={name!r}, typeName={type_name!r}"
         )
-    return PouInstance(name=name, type_name=type_name, task=task_name)
+    return PouInstance(
+        name=name,
+        type_name=type_name,
+        task=task_name,
+        comment=_extract_documentation(pi_elem),
+    )
 
 
 def _parse_resource(resource_elem: ET.Element) -> Resource:

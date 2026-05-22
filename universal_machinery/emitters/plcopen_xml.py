@@ -2763,12 +2763,22 @@ def _emit_task(task: TaskSpec,
     attrs.append(f"priority={quoteattr(str(task.priority))}")
     open_tag = f"<task {' '.join(attrs)}"
 
-    if not instances_for_task:
+    has_children = bool(instances_for_task) or bool(task.comment)
+    if not has_children:
         return open_tag + "/>"
 
     lines = [open_tag + ">"]
     for inst in instances_for_task:
         lines.append(_indent(_emit_pou_instance(inst), "  "))
+    if task.comment:
+        # PLCopen TC6 v2.01 ``<task>`` accepts an optional
+        # ``<documentation>`` child (``ppx:formattedText``).  The IL
+        # carries ``TaskSpec.comment`` -- preserve it through XML
+        # round-trip rather than silently dropping it.
+        lines.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(task.comment)}</p></documentation>'
+        )
     lines.append("</task>")
     return "\n".join(lines)
 
@@ -2818,6 +2828,15 @@ def _emit_resource(r: Resource) -> str:
     for inst in unbound:
         parts.append(_indent(_emit_pou_instance(inst), "  "))
 
+    if r.comment:
+        # PLCopen TC6 v2.01 ``<resource>`` accepts an optional
+        # ``<documentation>`` child -- preserve ``Resource.comment``
+        # through XML round-trip.
+        parts.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(r.comment)}</p></documentation>'
+        )
+
     parts.append("</resource>")
     return "\n".join(parts)
 
@@ -2851,6 +2870,15 @@ def _emit_configuration(cfg: Configuration) -> str:
 
     if cfg.config_vars:
         parts.append(_indent(_emit_config_vars(cfg.config_vars), "  "))
+
+    if cfg.comment:
+        # PLCopen TC6 v2.01 ``<configuration>`` accepts an optional
+        # ``<documentation>`` child -- preserve ``Configuration.comment``
+        # through XML round-trip.
+        parts.append(
+            f'  <documentation><p xmlns="http://www.w3.org/1999/xhtml">'
+            f'{escape(cfg.comment)}</p></documentation>'
+        )
 
     parts.append("</configuration>")
     return "\n".join(parts)
