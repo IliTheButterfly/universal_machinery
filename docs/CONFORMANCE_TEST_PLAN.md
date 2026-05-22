@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1206 tests**.
+counts are snapshotted; the current passing total is **1211 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -173,7 +173,7 @@ Status legend:
 | IL → PLCopen XML → IL (SFC body)           | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
 | IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
 | FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
-| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / CTU / R_TRIG / SR / Compare+Move / BinaryMath / ABS / FB call / FUNCTION POU + call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions) / UDTs (STRUCT field access + ARRAY index + ENUM literal) / ST control flow (IF-ELSE / CASE / FOR / WHILE / REPEAT) / CONFIGURATION + RESOURCE + TASK / direct rep AT clause (%IX/%QX) + vendor-AT comment fallback / VAR_EXTERNAL ↔ VAR_GLOBAL binding with config-scope AT clause.  26/26 cases pass on a real matiec install. |
+| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / CTU / R_TRIG / SR / Compare+Move / BinaryMath / ABS / FB call / FUNCTION POU + call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions) / UDTs (STRUCT field access + ARRAY index + ENUM literal + SUBRANGE + ALIAS) / ST control flow (IF-ELSE / CASE / FOR / WHILE / REPEAT) / CONFIGURATION + RESOURCE + TASK / direct rep AT clause (%IX/%QX) + vendor-AT comment fallback / VAR_EXTERNAL ↔ VAR_GLOBAL binding with config-scope AT clause / §2.5.2 stdlib (SEL/MIN/MAX/LIMIT selection + CONCAT/LEN string + INT_TO_REAL/REAL_TO_INT conversion).  31/31 cases pass on a real matiec install. |
 
 ## XSD-level conformance
 
@@ -278,4 +278,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1206 / 1206 passing**.
+status: **1211 / 1211 passing**.
