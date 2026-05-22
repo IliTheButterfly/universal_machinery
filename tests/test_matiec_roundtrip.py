@@ -319,8 +319,10 @@ def test_function_block_call_parses_in_matiec():
 
 
 def test_sfc_body_parses_in_matiec():
-    """SFC: steps + transitions + actions.  matiec supports SFC
-    in its grammar."""
+    """SFC body lowers to IEC §6.7 text form:
+    ``INITIAL_STEP``/``STEP``/``END_STEP`` + ``TRANSITION ...
+    END_TRANSITION`` + per-step action references.  matiec
+    accepts this directly."""
     sfc_net = SfcNetwork(
         steps=[
             Step("Init", initial=True),
@@ -336,16 +338,50 @@ def test_sfc_body_parses_in_matiec():
              sfc=sfc_net),
     ])
     rc, _out, err = _run_matiec(emit_program(p))
-    if rc != 0:
-        # matiec's SFC parser is more idiosyncratic than its LD/ST
-        # one; some grammar quirks (action declaration vs. inline,
-        # for instance) may need an emitter-side adjustment.
-        # Don't hide it -- skip with the diagnostic so the user
-        # can see what to fix.
-        pytest.skip(
-            f"matiec SFC parse failure (expected; SFC grammar is "
-            f"the loosest spec area):\n{err}"
-        )
+    assert rc == 0, f"matiec rejected SFC program:\n{err}"
+
+
+def test_sfc_with_simultaneous_convergence_parses_in_matiec():
+    """Multi-from transition emits ``FROM (A, B) TO Joined``."""
+    sfc_net = SfcNetwork(
+        steps=[
+            Step("A", initial=True),
+            Step("B", initial=True),
+            Step("Joined", actions=(Action(qualifier="N", target="done"),)),
+        ],
+        transitions=[
+            Transition(from_steps=("A", "B"), to_steps=("Joined",)),
+        ],
+    )
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[var("done", TagType.BOOL)],
+             sfc=sfc_net),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected simultaneous-conv SFC:\n{err}"
+
+
+def test_sfc_with_timed_action_parses_in_matiec():
+    """An action with ``time_ms`` emits ``act(L, T#500ms);``."""
+    sfc_net = SfcNetwork(
+        steps=[
+            Step("Init", initial=True),
+            Step("Run", actions=(
+                Action(qualifier="L", target="lamp", time_ms=500),
+            )),
+        ],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Run",)),
+        ],
+    )
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[var("lamp", TagType.BOOL)],
+             sfc=sfc_net),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected timed-action SFC:\n{err}"
 
 
 def test_program_with_jump_and_label_parses_in_matiec():
