@@ -174,7 +174,49 @@ Status legend:
 | IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
 | FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
 | IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / CTU / R_TRIG / SR / Compare+Move / BinaryMath / ABS / FB call / FUNCTION POU + call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions + hierarchical macroStep) / UDTs (STRUCT field access + ARRAY index + ENUM literal + SUBRANGE + ALIAS) / ST control flow (IF-ELSE / CASE / FOR / WHILE / REPEAT) / CONFIGURATION + RESOURCE + TASK / direct rep AT clause (%IX/%QX) + vendor-AT comment fallback / VAR_EXTERNAL ↔ VAR_GLOBAL binding with config-scope AT clause / §2.5.2 stdlib (SEL/MIN/MAX/LIMIT selection + CONCAT/LEN string + INT_TO_REAL/REAL_TO_INT conversion).  32/32 cases pass on a real matiec install. |
-| IL → ST → rusty ``plc -c`` parse + compile-accept | ✅ | tests/test_rusty_backend_integration.py — parent-side API-shape integration (4 tests); subprocess validation lives in the `rusty_backend` submodule's own CI on Ubuntu 24.04 (`backends/rusty/tests/test_smoke.py`).  Covers basic LD+TON+FUNCTION (with stdlib) plus IEC 3rd-edition OOP (METHOD + INTERFACE + IMPLEMENTS) -- the latter is the cert-grade asymmetry vs matiec, which rejects OOP at parse time |
+| IL → ST → rusty ``plc -c`` parse + compile-accept | ✅ | tests/test_rusty_backend_integration.py — parent-side API-shape integration (4 tests); subprocess validation lives in the `rusty_backend` submodule's own CI on Ubuntu 24.04.  Submodule test corpus mirrors matiec's: 32 cases via `tests/test_rusty_roundtrip.py` (24 pass, 8 xfail), plus 2 API + 2 round-trip tests in `tests/test_smoke.py`.  rusty + matiec acceptance asymmetries: see the [reference-compiler matrix](#reference-compiler-acceptance-matrix) below |
+
+## Reference-compiler acceptance matrix
+
+Two reference compilers exercise the ST emit path: **matiec** (a 2nd-edition IEC compiler powering OpenPLC) and **rusty** (an LLVM-based compiler, IEC 3rd-edition aware).  Each accepts a different slice of the language, so the cert claim is bounded by the *intersection* of the two for shapes both must accept and by *either* for shapes only one validates.
+
+| Construct | matiec | rusty | Notes |
+|---|---|---|---|
+| Pure LD (contacts + coils) | ✅ | ✅ | |
+| Compare + Move | ✅ | ✅ | |
+| BinaryMath (ADD/SUB/MUL/...) | ✅ | ✅ | |
+| jump + label | ✅ | ✅ | ST emit lowers to documenting comments per IEC §3 |
+| Timers (TON/TOF/TP) | ✅ | ✅ | both via stdlib |
+| Counters (CTU/CTD/CTUD) | ✅ | ✅ | both via stdlib |
+| Edge detectors (R_TRIG/F_TRIG) | ✅ | ✅ | |
+| SR set-dominant bistable | ✅ | xfail | rusty stdlib uses `SET1`/`RESET` (non-IEC names) |
+| RS reset-dominant bistable | ✅ | unverified | same shape as SR — likely same xfail |
+| `ABS` (stdlib call) | ✅ | ✅ | |
+| User FUNCTION_BLOCK + instance call | ✅ | ✅ | |
+| User FUNCTION POU + call | ✅ | ✅ | |
+| SFC text representation (§6.7) | ✅ | xfail | rusty v0.5.0 doesn't support `INITIAL_STEP`/`STEP`/`TRANSITION` |
+| UDTs (STRUCT/ARRAY/ENUM) | ✅ | ✅ | |
+| UDTs (SUBRANGE/ALIAS) | ✅ | ✅ | |
+| ST control flow (IF/CASE/FOR/WHILE/REPEAT) | ✅ | ✅ | |
+| CONFIGURATION / RESOURCE / TASK (§2.7) | ✅ | xfail | rusty v0.5.0 doesn't support `CONFIGURATION` blocks |
+| Direct rep AT clause (`%IX`/`%QX`) | ✅ | ✅ | |
+| Vendor-AT comment fallback | ✅ | ✅ | matiec / rusty see plain declarations; the AT becomes a comment |
+| VAR_EXTERNAL ↔ VAR_GLOBAL binding | ✅ | xfail | depends on the §2.7 wrapper rusty rejects |
+| §2.5.2.8 SEL / MAX / MIN | ✅ | ✅ | |
+| §2.5.2.8 LIMIT | ✅ | xfail | rusty stdlib uses `MIN`/`MAX` (non-IEC names; IEC: `MN`/`MX`) |
+| §2.5.2.9 CONCAT / LEN | ✅ | ✅ | |
+| §2.5.2.1 INT_TO_REAL / REAL_TO_INT | ✅ | ✅ | |
+| **IEC 3rd-edition OOP** | ❌ reject | ✅ | matiec is a 2nd-edition compiler; rusty is the only compiler validating METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT |
+
+**Intersection cert claim** (both compilers validate): 24 of the 32 covered constructs.  Big enough to anchor the practical Tier 1 PLCopen XML claim, since round-trip survival of those constructs through *both* reference compilers is the strong cert-grade signal.
+
+**Asymmetries**:
+- matiec validates SFC text + §2.7 system organisation + the IEC-named-parameter SR / LIMIT shapes that rusty currently rejects.
+- rusty validates IEC 3rd-edition OOP that matiec rejects at the parser level.
+
+Together the two cover most of the IEC 61131-3 §3 surface.
+
+xfail entries above are tracked in `backends/rusty/tests/test_rusty_roundtrip.py` with structured reasons.  If rusty closes a gap upstream, the test transitions from XFAIL to XPASS and we drop the marker.
 
 ## XSD-level conformance
 
