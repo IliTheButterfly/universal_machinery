@@ -71,6 +71,7 @@ nav:
   - Overview:
       - index.md
       - Architecture: ARCHITECTURE.md
+      - Roadmap: ROADMAP.md
   - Conformance:
       - IEC 61131-3 conformance: IEC_CONFORMANCE.md
       - Conformance test plan: CONFORMANCE_TEST_PLAN.md

@@ -81,7 +81,7 @@ um lint prog.json -f json         # machine-readable validation output
 
 ## Roadmap
 
-Headline pending items: finish the CLICK encoder so `Program → .ckp` round-trips; full-program ST parser; GUI; cross-platform packaging.  The full roadmap lives in `docs/ROADMAP.md` in the source tree.
+See [ROADMAP.md](ROADMAP.md).  Headline pending items: finish the CLICK encoder so `Program → .ckp` round-trips; full-program ST parser; GUI; cross-platform packaging.
 
 ## License
 
