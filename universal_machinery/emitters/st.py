@@ -1162,13 +1162,40 @@ def emit_program(prog: Program) -> str:
 
     if prog.data_blocks:
         for db in prog.data_blocks:
-            lines = [f"(* DATA_BLOCK {db.name}"
-                     f"{' instance of ' + db.fb_template if db.fb_template else ''} *)"]
-            lines.append("VAR_GLOBAL")
+            # Header: name + optional FB template (instance DB form)
+            # + optional base_address + optional free-form comment.
+            header_parts = [f"DATA_BLOCK {db.name}"]
+            if db.fb_template:
+                header_parts.append(f"instance of {db.fb_template}")
+            if db.base_address is not None:
+                header_parts.append(f"AT {db.base_address.raw}")
+            if db.comment:
+                header_parts.append(db.comment)
+            lines = [f"(* {'; '.join(header_parts)} *)", "VAR_GLOBAL"]
             for m in db.members:
+                # Members lower to flat ``<dbname>_<member>`` names in
+                # VAR_GLOBAL (IEC has no namespaced sub-DBs).  Honour
+                # each member's IEC §2.4.1.1 AT clause, initial value,
+                # and free-form comment -- mirrors ``_fmt_var_decl_line``
+                # semantics but with the qualified name.
+                at_inline = ""
+                comment_parts: list[str] = []
+                if m.address is not None:
+                    raw = m.address.raw
+                    if raw.startswith("%"):
+                        at_inline = f" AT {raw}"
+                    else:
+                        comment_parts.append(f"AT {raw}")
+                if m.comment:
+                    comment_parts.append(m.comment)
+                init = f" := {m.initial_value}" if m.initial_value else ""
+                member_comment = (
+                    f"  (* {'; '.join(comment_parts)} *)"
+                    if comment_parts else ""
+                )
                 lines.append(
-                    f"    {db.name}_{m.name} : "
-                    f"{_fmt_iec_type(m.data_type)};"
+                    f"    {db.name}_{m.name}{at_inline} : "
+                    f"{_fmt_iec_type(m.data_type)}{init};{member_comment}"
                 )
             lines.append("END_VAR")
             sections.append("\n".join(lines))
