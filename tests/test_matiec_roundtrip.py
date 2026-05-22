@@ -87,7 +87,7 @@ from universal_machinery.il.sfc import (
     Action, SfcNetwork, Step, Transition,
 )
 from universal_machinery.il.types import (
-    ArrayType, EnumType, StructType,
+    AliasType, ArrayType, EnumType, StructType, SubrangeType,
 )
 from universal_machinery.emitters.st import emit_program
 
@@ -904,3 +904,133 @@ def test_var_external_to_config_global_with_at_clause_parses_in_matiec():
     assert rc == 0, (
         f"matiec rejected VAR_EXTERNAL <-> VAR_GLOBAL config:\n{err}"
     )
+
+
+# -----------------------------------------------------------------------------
+# Extra UDT siblings -- SUBRANGE / ALIAS (round out STRUCT/ARRAY/ENUM coverage)
+# -----------------------------------------------------------------------------
+
+
+def test_subrange_type_parses_in_matiec():
+    """SUBRANGE UDT emits as ``TYPE Name : <Base> (lo..hi);
+    END_TYPE`` per IEC §2.3.3.1.  Variables typed with the
+    subrange use the underlying integer space at runtime."""
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    percent = SubrangeType(
+        name="Percent",
+        base=TagType.INT,
+        lower=0,
+        upper=100,
+    )
+    p = program(
+        user_types=[percent],
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[
+                     var("raw", TagType.INT),
+                     Var(name="pct", data_type=NamedType("Percent"),
+                         direction=VarDirection.LOCAL),
+                 ],
+                 rungs=[
+                     rung(move("raw", "pct")),
+                 ]),
+        ],
+    )
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected SUBRANGE program:\n{err}"
+
+
+def test_alias_type_parses_in_matiec():
+    """ALIAS UDT emits as ``TYPE Name : <Base>; END_TYPE`` per
+    IEC §2.3.3.4.  Aliases are runtime-identical to their base."""
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    speed = AliasType(name="Speed", base=TagType.REAL)
+    p = program(
+        user_types=[speed],
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[
+                     var("raw", TagType.REAL),
+                     Var(name="v", data_type=NamedType("Speed"),
+                         direction=VarDirection.LOCAL),
+                 ],
+                 rungs=[
+                     rung(move("raw", "v")),
+                 ]),
+        ],
+    )
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected ALIAS program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# IEC §2.5.2 standard library shapes via ``fcall_expr`` -- selection,
+# string, type-conversion families.
+# -----------------------------------------------------------------------------
+
+
+def test_selection_functions_parse_in_matiec():
+    """IEC §2.5.2.8 selection functions: ``SEL`` (named-arg form),
+    ``MAX`` / ``MIN`` (positional N-ary), ``LIMIT`` (named-arg
+    triple).  All should parse cleanly through matiec."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("g", TagType.BOOL),
+                 var("a", TagType.INT),
+                 var("b", TagType.INT),
+                 var("c", TagType.INT),
+                 var("r", TagType.INT),
+             ],
+             st_body=[
+                 assign("r", fcall_expr("SEL", G="g", IN0="a", IN1="b")),
+                 assign("r", fcall_expr("MAX", "a", "b", "c")),
+                 assign("r", fcall_expr("MIN", "a", "b", "c")),
+                 assign("r", fcall_expr("LIMIT",
+                                          MN="a", IN="b", MX="c")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected selection-fn program:\n{err}"
+
+
+def test_string_functions_parse_in_matiec():
+    """IEC §2.5.2.9 character-string functions ``CONCAT`` (returns
+    STRING) and ``LEN`` (returns INT).  Both round-trip cleanly."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("a", TagType.STRING),
+                 var("b", TagType.STRING),
+                 var("joined", TagType.STRING),
+                 var("n", TagType.INT),
+             ],
+             st_body=[
+                 assign("joined", fcall_expr("CONCAT", "a", "b")),
+                 assign("n", fcall_expr("LEN", "joined")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected string-fn program:\n{err}"
+
+
+def test_type_conversion_functions_parse_in_matiec():
+    """IEC §2.5.2.1 type-conversion functions
+    (``INT_TO_REAL`` / ``REAL_TO_INT``).  Conversion pairs are the
+    largest single family in §2.5.2; these two pin the canonical
+    naming convention works through matiec."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("i", TagType.INT),
+                 var("r", TagType.REAL),
+             ],
+             st_body=[
+                 assign("r", fcall_expr("INT_TO_REAL", "i")),
+                 assign("i", fcall_expr("REAL_TO_INT", "r")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected type-conv program:\n{err}"
