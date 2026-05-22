@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1190 tests**.
+counts are snapshotted; the current passing total is **1193 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -43,11 +43,11 @@ Status legend:
 | §2.2    | PROGRAM          | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_program_with_inputs_outputs_locals |
 | §2.2    | FUNCTION         | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_function_preserves_return_type |
 | §2.2    | FUNCTION_BLOCK   | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_function_block_with_in_out |
-| §2.5.1.5| METHOD (3rd ed.) | ⚠️     | tests/il/test_oop.py — ST + JSON only; PLCopen XSD lacks `<method>` until v2.02+ |
-| §2.5.1.5| INTERFACE        | ⚠️     | tests/il/test_oop.py — same caveat |
-| §2.5.1.5| EXTENDS          | ⚠️     | tests/il/test_oop.py |
-| §2.5.1.5| IMPLEMENTS       | ⚠️     | tests/il/test_oop.py |
-| §2.5.1.5| ABSTRACT         | ⚠️     | tests/il/test_oop.py |
+| §2.5.1.5| METHOD (3rd ed.) | ⚠️     | tests/il/test_oop.py — ST + JSON only; doubly blocked for cert (no PLCopen v2.02 XSD + matiec rejects METHOD as a 2nd-edition compiler) |
+| §2.5.1.5| INTERFACE        | ⚠️     | tests/il/test_oop.py — same doubly-blocked posture |
+| §2.5.1.5| EXTENDS          | ⚠️     | tests/il/test_oop.py — matiec rejects `EXTENDS` |
+| §2.5.1.5| IMPLEMENTS       | ⚠️     | tests/il/test_oop.py — depends on INTERFACE |
+| §2.5.1.5| ABSTRACT         | ⚠️     | tests/il/test_oop.py — depends on METHOD |
 
 ## §2.3.3 User-defined types
 
@@ -173,7 +173,7 @@ Status legend:
 | IL → PLCopen XML → IL (SFC body)           | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
 | IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
 | FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
-| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / Compare+Move / BinaryMath / ABS / FB call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions).  10/10 cases pass on a real matiec install. |
+| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / CTU / R_TRIG / SR / Compare+Move / BinaryMath / ABS / FB call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions).  13/13 cases pass on a real matiec install. |
 
 ## XSD-level conformance
 
@@ -278,4 +278,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1190 / 1190 passing**.
+status: **1193 / 1193 passing**.
