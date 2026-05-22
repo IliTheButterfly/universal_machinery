@@ -187,41 +187,59 @@ def test_unconditional_return():
     assert emit_rung(r) == ["RETURN;"]
 
 
-def test_jump_and_label():
+def test_jump_lowers_to_comment_not_GOTO():
+    """IEC §3 ST has no ``GOTO`` -- emitting it produces an
+    XSD-valid but matiec-rejected program.  We emit a comment
+    instead, embedding the rung gate as documentation so the
+    intent isn't lost."""
     r1 = rung(no("skip"), jump("loop_top"))
+    out = emit_rung(r1)
+    assert len(out) == 1
+    assert "GOTO" not in out[0]   # the bug we fixed
+    assert "JUMP loop_top" in out[0]
+    assert "gated by skip" in out[0]
+
+
+def test_label_lowers_to_comment_not_label_syntax():
+    """Standard IEC ST has no ``label:`` syntax either."""
     r2 = rung(label_("loop_top"))
-    assert emit_rung(r1) == ["IF skip THEN GOTO loop_top; END_IF;"]
-    assert emit_rung(r2) == ["loop_top:"]
+    out = emit_rung(r2)
+    assert len(out) == 1
+    assert "LABEL loop_top" in out[0]
+    # No standalone label colon
+    assert "loop_top:" not in out[0].replace("LABEL loop_top", "")
 
 
 # -----------------------------------------------------------------------------
-# Stateful FBs emit a placeholder comment (first cut; instance
-# synthesis is a follow-up pass)
+# Stateful FBs lower to canonical IEC ST FB-instance calls.
+# Previously emitted comment-only placeholders; matiec rejected
+# ``IF gate THEN (* comment *) END_IF;`` because the IF body
+# was empty.  The canonical call shape uses the FB instance
+# name as a function-call target.
 # -----------------------------------------------------------------------------
 
 
-def test_ton_emits_placeholder_comment():
-    r = rung(no("X1"), ton("T0", 1000))
+def test_ton_emits_canonical_FB_instance_call():
+    r = rung(no("X1"), ton("T0", 1000, done_bit="Y0"))
     stmts = emit_rung(r)
-    assert len(stmts) == 1
-    assert "TON" in stmts[0]
-    assert "T0" in stmts[0]
-    assert "1000ms" in stmts[0]
+    # Lines should be: T0(IN := X1, PT := T#1000ms);  +  Y0 := T0.Q;
+    assert any("T0(IN := X1, PT := T#1000ms);" in s for s in stmts)
+    assert any("Y0 := T0.Q" in s for s in stmts)
 
 
-def test_r_trig_emits_placeholder_comment():
+def test_r_trig_emits_canonical_FB_call():
     r = rung(r_trig("C100", "X001", "Y001"))
     stmts = emit_rung(r)
-    assert len(stmts) == 1
-    assert "R_TRIG" in stmts[0]
-    assert "X001" in stmts[0]
+    # CLK gets bound; Q output reads from the instance
+    assert any("C100(CLK := X001);" in s for s in stmts)
+    assert any("Y001 := C100.Q" in s for s in stmts)
 
 
-def test_sr_emits_placeholder_comment():
+def test_sr_emits_canonical_FB_call():
     r = rung(sr("Y010", "X001", "X002"))
     stmts = emit_rung(r)
-    assert len(stmts) == 1
-    assert "SR" in stmts[0] and "Y010" in stmts[0]
+    # Q1's storage IS the instance name per IEC §2.5.2.3.3
+    assert any("Y010(S1 := X001, R := X002);" in s for s in stmts)
 
 
 # -----------------------------------------------------------------------------

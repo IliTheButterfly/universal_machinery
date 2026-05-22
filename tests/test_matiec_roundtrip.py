@@ -193,21 +193,29 @@ def test_pure_ld_program_parses_in_matiec():
 
 
 def test_ld_with_timer_FB_parses_in_matiec():
-    """Stateful FB (TON) requires matiec's standard library."""
+    """Stateful FB (TON) lowers to a canonical IEC ST FB-instance
+    call (``t1(IN := trigger, PT := T#1000ms); done := t1.Q;``).
+    The instance variable must be declared with the FB type;
+    we use ``NamedType("TON")`` since the IL's TagType enum
+    doesn't include FB types directly."""
     if MATIEC_STDLIB is None:
         pytest.skip(
             "matiec stdlib include dir not found; can't resolve "
             "TON prototype.  Tested locations: "
             f"{_MATIEC_STDLIB_CANDIDATES}"
         )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
     p = program(subroutines=[
         prog("Main", main=True,
              local_vars=[
                  var("trigger", TagType.BOOL),
                  var("done", TagType.BOOL),
-                 var("t1", TagType.BOOL),    # placeholder type; matiec
-                                                    # will pick up TON instance
-                                                    # from the rung context
+                 # FB instance declared with type ``TON`` -- the IL
+                 # accepts NamedType in Var.data_type and the ST
+                 # emitter renders it as ``t1 : TON;``.
+                 Var(name="t1", data_type=NamedType("TON"),
+                     direction=VarDirection.LOCAL),
              ],
              rungs=[
                  rung(no("trigger"),
