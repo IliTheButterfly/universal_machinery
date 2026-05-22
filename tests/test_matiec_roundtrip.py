@@ -74,12 +74,15 @@ from pathlib import Path
 import pytest
 
 from universal_machinery.builders import (
-    abs_, add, and_, coil, ctu, eq, fb, fn, jump, label_, no, prog,
+    abs_, add, and_, coil, ctu, eq, fb, fn, jump, label_, move, no, prog,
     program, r_trig, ret, rung, sel, sr, ton, var, var_in, var_out,
 )
 from universal_machinery.il import TagType
 from universal_machinery.il.sfc import (
     Action, SfcNetwork, Step, Transition,
+)
+from universal_machinery.il.types import (
+    ArrayType, EnumType, StructType,
 )
 from universal_machinery.emitters.st import emit_program
 
@@ -489,3 +492,98 @@ def test_program_with_jump_and_label_parses_in_matiec():
     ])
     rc, _out, err = _run_matiec(emit_program(p))
     assert rc == 0, f"matiec rejected jump/label program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# User-defined types -- IEC §2.3.3 round-trip through matiec
+# -----------------------------------------------------------------------------
+
+
+def test_struct_type_parses_in_matiec():
+    """STRUCT UDT emits as ``TYPE Name : STRUCT field : type; ...
+    END_STRUCT; END_TYPE``.  Field access from a ``Move`` op with
+    a dotted destination (``pt.x``) round-trips through matiec
+    cleanly."""
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    point = StructType(
+        name="Point",
+        members=(
+            Var(name="x", data_type=TagType.INT,
+                direction=VarDirection.LOCAL),
+            Var(name="y", data_type=TagType.INT,
+                direction=VarDirection.LOCAL),
+        ),
+    )
+    p = program(
+        user_types=[point],
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[
+                     var("source", TagType.INT),
+                     Var(name="pt", data_type=NamedType("Point"),
+                         direction=VarDirection.LOCAL),
+                 ],
+                 rungs=[
+                     rung(move("source", "pt.x")),
+                 ]),
+        ],
+    )
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected STRUCT program:\n{err}"
+
+
+def test_array_type_parses_in_matiec():
+    """ARRAY UDT emits as ``TYPE Name : ARRAY [lo..hi] OF
+    ElemType; END_TYPE``.  Index access from a ``Move`` op with a
+    bracket-form destination (``v[0]``) parses through matiec."""
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    vec = ArrayType(
+        name="Vec10",
+        element_type=TagType.INT,
+        bounds=((0, 9),),
+    )
+    p = program(
+        user_types=[vec],
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[
+                     var("idx", TagType.INT),
+                     Var(name="v", data_type=NamedType("Vec10"),
+                         direction=VarDirection.LOCAL),
+                 ],
+                 rungs=[
+                     rung(move("idx", "v[0]")),
+                 ]),
+        ],
+    )
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected ARRAY program:\n{err}"
+
+
+def test_enum_type_parses_in_matiec():
+    """ENUM UDT emits as ``TYPE Name : (V1, V2, V3); END_TYPE``.
+    Assigning a bare enum value (``c := RED``) round-trips
+    cleanly through matiec."""
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    color = EnumType(
+        name="Color",
+        values=("RED", "GREEN", "BLUE"),
+    )
+    p = program(
+        user_types=[color],
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[
+                     Var(name="c", data_type=NamedType("Color"),
+                         direction=VarDirection.LOCAL),
+                 ],
+                 rungs=[
+                     rung(move("RED", "c")),
+                 ]),
+        ],
+    )
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected ENUM program:\n{err}"

@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1193 tests**.
+counts are snapshotted; the current passing total is **1196 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -173,7 +173,7 @@ Status legend:
 | IL → PLCopen XML → IL (SFC body)           | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
 | IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
 | FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
-| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / CTU / R_TRIG / SR / Compare+Move / BinaryMath / ABS / FB call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions).  13/13 cases pass on a real matiec install. |
+| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / CTU / R_TRIG / SR / Compare+Move / BinaryMath / ABS / FB call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions) / UDTs (STRUCT field access + ARRAY index + ENUM literal).  16/16 cases pass on a real matiec install. |
 
 ## XSD-level conformance
 
@@ -278,4 +278,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1193 / 1193 passing**.
+status: **1196 / 1196 passing**.
