@@ -226,6 +226,95 @@ def test_ld_with_timer_FB_parses_in_matiec():
     assert rc == 0, f"matiec rejected TON program:\n{err}"
 
 
+def test_ld_with_up_counter_FB_parses_in_matiec():
+    """CTU instance call: ``counter(CU := gate, R := reset_bit,
+    PV := 5); done := counter.Q; cv := counter.CV;`` — the
+    canonical IEC §2.5.2.3.2 up-counter pattern.  Mirrors the TON
+    coverage for the counter family fixed in PR #57."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "CTU prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("gate", TagType.BOOL),
+                 var("reset_bit", TagType.BOOL),
+                 var("done", TagType.BOOL),
+                 var("cv", TagType.INT),
+                 Var(name="counter_inst", data_type=NamedType("CTU"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(no("gate"),
+                       ctu("counter_inst", 5,
+                           reset="reset_bit",
+                           done_bit="done",
+                           accumulator="cv")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected CTU program:\n{err}"
+
+
+def test_ld_with_r_trig_FB_parses_in_matiec():
+    """R_TRIG instance call: ``rt(CLK := trigger); pulse := rt.Q;``.
+    The ``state`` field on RTrig is the FB instance name, since
+    R_TRIG carries its previous-CLK state internally per IEC
+    §2.5.2.3.3."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "R_TRIG prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("trigger", TagType.BOOL),
+                 var("pulse", TagType.BOOL),
+                 Var(name="rt", data_type=NamedType("R_TRIG"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(r_trig(state="rt", clk="trigger", q="pulse")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected R_TRIG program:\n{err}"
+
+
+def test_ld_with_sr_bistable_FB_parses_in_matiec():
+    """SR bistable: ``output(S1 := setbtn, R := resetbtn);`` — the
+    SR instance's Q1 storage doubles as the instance name per IEC
+    §2.5.2.3.3, so ``output`` is declared as the FB type."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "SR prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("setbtn", TagType.BOOL),
+                 var("resetbtn", TagType.BOOL),
+                 Var(name="output", data_type=NamedType("SR"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(sr(q1="output", s1="setbtn", r="resetbtn")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected SR program:\n{err}"
+
+
 def test_ld_with_compare_and_move_parses_in_matiec():
     """Native LD shapes for Compare + Move via inline ops."""
     from universal_machinery.il.ops import Compare, Move
