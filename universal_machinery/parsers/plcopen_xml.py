@@ -19,36 +19,40 @@ Both raise :class:`PlcopenParseError` for malformed XML or
 schema-shaped content we can't yet handle (a follow-up slice
 adds graphical-body parsing).
 
-Coverage (V1)
--------------
+Coverage
+--------
 
   - ✅ POU declarations: PROGRAM / FUNCTION / FUNCTION_BLOCK with
         their interface variable blocks, return types, and
         comments.
   - ✅ Variable blocks: inputVars / outputVars / inOutVars /
-        localVars / externalVars / tempVars with elementary
-        ``TagType`` -- per-variable name, type, address,
-        initialValue, comment.
-  - ✅ Configuration / Resource / Task / PouInstance / globalVars
+        localVars / globalVars (POU-scope) / externalVars /
+        tempVars with elementary types, user-defined types
+        (STRUCT / ARRAY / ENUM / ALIAS / SUBRANGE), per-variable
+        name / type / address / initialValue / comment.
+  - ✅ Configuration / Resource / Task / PouInstance + globalVars
         at both configuration and resource scope.
-  - ✅ accessVars / configVars round-trip via the new ``AccessVar``
+  - ✅ accessVars / configVars round-trip via the ``AccessVar``
         and ``ConfigVar`` dataclasses.
-  - ✅ ST body text captured verbatim into
-        ``Subroutine.st_body`` as a single
-        :class:`il.CommentStatement` carrying the raw source --
-        round-trip-safe but not parsed into structured ST AST.
-        A follow-up slice adds the real ST text parser.
+  - ✅ Graphical bodies: LD / FBD / SFC.  LD covers contacts +
+        coils + parallel groups + Compare / Move / BinaryMath /
+        StdFunc / Call ``<block>`` shapes + all IEC §2.5.2.3
+        stateful FBs + control-flow ops.  SFC covers steps +
+        transitions + action blocks (incl. inline ST) +
+        divergence/convergence markers + jumpStep + macroStep.
+        FBD covers FbBlock + InVariable / OutVariable /
+        InOutVariable + FbdLabel / FbdJump / FbdReturn.
+  - ✅ User-defined type declarations (``<dataTypes>``):
+        STRUCT / ARRAY / ENUM / ALIAS / SUBRANGE.
+  - ✅ ST body text parses into structured IEC §3 AST via the
+        ``st_text`` parser; falls back to a single
+        :class:`il.CommentStatement` carrying the raw source
+        when the text doesn't lex (defensive partial-import path).
 
-Coverage gaps (deferred)
-~~~~~~~~~~~~~~~~~~~~~~~~
+Coverage gaps
+~~~~~~~~~~~~~
 
-  - ❌ Graphical bodies: LD / FBD / SFC.  Element-level XSD
-        structure is well-defined; reversing the connection
-        graph is a focused slice of its own.
-  - ❌ User-defined types (``<dataTypes>``): STRUCT / ARRAY /
-        ENUM / SUBRANGE / ALIAS declarations -- the emitter
-        produces them but V1 reader skips with a warning.
-  - ❌ Methods / Interfaces (IEC 3rd ed.): TC6 v2.01 XSD has
+  - ⚠️ Methods / Interfaces (IEC 3rd ed.): TC6 v2.01 XSD has
         no native shape for these, so emitter / reader both
         skip the OOP layer pending v2.02+ schema upgrade.
 
@@ -1153,7 +1157,8 @@ def _parse_sfc_body(sfc_elem: ET.Element) -> SfcNetwork:
                 )
             incoming = _collect_refs(_child(child, "connectionPointIn"))
             jump_steps_raw.append((target_name, incoming))
-        # macroStep still deferred -- silently skipped.
+        # ``macroStep`` is handled by the ``elif local == "macroStep":``
+        # branch above; no other SFC element kinds remain deferred.
 
     def _trace_to_endpoints(ref_id: int, depth: int = 0) -> list[int]:
         """Resolve a ``refLocalId=`` by following marker indirection
@@ -1997,9 +2002,11 @@ def _parse_body_text(body_elem: ET.Element) -> Optional[list]:
     """
     st_elem = _child(body_elem, "ST")
     if st_elem is None:
-        # LD / FBD / SFC bodies are deferred; return None so the
-        # caller can decide whether to skip the POU's body, warn,
-        # or raise.
+        # This helper handles only ST text bodies; LD / FBD / SFC
+        # are recognised by the caller (``_parse_pou``) and routed
+        # to their dedicated parsers.  ``None`` here means "not an
+        # ST body" so the caller can fall through (typically no
+        # body present -- empty POU).
         return None
     # The ST body is XHTML-wrapped: <ST><xhtml:pre>...</xhtml:pre></ST>
     # (or <xhtml:p>, or sometimes naked text).  Collect every leaf
@@ -2038,7 +2045,9 @@ def _parse_pou(pou_elem: ET.Element) -> Subroutine:
           </interface>
           <body>
             <ST><xhtml:pre>...</xhtml:pre></ST>
-            (or <LD>/<FBD>/<SFC> -- deferred)
+            | <LD>...</LD>
+            | <FBD>...</FBD>
+            | <SFC>...</SFC>
           </body>?
           <documentation>...</documentation>?
         </pou>
