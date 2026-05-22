@@ -74,11 +74,15 @@ from pathlib import Path
 import pytest
 
 from universal_machinery.builders import (
-    abs_, add, and_, assign, case_, case_clause, coil, ctu, eq, fb, fn,
-    for_, if_, jump, label_, move, no, prog, program, r_trig, repeat_,
-    ret, rung, sel, sr, ton, var, var_in, var_out, while_,
+    abs_, add, and_, assign, case_, case_clause, coil, ctu, eq, fb,
+    fcall_expr, fn, for_, if_, jump, label_, move, no, prog, program,
+    r_trig, repeat_, ret, rung, sel, sr, ton, var, var_in, var_out,
+    while_,
 )
 from universal_machinery.il import TagType
+from universal_machinery.il.configuration import (
+    Configuration, PouInstance, Resource, TaskSpec,
+)
 from universal_machinery.il.sfc import (
     Action, SfcNetwork, Step, Transition,
 )
@@ -690,3 +694,76 @@ def test_st_repeat_loop_parses_in_matiec():
     ])
     rc, _out, err = _run_matiec(emit_program(p))
     assert rc == 0, f"matiec rejected REPEAT program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# FUNCTION POU + call -- IEC §2.2 round-trip through matiec
+# -----------------------------------------------------------------------------
+
+
+def test_function_pou_definition_and_call_parses_in_matiec():
+    """A user-defined FUNCTION POU declared via ``fn(...)`` with
+    a return type plus a call from a PROGRAM body via
+    ``fcall_expr(name, ...)``.  Exercises both halves of the IEC
+    §2.2 FUNCTION cycle: declaration shape and call-site shape."""
+    p = program(subroutines=[
+        fn("Doubled",
+           return_type=TagType.INT,
+           inputs=[var_in("x", TagType.INT)],
+           st_body=[
+               assign("Doubled", "x"),
+           ]),
+        prog("Main", main=True,
+             local_vars=[
+                 var("a", TagType.INT),
+                 var("result", TagType.INT),
+             ],
+             st_body=[
+                 assign("result", fcall_expr("Doubled", "a")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected FUNCTION POU program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# §2.7 system organisation -- CONFIGURATION / RESOURCE / TASK
+# -----------------------------------------------------------------------------
+
+
+def test_configuration_resource_task_parses_in_matiec():
+    """A full ``CONFIGURATION <name> RESOURCE <name> ON PLC TASK
+    ... PROGRAM <inst> WITH <task> : <type>; END_RESOURCE
+    END_CONFIGURATION`` wrapper around a PROGRAM POU.  Validates
+    that our IEC §2.7 system-organisation emit is parser-accepted
+    by matiec end-to-end."""
+    p = program(
+        subroutines=[
+            prog("Main",
+                 local_vars=[
+                     var("x", TagType.BOOL),
+                     var("y", TagType.BOOL),
+                 ],
+                 rungs=[rung(no("x"), coil("y"))]),
+        ],
+        configurations=[
+            Configuration(
+                name="Plant",
+                resources=[
+                    Resource(
+                        name="PLC1",
+                        tasks=[TaskSpec(name="Fast",
+                                         interval="T#100ms",
+                                         priority=1)],
+                        pou_instances=[
+                            PouInstance(name="MainInst",
+                                          type_name="Main",
+                                          task="Fast"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected CONFIGURATION program:\n{err}"
