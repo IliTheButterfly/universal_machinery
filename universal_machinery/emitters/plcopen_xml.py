@@ -25,27 +25,42 @@ This emitter uses ``<ST>`` bodies populated by the
 ``universal_machinery.emitters.st`` module -- the most portable
 output (every conformant tool accepts ST).
 
-Coverage scope (first cut)
---------------------------
+Coverage scope
+--------------
 
-  - ✅ POU declarations: PROGRAM, FUNCTION, FUNCTION_BLOCK
-  - ✅ Variable declarations: VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR
+  - ✅ POU declarations: PROGRAM / FUNCTION / FUNCTION_BLOCK
+  - ✅ Variable declarations: VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT /
+        VAR / VAR_GLOBAL (POU-scope) / VAR_EXTERNAL / VAR_TEMP
   - ✅ Return type for FUNCTION
-  - ✅ ST body via emit_pou_body_st() -- routes authored
+  - ✅ User-defined types: STRUCT / ARRAY / ENUM / ALIAS / SUBRANGE
+  - ✅ ST body via ``_emit_pou_body_st`` -- routes authored
         ``st_body`` (IEC §3 AST) directly through the ST emitter;
-        falls back to LD-rung-to-ST translation when ``st_body``
-        is absent
-  - ✅ Tag declarations as a global VAR_GLOBAL block (PLCopen
+        falls back to LD-rung-to-ST translation for the rare ops
+        without a native LD shape (``End``)
+  - ✅ LD body via ``_emit_pou_body_ld`` -- all contact / coil /
+        parallel / block / control-flow ops lower natively to
+        their XSD elements (commonObjects + ldObjects groups)
+  - ✅ SFC body via ``_emit_pou_body_sfc`` -- steps, transitions,
+        action blocks (incl. inline ST bodies), simultaneous /
+        selection divergence + convergence markers, jumpStep,
+        macroStep
+  - ✅ FBD body via ``_emit_pou_body_fbd`` -- FbBlock / InVariable /
+        OutVariable / InOutVariable + FbdLabel / FbdJump / FbdReturn
+  - ✅ Tag declarations as program-scope VAR_GLOBAL (PLCopen
         wraps these as ``<globalVars>`` inside ``<configurations>``;
         without the full configuration model we emit them as a
         synthetic ``Globals`` POU's VAR section for round-trip
         portability)
-  - ⚠️ DataBlocks: emitted as commented placeholders; proper
-        STRUCT type declarations need the user-defined-type slice
-  - ❌ CONFIGURATION / RESOURCE / TASK (PLCopen ``<instances>``):
-        skipped; deferred to the configuration-model slice
-  - ❌ SFC and LD body XML: ST-only first cut
-  - ❌ METHOD / INTERFACE (IEC 3rd ed.): skipped
+  - ✅ CONFIGURATION / RESOURCE / TASK / VAR_ACCESS / VAR_CONFIG
+        (PLCopen ``<instances><configurations>``)
+  - ⚠️ DataBlocks: emitted as commented placeholders; the
+        STRUCT/ARRAY/ALIAS user-defined types cover the typical
+        cases more idiomatically
+  - ⚠️ METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT (IEC
+        3rd ed. OOP): the IL models them, ST emission is
+        complete, but the PLCopen TC6 v2.01 XSD predates IEC
+        3rd-ed and has no ``<method>`` element -- XML emission
+        is incomplete pending a v2.02+ schema upgrade
 
 Output is hand-rolled XML rather than using xml.etree because:
 
@@ -1204,15 +1219,25 @@ def _emit_sfc_network_content(net) -> str:
 
 #: Op kinds that can lower to native LD primitives.  Any rung
 #: containing an op outside this set falls back to ST-text
-#: emission so the body stays well-formed (mixed LD + FBD blocks
-#: are valid per the XSD but deferred -- a future slice routes
-#: math / call / stdlib ops through the FBD ``<block>`` shape).
+#: emission so the body stays well-formed.  In practice ``End``
+#: is the only IL op without a native LD shape -- the IEC §6.6
+#: "end of main program" concept has no graphical XSD element.
 #:
-#: Edge contacts (rising / falling) emit via the standard
-#: ``<contact>`` element with the XSD-defined ``edge=`` attribute.
-#: ParallelGroup lowers to multi-incoming wires at the branch
-#: join (the next op after the group), recursively handling
-#: nested groups inside branches.
+#: Native-LD lowering details:
+#:   - Contacts (NO / NC / rising / falling edge, optionally
+#:     negated) -> ``<contact>`` with ``negated=`` / ``edge=``
+#:   - Coils (regular / SET / RESET) -> ``<coil>`` with
+#:     ``storage=``
+#:   - ParallelGroup -> multi-incoming wires at the branch
+#:     join, recursively for nested groups
+#:   - Compare / BinaryMath / Move / StdFunc / Call ->
+#:     ``<block typeName=...>`` plus auxiliary ``<inVariable>`` /
+#:     ``<outVariable>`` for operand wires
+#:   - Stateful FBs (TON / TOF / TP / CTU / CTD / CTUD / SR / RS /
+#:     R_TRIG / F_TRIG) -> ``<block typeName=... instanceName=...>``
+#:   - Control flow (Jump / Label / Return) -> dedicated
+#:     ``<jump>`` / ``<label>`` / ``<return>`` elements
+#:     (commonObjects group)
 _NATIVE_LD_OPS = (
     ContactNO, ContactNC, ContactRisingEdge, ContactFallingEdge,
     OutCoil, OutSet, OutReset, ParallelGroup,
