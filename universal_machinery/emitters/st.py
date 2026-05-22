@@ -612,6 +612,123 @@ def _pou_keyword(sub: Subroutine) -> str:
     return "PROGRAM" if sub.main else "FUNCTION_BLOCK"
 
 
+def _action_target_text(target) -> str:
+    """One ``Action.target`` -> the textual operand carried in
+    a ``<step_body> action_target(qualifier);`` SFC statement.
+
+    Mirrors ``_action_target_text`` in the PLCopen XML emitter
+    but returns just the operand string (not XML-escaped).
+    """
+    if hasattr(target, "raw"):           # Address
+        return target.raw
+    if hasattr(target, "name"):           # TagRef
+        return target.name
+    return str(target)
+
+
+def _emit_sfc_st_body(net, indent: str, level: int) -> list[str]:
+    """Render an ``SfcNetwork`` as IEC 61131-3 §6.7 SFC text.
+
+    Format (matches matiec / IEC §6.7):
+
+      [INITIAL_]STEP <name>:
+        <action_ref>(<qualifier>[, <time-literal>]);
+      END_STEP
+
+      TRANSITION FROM <from> TO <to>
+        := <condition>;
+      END_TRANSITION
+
+      ACTION <action_name>:           -- when an Action carries
+        <ST body>                       -- an inline_body, the
+      END_ACTION                        -- emitter synthesises a
+                                        -- named ACTION block for it.
+
+    ``<from>`` and ``<to>`` are parenthesised tuples for multi-
+    step transitions (simultaneous div / conv).  Conditions
+    lower through ``_fmt_gate`` -- a tuple of contact / parallel
+    ops becomes a boolean ST expression; an empty condition
+    becomes ``TRUE``.
+
+    macroStep / jumpStep have no matiec-supported text shape; we
+    emit them as comments documenting the original IL intent.
+    The PLCopen XML SFC path (``<macroStep>`` / ``<jumpStep>``)
+    preserves them losslessly.
+    """
+    pfx = indent * level
+    inner_pfx = indent * (level + 1)
+    lines: list[str] = []
+
+    # First pass: collect inline-bodied actions.  Each gets a
+    # synthesised name so the step body can reference it with
+    # the canonical ``action_name(qualifier);`` form.
+    inline_action_bodies: list[tuple[str, tuple]] = []   # (name, body)
+
+    def _synth_action_name(step_name: str, idx: int) -> str:
+        return f"_{step_name}_action_{idx}"
+
+    # Emit steps in declaration order.  macroStep / jumpStep are
+    # noted as comments since matiec doesn't accept the
+    # PLCopen-style graphical embeddings in ST.
+    for step in net.steps:
+        if step.macro is not None:
+            # No matiec text shape for hierarchical SFC inside a
+            # step.  Emit a comment so the surrounding SFC still
+            # parses; the IL's macroStep contents round-trip via
+            # PLCopen XML.
+            lines.append(
+                f"{pfx}(* macro step {step.name!r} -- inner "
+                f"network preserved in PLCopen XML <macroStep> *)"
+            )
+            continue
+        keyword = "INITIAL_STEP" if step.initial else "STEP"
+        lines.append(f"{pfx}{keyword} {step.name}:")
+        for i, action in enumerate(step.actions):
+            if action.inline_body:
+                action_ref = _synth_action_name(step.name, i)
+                inline_action_bodies.append(
+                    (action_ref, tuple(action.inline_body))
+                )
+            else:
+                action_ref = _action_target_text(action.target)
+            qual = action.qualifier or "N"
+            if action.time_ms is not None:
+                lines.append(
+                    f"{inner_pfx}{action_ref}({qual}, "
+                    f"T#{action.time_ms}ms);"
+                )
+            else:
+                lines.append(f"{inner_pfx}{action_ref}({qual});")
+        lines.append(f"{pfx}END_STEP")
+
+    # Emit transitions.
+    for trans in net.transitions:
+        from_text = (
+            trans.from_steps[0]
+            if len(trans.from_steps) == 1
+            else f"({', '.join(trans.from_steps)})"
+        )
+        to_text = (
+            trans.to_steps[0]
+            if len(trans.to_steps) == 1
+            else f"({', '.join(trans.to_steps)})"
+        )
+        cond_text = _fmt_gate(trans.condition)
+        lines.append(f"{pfx}TRANSITION FROM {from_text} TO {to_text}")
+        lines.append(f"{inner_pfx}:= {cond_text};")
+        lines.append(f"{pfx}END_TRANSITION")
+
+    # Emit ACTION blocks for the inline-bodied actions collected above.
+    for action_name, body_stmts in inline_action_bodies:
+        lines.append(f"{pfx}ACTION {action_name}:")
+        for stmt in body_stmts:
+            lines.extend(emit_statement(stmt, indent=indent,
+                                          level=level + 1))
+        lines.append(f"{pfx}END_ACTION")
+
+    return lines
+
+
 def _fmt_method(m: Method, indent: str = "    ") -> str:
     """Render one ``METHOD ... END_METHOD`` block.
 
@@ -722,8 +839,7 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
         # First-class ST body -- render the AST directly.
         lines.extend(emit_st_body(sub.st_body, indent=indent, level=1))
     elif sub.sfc is not None:
-        lines.append(f"{indent}(* SFC body not emitted in ST -- "
-                     f"see PLCopen XML <SFC> *)")
+        lines.extend(_emit_sfc_st_body(sub.sfc, indent=indent, level=1))
     elif sub.fbd_body is not None:
         # Lower the FBD network to an equivalent ST statement list
         # (topological sort + producer-expression resolution +
