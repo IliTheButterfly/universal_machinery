@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1162 tests**.
+counts are snapshotted; the current passing total is **1170 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -147,7 +147,7 @@ Status legend:
 | LD timer FBs (TON / TOF / TP via `<block typeName=TON|TOF|TP instanceName=<addr>>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2.3.1 timer family round-trips with IN <- rung gate, PT <- `T#<ms>ms` inVariable, Q/ET <- outVariables; multi-ms-range presets preserved |
 | LD counter FBs (CTU / CTD / CTUD via `<block typeName=CTU|CTD|CTUD instanceName=<addr>>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2.3.2 counter family round-trips; CTU's CU and CTD's CD come from the rung gate, all other bool inputs (R / LD, plus CTUD's CU/CD) come from auxiliary inVariables.  Reader picks up "orphan" CTUD rungs whose primary inputs don't trace back to leftRail |
 | LD bistables + edge triggers (SR / RS / R_TRIG / F_TRIG via `<block typeName=... instanceName=<addr>>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §2.5.2.3.3 bistables (Q1 storage = instance name) + edge triggers (state = instance name).  All bool inputs come from auxiliary inVariables; Q / Q1 outputs to outVariables |
-| LD control-flow ops (Jump / Label / Return / End) | ⚠️ | Falls back to ST text emission -- these primitives are rung-level branching control with no obvious native-LD shape; tests/emitters/test_plcopen_xml.py::test_pou_body_mixed_rungs_still_lower_to_ST_text |
+| LD control-flow ops (Jump / Label / Return via `<jump label=...>` / `<label label=...>` / `<return>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §6.6.4 jump/label/return primitives round-trip via the XSD's commonObjects group; Label rungs are picked up by the reader's "orphan element" second pass.  `End` is the only IL op still using ST-text fallback (no XSD element for "end of main program") |
 | FBD (Function Block Diagram) | ✅ | tests/emitters/test_plcopen_xml_fbd.py, tests/parsers/test_plcopen_xml_reader_fbd.py, tests/lowering/test_fbd_to_st.py |
 | ST (Structured Text) | ✅ | tests/il/test_st_ast.py, tests/parsers/test_st_text_parser.py — emit + parse round-trip |
 | SFC | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
@@ -264,4 +264,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1162 / 1162 passing**.
+status: **1170 / 1170 passing**.

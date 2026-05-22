@@ -99,21 +99,19 @@ def test_multiple_rungs_each_get_own_power_rails():
 
 
 def test_mixed_rung_falls_back_to_ST_translation():
-    """A rung containing a control-flow op (Jump / Label / Return
-    / End) still falls back to ST text -- those primitives don't
-    have obvious native-LD shapes.  All dataflow ops (Compare,
-    Move, BinaryMath, StdFunc, Call, TON/TOF/TP, CTU/CTD/CTUD,
-    SR/RS, R_TRIG/F_TRIG) are now native LD."""
-    from universal_machinery.builders import jump
+    """``End`` is the only IL op without a native-LD shape --
+    the IEC §6.6 "end of main program" semantics have no
+    graphical XSD element.  Every other op (contacts, coils,
+    parallel groups, Compare, Move, BinaryMath, StdFunc, Call,
+    all FBs, Jump / Label / Return) now lowers to native LD."""
+    from universal_machinery.builders import end
     p = program(subroutines=[prog("Main", main=True, rungs=[
-        rung(jump("TARGET")),
+        rung(end()),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)
     # Not LD body
     assert "<LD>" not in xml
-    # ST text body present
-    assert "TARGET" in xml
 
 
 # -----------------------------------------------------------------------------
@@ -1688,6 +1686,110 @@ def test_bistable_or_edge_trigger_rung_emits_native_LD_not_ST_fallback():
     p = program(subroutines=[prog("Main", main=True, rungs=[
         rung(sr("Q1", "S1", "R1")),
         rung(r_trig("Prev", "CLK", "Q")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert "<LD>" in xml
+    assert "<ST>" not in xml
+
+
+# -----------------------------------------------------------------------------
+# Control-flow ops in LD: Jump / Label / Return lower to dedicated
+# ``<jump label=...>`` / ``<label label=...>`` / ``<return>`` XSD
+# elements (commonObjects group).  ``End`` stays in ST fallback
+# (no native XSD shape for "end of main program").
+# -----------------------------------------------------------------------------
+
+
+def test_jump_emits_native_jump_element():
+    from universal_machinery.builders import jump
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("X001"), jump("END_OF_SCAN")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert '<jump localId=' in xml
+    assert 'label="END_OF_SCAN"' in xml
+
+
+def test_label_emits_native_label_element():
+    from universal_machinery.builders import label_
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(label_("MY_TARGET")),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert '<label localId=' in xml
+    assert 'label="MY_TARGET"' in xml
+
+
+def test_return_emits_native_return_element():
+    from universal_machinery.builders import ret
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(no("done_flag"), ret()),
+    ])])
+    xml = emit_xml(p, time_now=_FIXED_TIME)
+    validate_plcopen_xml(xml)
+    assert '<return localId=' in xml
+
+
+def test_jump_round_trips_with_target_label():
+    from universal_machinery.builders import jump
+    from universal_machinery.il.ops import Jump
+    rungs = _round_trip([rung(no("X001"), jump("TARGET"))])
+    ops = rungs[0].ops
+    assert isinstance(ops[0], ContactNO)
+    assert isinstance(ops[1], Jump)
+    assert ops[1].label == "TARGET"
+
+
+def test_label_round_trips_with_name():
+    from universal_machinery.builders import label_
+    from universal_machinery.il.ops import Label
+    rungs = _round_trip([rung(label_("TARGET"))])
+    assert isinstance(rungs[0].ops[0], Label)
+    assert rungs[0].ops[0].name == "TARGET"
+
+
+def test_return_round_trips():
+    from universal_machinery.builders import ret
+    from universal_machinery.il.ops import Return
+    rungs = _round_trip([rung(no("flag"), ret())])
+    assert isinstance(rungs[0].ops[1], Return)
+
+
+def test_jump_label_return_in_same_body_round_trips():
+    """A POU with Jump (to a Label) + a Return early-exit
+    round-trips with all three control-flow ops preserved.
+    Note: Label rungs end up at the bottom of the rung list
+    after round-trip (the reader's orphan-element pass picks
+    them up after the leftRail forward walk)."""
+    from universal_machinery.builders import jump, label_, ret
+    from universal_machinery.il.ops import Jump, Label, Return
+    rungs = _round_trip([
+        rung(no("skip_flag"), jump("AFTER")),
+        rung(no("X001"), coil("Y001")),
+        rung(label_("AFTER")),
+        rung(no("done_flag"), ret()),
+    ])
+    # Collect the op types per rung
+    by_type = [type(op).__name__ for r in rungs for op in r.ops]
+    assert "Jump" in by_type
+    assert "Label" in by_type
+    assert "Return" in by_type
+    assert "OutCoil" in by_type
+    # The Jump's target survives
+    j = next(op for r in rungs for op in r.ops if isinstance(op, Jump))
+    assert j.label == "AFTER"
+    # The Label's name survives
+    l = next(op for r in rungs for op in r.ops if isinstance(op, Label))
+    assert l.name == "AFTER"
+
+
+def test_jump_rung_emits_native_LD_not_ST_fallback():
+    from universal_machinery.builders import jump
+    p = program(subroutines=[prog("Main", main=True, rungs=[
+        rung(jump("TARGET")),
     ])])
     xml = emit_xml(p, time_now=_FIXED_TIME)
     validate_plcopen_xml(xml)

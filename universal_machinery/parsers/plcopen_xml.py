@@ -73,8 +73,9 @@ from ..il import (
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, CTD, CTU, CTUD, FTrig, OutCoil, OutReset, OutSet,
-    ParallelGroup, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc, TOF, TON, TP,
+    ContactRisingEdge, CTD, CTU, CTUD, FTrig, Jump, Label, OutCoil, OutReset,
+    OutSet, ParallelGroup, Return, RS, RTrig, SR, STD_FUNCTION_NAMES, StdFunc,
+    TOF, TON, TP,
 )
 
 
@@ -1403,7 +1404,7 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
         local = _strip_ns(child.tag)
         if local not in ("leftPowerRail", "rightPowerRail",
                          "contact", "coil", "block", "inVariable",
-                         "outVariable"):
+                         "outVariable", "jump", "label", "return"):
             continue
         lid = _parse_local_id(child)
         elements_by_id[lid] = child
@@ -1792,6 +1793,12 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
             if storage == "reset":
                 return OutReset(addr)
             return OutCoil(addr)
+        if kind == "jump":
+            return Jump(label=elem.get("label") or "")
+        if kind == "label":
+            return Label(name=elem.get("label") or "")
+        if kind == "return":
+            return Return()
         return None
 
     def _detect_parallel(fork_id: int):
@@ -1958,15 +1965,15 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
         if ops:
             rungs.append(Rung(ops=ops))
 
-    # Second pass: pick up "orphan" blocks -- block elements that
-    # the leftRail forward walk didn't reach because none of their
-    # input pins traced back to the leftRail.  This happens for
-    # FB shapes whose primary inputs come from auxiliary
-    # inVariables rather than the rung gate (CTUD has both CU
-    # and CD as inVariable inputs, for example).  Each unvisited
-    # block becomes its own one-op rung.
+    # Second pass: pick up "orphan" elements that the leftRail
+    # forward walk didn't reach.  These are:
+    #   - block elements whose primary inputs come from auxiliary
+    #     inVariables rather than the rung gate (CTUD CU/CD)
+    #   - label elements (which have no connectionPointIn -- the
+    #     XSD label element is purely a marker)
+    # Each becomes its own one-op rung.
     for lid, kind in kind_by_id.items():
-        if kind != "block" or lid in visited:
+        if kind not in ("block", "label") or lid in visited:
             continue
         op = _make_op_from_node(lid)
         if op is not None:
