@@ -36,8 +36,31 @@ from .exceptions import (
     UniversalMachineryError,
 )
 
+#: The documented Stable / Backend-author surface at the top level.
+#: Submodules (``builders`` / ``emitters`` / ``parsers`` / ``validation`` /
+#: ``serialisation`` / ``cli`` / ``lowering``) are reachable via
+#: ``from universal_machinery import <name>`` without an explicit eager
+#: import here -- listing them in ``__all__`` keeps the contract
+#: explicit without paying their import-time cost on every
+#: ``import universal_machinery``.  ``docs/API_STABILITY.md`` is the
+#: source of truth for what each entry promises.
 __all__ = [
+    # Eager subpackage (cheap, no third-party deps)
     "il",
+    # Lazy subpackages -- reachable via ``from universal_machinery
+    # import X``; not eagerly imported (typer/rich/etc. would slow
+    # the parent's start-up needlessly when callers only need the IL).
+    "builders",
+    "emitters",
+    "parsers",
+    "validation",
+    "serialisation",
+    "exceptions",
+    "backends",
+    "cli",
+    "lowering",
+    # Backend ABC + exception hierarchy at the top level so consumers
+    # don't need to remember sub-paths for the catch-all names.
     "Backend",
     "UniversalMachineryError",
     "LoweringError",
