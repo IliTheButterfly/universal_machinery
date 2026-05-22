@@ -66,7 +66,8 @@ The builder DSL.  Every public function is **Stable** with the exception of rece
 | `parse_plcopen_xml(xml)` | **Stable** | Returns `il.Program`. |
 | `parse_plcopen_xml_file(path)` | **Stable** | Path-taking wrapper. |
 | `PlcopenParseError` | **Stable** | Raised by both. |
-| `parse_st_body(src)` | **Experimental** | Parses a *body* (statement list).  No full-program parser exists yet — see the `um convert prog.st X` rejection and the openplc/rusty `read(.st)` `NotImplementedError`. |
+| `parse_program(src)` | **Experimental** | Full-program ST parser (v1).  Covers PROGRAM / FUNCTION / FUNCTION_BLOCK declarations + VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR (LOCAL) blocks + body via the statement parser.  Out of scope (raises `StParseError`): VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL, AT clauses, TYPE blocks (UDTs), CONFIGURATION / RESOURCE / TASK, METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT, SFC text. |
+| `parse_st_body(src)` | **Experimental** | Parses a *body* (statement list).  Used internally by `parse_program` for POU body parsing; also useful standalone for inline-ST snippets. |
 | `parse_st_expression(src)` | **Experimental** | Single-expression parser. |
 | `StParseError` | **Stable** | Raised by both ST parsers. |
 
