@@ -704,19 +704,42 @@ def _emit_sfc_st_body(net, indent: str, level: int) -> list[str]:
     def _synth_action_name(step_name: str, idx: int) -> str:
         return f"_{step_name}_action_{idx}"
 
-    # Emit steps in declaration order.  macroStep / jumpStep are
-    # noted as comments since matiec doesn't accept the
-    # PLCopen-style graphical embeddings in ST.
+    # Emit steps in declaration order.  macroStep gets a plain
+    # ``STEP <name>:`` declaration with a documenting comment so
+    # the surrounding SFC graph is intact at the matiec / ST
+    # level (transitions referencing the step resolve cleanly);
+    # the inner hierarchical network round-trips losslessly via
+    # PLCopen XML ``<macroStep>`` (IEC §2.6.5).  Without this
+    # placeholder STEP, transitions FROM / TO a macroStep would
+    # reference an undeclared name -- matiec is lenient enough to
+    # accept it, but stricter analysers wouldn't.
     for step in net.steps:
         if step.macro is not None:
-            # No matiec text shape for hierarchical SFC inside a
-            # step.  Emit a comment so the surrounding SFC still
-            # parses; the IL's macroStep contents round-trip via
-            # PLCopen XML.
+            keyword = "INITIAL_STEP" if step.initial else "STEP"
+            lines.append(f"{pfx}{keyword} {step.name}:")
             lines.append(
-                f"{pfx}(* macro step {step.name!r} -- inner "
-                f"network preserved in PLCopen XML <macroStep> *)"
+                f"{inner_pfx}(* macro step -- inner SFC network "
+                f"preserved in PLCopen XML <macroStep> *)"
             )
+            # Still process this step's own actions (which apply
+            # at the outer level, distinct from the inner net).
+            for i, action in enumerate(step.actions):
+                if action.inline_body:
+                    action_ref = _synth_action_name(step.name, i)
+                    inline_action_bodies.append(
+                        (action_ref, tuple(action.inline_body))
+                    )
+                else:
+                    action_ref = _action_target_text(action.target)
+                qual = action.qualifier or "N"
+                if action.time_ms is not None:
+                    lines.append(
+                        f"{inner_pfx}{action_ref}({qual}, "
+                        f"T#{action.time_ms}ms);"
+                    )
+                else:
+                    lines.append(f"{inner_pfx}{action_ref}({qual});")
+            lines.append(f"{pfx}END_STEP")
             continue
         keyword = "INITIAL_STEP" if step.initial else "STEP"
         lines.append(f"{pfx}{keyword} {step.name}:")

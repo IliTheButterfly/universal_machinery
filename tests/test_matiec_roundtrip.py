@@ -481,6 +481,56 @@ def test_sfc_with_timed_action_parses_in_matiec():
     assert rc == 0, f"matiec rejected timed-action SFC:\n{err}"
 
 
+def test_sfc_with_macrostep_parses_in_matiec():
+    """Hierarchical SFC per IEC §2.6.5: a ``Step.macro`` carrying
+    an inner ``SfcNetwork`` emits at the outer level as a plain
+    ``STEP <name>:`` placeholder with a documenting comment.
+    The inner network round-trips losslessly via PLCopen XML
+    ``<macroStep>``; in ST text matiec sees a normal step that
+    transitions can target.
+
+    Previously the emitter emitted just a comment for macroSteps,
+    leaving outer-level transitions referencing an undeclared
+    step name -- matiec was lenient but stricter analysers
+    wouldn't be."""
+    inner = SfcNetwork(
+        steps=[
+            Step("SubInit", initial=True),
+            Step("SubRun",
+                  actions=(Action(qualifier="N", target="sub_active"),)),
+        ],
+        transitions=[
+            Transition(from_steps=("SubInit",), to_steps=("SubRun",)),
+        ],
+    )
+    outer = SfcNetwork(
+        steps=[
+            Step("Init", initial=True),
+            Step("Macro", macro=inner,
+                  actions=(Action(qualifier="S", target="macro_active"),)),
+        ],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Macro",)),
+        ],
+    )
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("sub_active", TagType.BOOL),
+                 var("macro_active", TagType.BOOL),
+             ],
+             sfc=outer),
+    ])
+    out = emit_program(p)
+    # Pin the emit shape: macroStep should emit as a plain STEP,
+    # not a bare comment, so the transition target resolves.
+    assert "STEP Macro:" in out, (
+        f"macroStep not emitted as STEP placeholder:\n{out}"
+    )
+    rc, _out, err = _run_matiec(out)
+    assert rc == 0, f"matiec rejected macroStep SFC:\n{err}"
+
+
 def test_program_with_jump_and_label_parses_in_matiec():
     """Control-flow ops: Jump + Label + Return."""
     p = program(subroutines=[
