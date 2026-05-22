@@ -74,8 +74,9 @@ from pathlib import Path
 import pytest
 
 from universal_machinery.builders import (
-    abs_, add, and_, coil, ctu, eq, fb, fn, jump, label_, move, no, prog,
-    program, r_trig, ret, rung, sel, sr, ton, var, var_in, var_out,
+    abs_, add, and_, assign, case_, case_clause, coil, ctu, eq, fb, fn,
+    for_, if_, jump, label_, move, no, prog, program, r_trig, repeat_,
+    ret, rung, sel, sr, ton, var, var_in, var_out, while_,
 )
 from universal_machinery.il import TagType
 from universal_machinery.il.sfc import (
@@ -587,3 +588,105 @@ def test_enum_type_parses_in_matiec():
     )
     rc, _out, err = _run_matiec(emit_program(p))
     assert rc == 0, f"matiec rejected ENUM program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# ST control flow -- IEC §3.3.2 round-trip through matiec
+# -----------------------------------------------------------------------------
+
+
+def test_st_if_elsif_else_parses_in_matiec():
+    """IEC §3.3.2.1 IF / ELSIF / ELSE / END_IF emitted from
+    ``Subroutine.st_body`` via the ``if_(...)`` builder."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("hot", TagType.BOOL),
+                 var("cold", TagType.BOOL),
+                 var("zone", TagType.INT),
+             ],
+             st_body=[
+                 if_(
+                     ("hot", [assign("zone", 2)]),
+                     ("cold", [assign("zone", 0)]),
+                     else_=[assign("zone", 1)],
+                 ),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected IF/ELSE program:\n{err}"
+
+
+def test_st_case_parses_in_matiec():
+    """IEC §3.3.2.2 CASE / OF / ELSE / END_CASE emitted from
+    ``st_body`` via ``case_(selector, *clauses, else_=...)``."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("mode", TagType.INT),
+                 var("result", TagType.INT),
+             ],
+             st_body=[
+                 case_("mode",
+                       case_clause([0], [assign("result", 100)]),
+                       case_clause([1], [assign("result", 200)]),
+                       else_=[assign("result", 999)]),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected CASE program:\n{err}"
+
+
+def test_st_for_loop_parses_in_matiec():
+    """IEC §3.3.2.4 FOR ... TO ... DO ... END_FOR from ``st_body``
+    via the ``for_(index_var, start, end, body)`` builder."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("i", TagType.INT),
+                 var("total", TagType.INT),
+             ],
+             st_body=[
+                 for_("i", 0, 9, [
+                     assign("total", "total"),
+                 ]),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected FOR program:\n{err}"
+
+
+def test_st_while_loop_parses_in_matiec():
+    """IEC §3.3.2.3 WHILE ... DO ... END_WHILE from ``st_body``."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("running", TagType.BOOL),
+                 var("count", TagType.INT),
+             ],
+             st_body=[
+                 while_("running", [
+                     assign("count", "count"),
+                 ]),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected WHILE program:\n{err}"
+
+
+def test_st_repeat_loop_parses_in_matiec():
+    """IEC §3.3.2.3 REPEAT ... UNTIL ... END_REPEAT from ``st_body``."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("done", TagType.BOOL),
+                 var("counter", TagType.INT),
+             ],
+             st_body=[
+                 repeat_([
+                     assign("counter", 5),
+                 ], until="done"),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected REPEAT program:\n{err}"
