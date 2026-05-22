@@ -82,7 +82,7 @@ The builder DSL.  Every public function is **Stable** with the exception of rece
 
 Backends themselves live in submodules:
 
-- `click_plc` (vendor: AutomationDirect CLICK) — `decode_ckp` is **Stable**; no `Backend` ABC implementation yet (the lowering / encoder side is a roadmap item).
+- `click_plc` (vendor: AutomationDirect CLICK) — `decode_ckp` / `CkpProject` / `compute_magic` are **Stable** (vendor-native byte-level CKP I/O).  `ClickBackend` is **Stable** for its capability set + registration contract, **Experimental** for `write()` / `read()` body (both raise `NotImplementedError` until the `.ckp` encoder + `CkpProject` ↔ IL bridge land; tracked under the roadmap's "Settle the IL ↔ CLICK lowering" item).
 - `openplc_backend.OpenPlcBackend` — **Stable**.  Capabilities advertised; ST + PLCopen XML write, PLCopen XML read.  `read(.st)` is `NotImplementedError` until a full-program ST parser lands.
 - `rusty_backend.RustyBackend` — **Stable**.  ST-only (rusty doesn't take XML); includes IEC 3rd-edition OOP capabilities.
 
