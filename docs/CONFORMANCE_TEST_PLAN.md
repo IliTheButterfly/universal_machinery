@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1172 tests**.
+counts are snapshotted; the current passing total is **1179 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -221,7 +221,7 @@ distinct error codes covering:
 | `sfc-contact-not-bool`            | SFC transition contact target isn't BOOL |
 | `sfc-compare-type-mismatch`       | SFC transition compare operands cross IEC §6.5 buckets |
 | `subrange-out-of-range`           | Literal value assigned to a SUBRANGE-typed target is outside `[lower, upper]` |
-| `fbd-pin-type-mismatch`           | FBD block input pin's expected type doesn't match its producer's output type.  Resolves against user-defined POU calls + the bundled IEC §2.5.2.3 builtin signature database (TON/TOF/TP, CTU/CTD/CTUD, SR/RS/R_TRIG/F_TRIG) and the comparison/logical families on their concrete pins; polymorphic pins are skipped to avoid false positives |
+| `fbd-pin-type-mismatch`           | FBD block input pin's expected type doesn't match its producer's output type.  Resolves against user-defined POU calls + the bundled builtin signature database: IEC §2.5.2.3 stateful FBs (TON/TOF/TP, CTU/CTD/CTUD, SR/RS, R_TRIG/F_TRIG), §2.5.2.7 logical (AND/OR/XOR/NOT — EN/ENO only), §2.5.2.8 comparison (EQ/NE/LT/LE/GT/GE — OUT=BOOL), selection (SEL.G=BOOL, MUX/MAX/MIN/LIMIT polymorphic), §2.5.2.9 strings (LEN/FIND return INT; LEFT/RIGHT/MID/CONCAT/INSERT/DELETE/REPLACE polymorphic), and MOVE.  Polymorphic pins skip the check to avoid false positives |
 
 Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
 `tests/il/test_st_ast.py`, `tests/il/test_fbd.py`,
@@ -268,4 +268,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1172 / 1172 passing**.
+status: **1179 / 1179 passing**.
