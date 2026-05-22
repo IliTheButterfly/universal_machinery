@@ -474,16 +474,38 @@ def test_convert_xml_to_st_chains_parse_and_emit(tmp_path):
     assert "FUNCTION Avg" in text
 
 
-def test_convert_st_read_not_supported(tmp_path):
-    """``um convert prog.st <anything>`` exits with code 2 and
-    explains that full-program ST parsing isn't yet wired
-    upstream.  Rejecting cleanly beats silently emitting an
-    empty Program."""
+def test_convert_st_read_round_trips_via_parse_program(tmp_path):
+    """``um convert prog.st prog.json`` now routes through the
+    parent's ``parse_program`` (v1, PR #84) and produces canonical
+    IL JSON.  Round-trip pinned: write JSON, convert to ST,
+    convert back to JSON, parse, structural equality."""
+    p = program(subroutines=[prog("Main", main=True,
+        rungs=[rung(no("X1"), coil("Y1"))])])
+    src_st = tmp_path / "src.st"
+    src_st.write_text(_st_text_for(p))
+    out_json = tmp_path / "out.json"
+    result = runner.invoke(app, ["convert", str(src_st), str(out_json)])
+    assert result.exit_code == 0, result.output
+    from universal_machinery.serialisation import from_json
+    p_back = from_json(out_json.read_text())
+    assert sorted(s.name for s in p_back.subroutines) == ["Main"]
+
+
+def test_convert_st_read_unsupported_shape_exits_2(tmp_path):
+    """v1's scope guards: shapes ``parse_program`` doesn't
+    accept yet (e.g. ``TYPE`` blocks) surface as exit-2 with the
+    ST parser's diagnostic message."""
     src = tmp_path / "src.st"
-    src.write_text("PROGRAM Main\nEND_PROGRAM\n")
+    src.write_text("TYPE\n  Pct : INT;\nEND_TYPE\nPROGRAM Main\nEND_PROGRAM\n")
     result = runner.invoke(app, ["convert", str(src), str(tmp_path / "out.json")])
     assert result.exit_code == 2
-    assert ".st" in result.output and "not yet supported" in result.output
+    assert "ST parse failed" in result.output
+
+
+def _st_text_for(p):
+    """Helper: emit ``p`` as ST text via the parent's emitter."""
+    from universal_machinery.emitters.st import emit_program
+    return emit_program(p)
 
 
 def test_convert_unknown_input_suffix_exits_2(tmp_path):

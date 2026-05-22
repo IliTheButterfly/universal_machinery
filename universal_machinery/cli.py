@@ -453,15 +453,15 @@ def _read_any(path: Path) -> Program:
             err.print(f"[red]error[/red]: PLCopen parse failed: {exc}")
             raise typer.Exit(code=2)
     if suffix == ".st":
-        err.print(
-            f"[red]error[/red]: reading {path}: ``.st`` parsing not "
-            "yet supported (no full-program ST parser).  Round-trip "
-            "via .xml or .json instead"
-        )
-        raise typer.Exit(code=2)
+        from .parsers.st_text import StParseError, parse_program
+        try:
+            return parse_program(path.read_text(encoding="utf-8"))
+        except StParseError as exc:
+            err.print(f"[red]error[/red]: ST parse failed: {exc}")
+            raise typer.Exit(code=2)
     err.print(
         f"[red]error[/red]: {path}: unrecognised input suffix "
-        f"{suffix!r}; expected .json or .xml"
+        f"{suffix!r}; expected .json, .xml, or .st"
     )
     raise typer.Exit(code=2)
 
@@ -514,14 +514,18 @@ def convert(
     """Convert between IL / PLCopen XML / Structured Text formats.
 
     Routes the input through the IL and re-emits in the requested
-    output format.  Every format pair where both halves are
-    bidirectional (``.json`` and ``.xml``) round-trips losslessly;
-    ``.st`` is write-only today (no full-program ST parser).
+    output format.  ``.json`` and ``.xml`` round-trip losslessly;
+    ``.st`` is read at v1 scope (PROGRAM / FUNCTION /
+    FUNCTION_BLOCK with VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR
+    (LOCAL) blocks + body -- VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL,
+    AT clauses, TYPE blocks, CONFIGURATION, OOP, SFC text raise
+    ``StParseError`` and exit 2).
 
     Examples::
 
         um convert prog.xml prog.json       # PLCopen XML -> IL JSON
         um convert prog.json prog.st        # IL JSON -> IEC ST
+        um convert prog.st prog.xml         # IEC ST -> PLCopen XML
         um convert prog.xml prog.st         # PLCopen XML -> IEC ST
         um convert prog.json prog.xml       # IL JSON -> PLCopen XML
 
