@@ -74,8 +74,9 @@ from ..il import (
 )
 from ..il.ops import (
     BinaryMath, Call, Compare, ContactFallingEdge, ContactNC, ContactNO,
-    ContactRisingEdge, CTD, CTU, CTUD, FTrig, Move, OutCoil, OutReset,
-    OutSet, ParallelGroup, RS, RTrig, SR, StdFunc, TOF, TON, TP,
+    ContactRisingEdge, CTD, CTU, CTUD, FTrig, Jump, Label, Move, OutCoil,
+    OutReset, OutSet, ParallelGroup, Return, RS, RTrig, SR, StdFunc,
+    TOF, TON, TP,
 )
 from .st import emit_pou as _emit_pou_st, emit_rung, emit_st_body
 
@@ -1257,6 +1258,10 @@ _NATIVE_LD_OPS = (
     # with named bool inputs.  Bistables carry their Q1 output
     # via the instance name (one storage serves both roles).
     SR, RS, RTrig, FTrig,
+    # Control-flow ops (IEC §6.6.4): Jump / Label / Return lower
+    # to dedicated ``<jump>`` / ``<label>`` / ``<return>``
+    # elements in the LD body (commonObjects group per the XSD).
+    Jump, Label, Return,
 )
 
 
@@ -2075,6 +2080,48 @@ def _emit_ld_bistable_edge_block_xml(op, block_type: str, ids: dict,
     return lines
 
 
+def _emit_ld_jump_xml(op: "Jump", this_id: int, parent_ids: list[int],
+                        x: float, y: float) -> str:
+    """``<jump label=...>`` element -- when energised, transfers
+    control to the matching ``<label>`` in the same body."""
+    cp_in = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    return (
+        f'<jump localId="{this_id}" label={quoteattr(op.label)}>'
+        f'<position x="{x:g}" y="{y:g}"/>'
+        f'<connectionPointIn>{cp_in}</connectionPointIn>'
+        f'</jump>'
+    )
+
+
+def _emit_ld_label_xml(op: "Label", this_id: int,
+                         x: float, y: float) -> str:
+    """``<label label=...>`` element -- a named jump target.
+    No incoming wire (the XSD's label element has no
+    ``<connectionPointIn>``)."""
+    return (
+        f'<label localId="{this_id}" label={quoteattr(op.name)}>'
+        f'<position x="{x:g}" y="{y:g}"/>'
+        f'</label>'
+    )
+
+
+def _emit_ld_return_xml(this_id: int, parent_ids: list[int],
+                          x: float, y: float) -> str:
+    """``<return>`` element -- early-exits the current POU when
+    the rung gate is energised."""
+    cp_in = "".join(
+        f'<connection refLocalId="{p}"/>' for p in parent_ids
+    )
+    return (
+        f'<return localId="{this_id}">'
+        f'<position x="{x:g}" y="{y:g}"/>'
+        f'<connectionPointIn>{cp_in}</connectionPointIn>'
+        f'</return>'
+    )
+
+
 def _emit_ld_ops_chain(ops, parent_ids: list[int],
                          next_local_id: int, x: float, y: float
                          ) -> tuple[list[str], list[int], int, float,
@@ -2143,6 +2190,29 @@ def _emit_ld_ops_chain(ops, parent_ids: list[int],
             ))
             cursor_ids = [block_id]
             x += _LD_OP_WIDTH * 3
+        elif isinstance(op, Jump):
+            this_id = next_local_id; next_local_id += 1
+            lines.append(_emit_ld_jump_xml(
+                op, this_id, cursor_ids, x, y,
+            ))
+            # Jump terminates the rung; nothing flows downstream.
+            cursor_ids = [this_id]
+            coil_id = this_id
+            x += _LD_OP_WIDTH
+        elif isinstance(op, Label):
+            this_id = next_local_id; next_local_id += 1
+            lines.append(_emit_ld_label_xml(op, this_id, x, y))
+            # Label is a marker -- doesn't consume the rung gate
+            # nor produce a signal.  Cursor stays at leftRail.
+            x += _LD_OP_WIDTH
+        elif isinstance(op, Return):
+            this_id = next_local_id; next_local_id += 1
+            lines.append(_emit_ld_return_xml(
+                this_id, cursor_ids, x, y,
+            ))
+            cursor_ids = [this_id]
+            coil_id = this_id
+            x += _LD_OP_WIDTH
         elif isinstance(op, (SR, RS, RTrig, FTrig)):
             if isinstance(op, SR):
                 block_type = "SR"

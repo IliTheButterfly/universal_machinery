@@ -204,13 +204,13 @@ def test_pou_body_pure_ld_rungs_lower_to_LD_element():
 
 
 def test_pou_body_mixed_rungs_still_lower_to_ST_text():
-    """Rungs containing control-flow ops (Jump / Label / Return /
-    End) keep going through the ST translator.  Those don't have
-    obvious LD-block analogues -- they're rung-level branching
-    primitives lowered into ST control-flow statements."""
-    from universal_machinery.builders import jump
+    """Rungs containing ops that don't have a dedicated native-LD
+    shape still fall back to ST text.  ``End`` is the only such
+    op left -- it represents "end of main program" with no
+    natural XSD element."""
+    from universal_machinery.builders import end
     p = prog("Main", main=True, rungs=[
-        rung(jump("END_OF_SCAN")),
+        rung(end()),
     ])
     xml = emit_pou_xml(p)
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
@@ -223,18 +223,16 @@ def test_pou_body_mixed_rungs_still_lower_to_ST_text():
 def test_st_body_escapes_xml_special_chars():
     """Ops that produce <, >, & in ST text must be XML-escaped.
 
-    Uses ``Jump`` (control-flow) since it's on the ST-fallback
-    path -- every dataflow op family is now native LD."""
-    from universal_machinery.builders import jump
+    Uses ``End`` -- the only op left without a native-LD shape."""
+    from universal_machinery.builders import end
     p = prog("Main", main=True, rungs=[
-        rung(jump("TARGET")),
+        rung(end()),
     ])
     xml = emit_pou_xml(p)
     # Parses cleanly == escaping worked
     root = ET.fromstring(f'<wrap xmlns="{PLCOPEN_NS}">{xml}</wrap>')
     pre = root.find(".//{http://www.w3.org/1999/xhtml}pre")
     assert pre is not None
-    assert "TARGET" in pre.text
 
 
 # -----------------------------------------------------------------------------
