@@ -1132,14 +1132,30 @@ def emit_program(prog: Program) -> str:
     if prog.tags:
         lines = ["VAR_GLOBAL"]
         for tag in prog.tags.values():
-            init = ""  # Tag has no initial_value field today
-            comment = f"  (* {tag.description} *)" if tag.description else ""
+            # Mirror ``_fmt_var_decl_line`` semantics for the
+            # Tag-as-global emit: IEC direct rep (``%I*`` / ``%Q*``
+            # / ``%M*``) becomes an inline ``AT %IX0.0`` clause per
+            # IEC §2.4.1.1; vendor-style addresses (CLICK ``X001``,
+            # etc.) fall back to a ``(* AT X001 *)`` trailing
+            # comment, since they aren't valid IEC direct rep.
+            # Tag has ``description`` rather than ``comment``;
+            # both render as a trailing ``(* ... *)`` annotation.
+            at_inline = ""
+            comment_parts: list[str] = []
             if tag.address is not None:
-                # Direct-representation form would be %X; we use the raw
-                # address as a comment until the direct-rep parser lands.
-                comment = f"  (* AT {tag.address.raw}{tag.description and ': ' + tag.description or ''} *)"
+                raw = tag.address.raw
+                if raw.startswith("%"):
+                    at_inline = f" AT {raw}"
+                else:
+                    comment_parts.append(f"AT {raw}")
+            if tag.description:
+                comment_parts.append(tag.description)
+            comment = (
+                f"  (* {'; '.join(comment_parts)} *)" if comment_parts else ""
+            )
             lines.append(
-                f"    {tag.name} : {_fmt_iec_type(tag.data_type)}{init};{comment}"
+                f"    {tag.name}{at_inline} : "
+                f"{_fmt_iec_type(tag.data_type)};{comment}"
             )
         lines.append("END_VAR")
         sections.append("\n".join(lines))

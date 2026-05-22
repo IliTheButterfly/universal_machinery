@@ -335,6 +335,41 @@ def test_program_emits_var_global_for_tags():
     assert "X101" in text
 
 
+def test_program_tag_with_iec_direct_rep_emits_inline_AT():
+    """A ``Tag`` whose ``address`` is an IEC direct-rep (``%IX0.0``
+    / ``%QX0.0`` / ``%M*``) must emit as an IEC §2.4.1.1 inline
+    AT clause inside ``VAR_GLOBAL``, mirroring the POU-scope
+    behaviour fixed in PR #63 / PR #64.  Description still
+    renders as a trailing ``(* ... *)`` annotation.
+
+    Vendor-style addresses (``X001``, ``Y002``, ``DS9000``)
+    aren't valid IEC direct rep, so they continue to emit as
+    a ``(* AT ... *)`` annotation -- non-IEC backends that
+    recognise the comment form still get the hint."""
+    from universal_machinery.il.ast import Address, Tag
+    p = program(
+        tags=[
+            Tag(name="LED", data_type=TagType.BOOL,
+                address=Address("%QX0.0"),
+                description="Front panel LED"),
+            Tag(name="PUMP", data_type=TagType.BOOL,
+                address=Address("Y001")),
+            Tag(name="SETPOINT", data_type=TagType.INT),
+        ],
+    )
+    text = emit_program(p)
+    # IEC direct rep -> inline AT clause + description as comment
+    assert "LED AT %QX0.0 : BOOL;  (* Front panel LED *)" in text, text
+    # Vendor-style -> AT-comment fallback
+    assert "PUMP : BOOL;  (* AT Y001 *)" in text, text
+    # No address, no description -> plain declaration
+    assert "SETPOINT : INT;" in text, text
+    # Pin the regression: the old behaviour produced
+    # ``LED : BOOL;  (* AT %QX0.0: Front panel LED *)`` (with AT
+    # buried in the comment) -- guard against drift back to that.
+    assert "LED : BOOL;  (* AT %QX0.0" not in text, text
+
+
 def test_program_emits_pou_per_subroutine():
     p = program(subroutines=[
         prog("Main", main=True, rungs=[rung(no("X1"), coil("Y1"))]),
