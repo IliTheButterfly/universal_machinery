@@ -582,8 +582,8 @@ def emit_st_body(stmts, indent: str = "    ", level: int = 1) -> list[str]:
 # -----------------------------------------------------------------------------
 
 
-def _fmt_var_block(direction_keyword: str, vars_: Sequence[Var]) -> list[str]:
-    """One VAR_INPUT / VAR_OUTPUT / VAR / etc. block as ST text.
+def _fmt_var_decl_line(v: Var, indent: str = "    ") -> str:
+    """Render one ``Var`` as an IEC ST declaration line.
 
     Honours ``Var.address`` per IEC §2.4.1.1:
       - IEC direct rep (``%I*`` / ``%Q*`` / ``%M*``) emits inline:
@@ -591,29 +591,43 @@ def _fmt_var_block(direction_keyword: str, vars_: Sequence[Var]) -> list[str]:
       - Vendor-style (CLICK ``X001``, etc.) falls back to a trailing
         ``(* AT X001 *)`` comment, since those aren't valid IEC direct
         rep and any accredited IEC parser would reject them.
+
+    Reused by every ``VAR ... END_VAR`` shape -- POU-local blocks
+    (``VAR_INPUT`` / ``VAR_OUTPUT`` / ``VAR`` / ``VAR_EXTERNAL`` /
+    ``VAR_TEMP``) and Configuration / Resource ``VAR_GLOBAL`` blocks
+    -- so the AT-clause logic doesn't drift across emit sites.
     """
+    at_inline = ""
+    comment_parts: list[str] = []
+    if v.address is not None:
+        raw = v.address.raw
+        if raw.startswith("%"):
+            at_inline = f" AT {raw}"
+        else:
+            comment_parts.append(f"AT {raw}")
+    if v.comment:
+        comment_parts.append(v.comment)
+    init = f" := {v.initial_value}" if v.initial_value else ""
+    comment = (
+        f"  (* {'; '.join(comment_parts)} *)" if comment_parts else ""
+    )
+    return (
+        f"{indent}{v.name}{at_inline} : "
+        f"{_fmt_iec_type(v.data_type)}{init};{comment}"
+    )
+
+
+def _fmt_var_block(direction_keyword: str, vars_: Sequence[Var]) -> list[str]:
+    """One VAR_INPUT / VAR_OUTPUT / VAR / etc. block as ST text.
+
+    Shared helper for POU-local var blocks; delegates the per-line
+    rendering to ``_fmt_var_decl_line`` so the AT-clause logic is
+    centralised."""
     if not vars_:
         return []
     lines = [direction_keyword]
     for v in vars_:
-        at_inline = ""
-        comment_parts: list[str] = []
-        if v.address is not None:
-            raw = v.address.raw
-            if raw.startswith("%"):
-                at_inline = f" AT {raw}"
-            else:
-                comment_parts.append(f"AT {raw}")
-        if v.comment:
-            comment_parts.append(v.comment)
-        init = f" := {v.initial_value}" if v.initial_value else ""
-        comment = (
-            f"  (* {'; '.join(comment_parts)} *)" if comment_parts else ""
-        )
-        lines.append(
-            f"    {v.name}{at_inline} : "
-            f"{_fmt_iec_type(v.data_type)}{init};{comment}"
-        )
+        lines.append(_fmt_var_decl_line(v))
     lines.append("END_VAR")
     return lines
 
@@ -847,10 +861,15 @@ def emit_pou(sub: Subroutine, indent: str = "    ") -> str:
         lines.append(f"(* {sub.comment} *)")
     lines.append(header)
 
-    lines.extend(_fmt_var_block("VAR_INPUT",  sub.inputs))
-    lines.extend(_fmt_var_block("VAR_OUTPUT", sub.outputs))
-    lines.extend(_fmt_var_block("VAR_IN_OUT", sub.in_outs))
-    lines.extend(_fmt_var_block("VAR",        sub.local_vars))
+    lines.extend(_fmt_var_block("VAR_INPUT",     sub.inputs))
+    lines.extend(_fmt_var_block("VAR_OUTPUT",    sub.outputs))
+    lines.extend(_fmt_var_block("VAR_IN_OUT",    sub.in_outs))
+    lines.extend(_fmt_var_block("VAR",           sub.local_vars))
+    lines.extend(_fmt_var_block("VAR_EXTERNAL",  sub.external_vars))
+    lines.extend(_fmt_var_block("VAR_TEMP",      sub.temp_vars))
+    # POU-scope ``VAR_GLOBAL`` per IEC §2.4.3 / TC6 ``<globalVars>``
+    # inside ``<interface>``: rarely used in practice but legal IEC.
+    lines.extend(_fmt_var_block("VAR_GLOBAL",    sub.global_vars))
 
     # Methods (FUNCTION_BLOCKs only) sit between the interface
     # declarations and the body proper, matching IEC 3rd-edition
@@ -989,11 +1008,7 @@ def _fmt_resource(r: Resource) -> str:
     if r.global_vars:
         lines.append("        VAR_GLOBAL")
         for v in r.global_vars:
-            init = f" := {v.initial_value}" if v.initial_value else ""
-            comment = f"  (* {v.comment} *)" if v.comment else ""
-            lines.append(
-                f"            {v.name} : {_fmt_iec_type(v.data_type)}{init};{comment}"
-            )
+            lines.append(_fmt_var_decl_line(v, indent="            "))
         lines.append("        END_VAR")
 
     for t in r.tasks:
@@ -1029,11 +1044,7 @@ def _fmt_configuration(cfg: Configuration) -> str:
     if cfg.global_vars:
         lines.append("    VAR_GLOBAL")
         for v in cfg.global_vars:
-            init = f" := {v.initial_value}" if v.initial_value else ""
-            comment = f"  (* {v.comment} *)" if v.comment else ""
-            lines.append(
-                f"        {v.name} : {_fmt_iec_type(v.data_type)}{init};{comment}"
-            )
+            lines.append(_fmt_var_decl_line(v, indent="        "))
         lines.append("    END_VAR")
 
     if cfg.access_vars:

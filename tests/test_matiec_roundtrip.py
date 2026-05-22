@@ -837,3 +837,70 @@ def test_vendor_address_falls_back_to_comment_in_st():
     # not a directive, matiec sees plain ``lamp : BOOL;``).
     rc, _out, err = _run_matiec(out)
     assert rc == 0, f"matiec rejected vendor-AT-comment program:\n{err}"
+
+
+def test_var_external_to_config_global_with_at_clause_parses_in_matiec():
+    """End-to-end IEC §2.4.3 / §2.7.1 pattern: a Configuration
+    declares a ``VAR_GLOBAL led AT %QX0.0 : BOOL;`` at the config
+    scope, and a POU pulls it in via ``VAR_EXTERNAL led : BOOL;``.
+
+    Validates three previously-broken or unverified ST emit paths:
+      1. POU-scope ``VAR_EXTERNAL`` (and ``VAR_TEMP`` / ``VAR_GLOBAL``)
+         are now actually emitted from ``Subroutine.external_vars``
+         / ``temp_vars`` / ``global_vars``.
+      2. Configuration-level ``VAR_GLOBAL`` honours ``Var.address``
+         with the IEC §2.4.1.1 AT clause (previously the inline
+         var rendering in ``_fmt_configuration`` skipped address).
+      3. The full §2.4.3 EXTERNAL ↔ §2.7.1 GLOBAL binding parses
+         end to end through matiec.
+    """
+    from universal_machinery.il.ast import Address, Var, VarDirection
+    from universal_machinery.il.configuration import (
+        Configuration, PouInstance, Resource, TaskSpec,
+    )
+    p = program(
+        subroutines=[
+            prog("Main",
+                 external_vars=[
+                     Var(name="LED", data_type=TagType.BOOL,
+                         direction=VarDirection.EXTERNAL),
+                 ],
+                 rungs=[rung(no("LED"), coil("LED"))]),
+        ],
+        configurations=[
+            Configuration(
+                name="Plant",
+                global_vars=[
+                    Var(name="LED", data_type=TagType.BOOL,
+                        direction=VarDirection.LOCAL,
+                        address=Address("%QX0.0")),
+                ],
+                resources=[
+                    Resource(
+                        name="PLC1",
+                        tasks=[TaskSpec(name="Fast",
+                                         interval="T#100ms",
+                                         priority=1)],
+                        pou_instances=[
+                            PouInstance(name="MainInst",
+                                          type_name="Main",
+                                          task="Fast"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+    out = emit_program(p)
+    # Pin both emit shapes so a regression in either path surfaces
+    # here with a clearer error than matiec's parser message.
+    assert "VAR_EXTERNAL\n    LED : BOOL;" in out, (
+        f"VAR_EXTERNAL not emitted:\n{out}"
+    )
+    assert "LED AT %QX0.0 : BOOL;" in out, (
+        f"VAR_GLOBAL AT clause not emitted:\n{out}"
+    )
+    rc, _out, err = _run_matiec(out)
+    assert rc == 0, (
+        f"matiec rejected VAR_EXTERNAL <-> VAR_GLOBAL config:\n{err}"
+    )
