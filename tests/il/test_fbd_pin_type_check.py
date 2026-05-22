@@ -243,16 +243,19 @@ def test_function_return_type_drives_producer_pin():
 
 
 # -----------------------------------------------------------------------------
-# Builtin blocks skip silently (no signature database yet)
+# Builtin blocks use the bundled signature database in
+# ``_BUILTIN_BLOCK_PIN_TYPES``: concrete pin types check against
+# the producer / consumer's resolved type; polymorphic pins (e.g.
+# ADD.IN1, MUX.IN0..N) return ``None`` and the check skips them.
 # -----------------------------------------------------------------------------
 
 
-def test_builtin_block_consumer_skips():
-    """Block typeName=``TON`` doesn't resolve to a declared
-    Subroutine -- the consumer-side check is skipped to avoid
-    false positives until a builtin signature database lands."""
+def test_builtin_block_consumer_catches_concrete_pin_mismatch():
+    """``TON.IN`` expects ``BOOL``; wiring an ``INT`` variable
+    into it should fire ``fbd-pin-type-mismatch`` via the
+    builtin signature database."""
     p = program(
-        tags=[tag_decl("clk", TagType.INT)],   # wrong type
+        tags=[tag_decl("clk", TagType.INT)],
         subroutines=[
             prog("Main", main=True, fbd_body=fbd_network(
                 in_var(0, "clk"),
@@ -262,19 +265,17 @@ def test_builtin_block_consumer_skips():
             )),
         ],
     )
-    assert "fbd-pin-type-mismatch" not in _codes(p)
+    assert "fbd-pin-type-mismatch" in _codes(p)
 
 
-def test_builtin_block_producer_skips():
-    """Producer is a builtin block -- its output type isn't in
-    Program.subroutines, so the consumer pin check skips
-    silently rather than firing a false positive."""
+def test_builtin_block_producer_catches_concrete_pin_mismatch():
+    """``TON.Q`` outputs ``BOOL``; piping it into a consumer
+    whose pin expects ``INT`` should fire ``fbd-pin-type-mismatch``."""
     p = program(
         subroutines=[
             fb("Worker",
                inputs=[var_in("v", TagType.INT)]),
             prog("Main", main=True, fbd_body=fbd_network(
-                # No inVariable; TON is the producer
                 fb_block(0, "TON",
                          instance_name="t1",
                          outputs=[pin("Q")]),
@@ -285,6 +286,49 @@ def test_builtin_block_producer_skips():
             )),
         ],
     )
+    assert "fbd-pin-type-mismatch" in _codes(p)
+
+
+def test_builtin_block_correct_types_no_error():
+    """Wiring a BOOL inVariable into ``TON.IN`` and a TIME literal
+    into ``TON.PT`` (via a TagRef of type TIME) is type-correct
+    and produces no error."""
+    p = program(
+        tags=[
+            tag_decl("clk", TagType.BOOL),
+            tag_decl("preset", TagType.TIME),
+        ],
+        subroutines=[
+            prog("Main", main=True, fbd_body=fbd_network(
+                in_var(0, "clk"),
+                in_var(1, "preset"),
+                fb_block(2, "TON",
+                         instance_name="t1",
+                         inputs=[pin("IN", source_id=0),
+                                   pin("PT", source_id=1)]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" not in _codes(p)
+
+
+def test_polymorphic_builtin_pin_skips_check():
+    """``ADD.IN1`` is polymorphic across numeric types -- the
+    signature stores ``None`` for that pin so the check skips it
+    even when the producer's type is something unusual."""
+    p = program(
+        tags=[tag_decl("clk", TagType.BOOL)],
+        subroutines=[
+            prog("Main", main=True, fbd_body=fbd_network(
+                in_var(0, "clk"),
+                fb_block(1, "ADD",
+                         inputs=[pin("IN1", source_id=0)]),
+            )),
+        ],
+    )
+    # ADD isn't in our signature database (we only carry the
+    # comparison family + stateful FBs there).  Even if it were,
+    # IN1/IN2 are polymorphic and would skip.
     assert "fbd-pin-type-mismatch" not in _codes(p)
 
 
