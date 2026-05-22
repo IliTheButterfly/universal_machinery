@@ -396,3 +396,133 @@ def test_error_location_names_block_and_pou():
                 if e.code == "fbd-pin-type-mismatch")
     assert "Main" in err.location
     assert "block 1" in err.location
+
+
+# -----------------------------------------------------------------------------
+# Extended builtin signatures: §2.5.2.8 selection (SEL.G), §2.5.2.9
+# string functions (LEN's INT output, FIND's INT output), MOVE.
+# -----------------------------------------------------------------------------
+
+
+def test_sel_g_wired_to_int_fires_mismatch():
+    """``SEL.G`` is the boolean selector; wiring an INT into it
+    is a type error caught by the builtin signature DB."""
+    p = program(
+        tags=[tag_decl("selector_int", TagType.INT)],
+        subroutines=[
+            prog("Main", main=True, fbd_body=fbd_network(
+                in_var(0, "selector_int"),
+                fb_block(1, "SEL",
+                         inputs=[pin("G", source_id=0)]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" in _codes(p)
+
+
+def test_sel_g_wired_to_bool_no_error():
+    p = program(
+        tags=[tag_decl("ok_flag", TagType.BOOL)],
+        subroutines=[
+            prog("Main", main=True, fbd_body=fbd_network(
+                in_var(0, "ok_flag"),
+                fb_block(1, "SEL",
+                         inputs=[pin("G", source_id=0)]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" not in _codes(p)
+
+
+def test_len_output_into_int_consumer_no_error():
+    """``LEN`` returns INT.  Wiring the OUT pin into another
+    block's INT-typed input is type-correct."""
+    p = program(
+        subroutines=[
+            fb("Worker",
+               inputs=[var_in("count", TagType.INT)]),
+            prog("Main", main=True, fbd_body=fbd_network(
+                fb_block(0, "LEN",
+                         outputs=[pin("OUT")]),
+                fb_block(1, "Worker",
+                         inputs=[pin("count",
+                                       source_id=0,
+                                       source_pin="OUT")]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" not in _codes(p)
+
+
+def test_len_output_into_bool_consumer_fires_mismatch():
+    """``LEN`` returns INT; piping it into a BOOL-typed input
+    is a type error."""
+    p = program(
+        subroutines=[
+            fb("Worker",
+               inputs=[var_in("flag", TagType.BOOL)]),
+            prog("Main", main=True, fbd_body=fbd_network(
+                fb_block(0, "LEN",
+                         outputs=[pin("OUT")]),
+                fb_block(1, "Worker",
+                         inputs=[pin("flag",
+                                       source_id=0,
+                                       source_pin="OUT")]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" in _codes(p)
+
+
+def test_find_output_into_int_consumer_no_error():
+    p = program(
+        subroutines=[
+            fb("Worker",
+               inputs=[var_in("pos", TagType.INT)]),
+            prog("Main", main=True, fbd_body=fbd_network(
+                fb_block(0, "FIND",
+                         outputs=[pin("OUT")]),
+                fb_block(1, "Worker",
+                         inputs=[pin("pos",
+                                       source_id=0,
+                                       source_pin="OUT")]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" not in _codes(p)
+
+
+def test_string_function_polymorphic_inputs_skip_check():
+    """``LEFT.IN`` is polymorphic over STRING / WSTRING -- the
+    signature stores ``None``, so wiring an INT into it
+    (semantically wrong but not caught) still produces no
+    type-mismatch.  This test pins the polymorphic skip in
+    place: catching it would require a more elaborate
+    bucket model."""
+    p = program(
+        tags=[tag_decl("count_int", TagType.INT)],
+        subroutines=[
+            prog("Main", main=True, fbd_body=fbd_network(
+                in_var(0, "count_int"),
+                fb_block(1, "LEFT",
+                         inputs=[pin("IN", source_id=0)]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" not in _codes(p)
+
+
+def test_move_pins_are_polymorphic_no_check():
+    """``MOVE`` is the canonical polymorphic op.  Both pins
+    are ``None`` in the signature DB so the check skips."""
+    p = program(
+        tags=[tag_decl("v", TagType.STRING)],
+        subroutines=[
+            prog("Main", main=True, fbd_body=fbd_network(
+                in_var(0, "v"),
+                fb_block(1, "MOVE",
+                         inputs=[pin("IN", source_id=0)]),
+            )),
+        ],
+    )
+    assert "fbd-pin-type-mismatch" not in _codes(p)

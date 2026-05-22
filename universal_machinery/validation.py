@@ -979,6 +979,53 @@ _BUILTIN_BLOCK_PIN_TYPES: dict[str, dict[str, "Optional[str]"]] = {
               "ENO": "BOOL", "OUT": None},
     "NOT": {"EN": "BOOL", "IN": None,
               "ENO": "BOOL", "OUT": None},
+    # §2.5.2.8 selection / multiplexing.  ``SEL.G`` is the
+    # boolean selector; ``IN0`` / ``IN1`` are the two
+    # alternatives (polymorphic; ``OUT`` matches the chosen
+    # input's type so we leave it polymorphic too).
+    "SEL":   {"EN": "BOOL", "G": "BOOL", "IN0": None, "IN1": None,
+                  "ENO": "BOOL", "OUT": None},
+    # ``MUX.K`` is a numeric selector; ``IN0..N`` polymorphic.
+    "MUX":   {"EN": "BOOL", "K": None,
+                  "ENO": "BOOL", "OUT": None},
+    "MAX":   {"EN": "BOOL", "IN1": None, "IN2": None,
+                  "ENO": "BOOL", "OUT": None},
+    "MIN":   {"EN": "BOOL", "IN1": None, "IN2": None,
+                  "ENO": "BOOL", "OUT": None},
+    "LIMIT": {"EN": "BOOL", "MN": None, "IN": None, "MX": None,
+                  "ENO": "BOOL", "OUT": None},
+    # §2.5.2.9 string functions: ``LEN`` returns INT (the
+    # string's length); ``FIND`` returns INT (the found
+    # position, or 0 for not-found).  String content pins stay
+    # polymorphic to allow STRING / WSTRING interchange.
+    "LEN":  {"EN": "BOOL", "IN": None,
+                 "ENO": "BOOL", "OUT": "INT"},
+    "FIND": {"EN": "BOOL", "IN1": None, "IN2": None,
+                 "ENO": "BOOL", "OUT": "INT"},
+    # §2.5.2.9 string-producing functions.  Input strings and
+    # count/position pins stay polymorphic so vendor-flavour
+    # integer types (UINT vs INT) don't false-positive.  ``OUT``
+    # is polymorphic too so the IEC §6.5 STRING-bucket
+    # comparison handles STRING ↔ WSTRING interchange.
+    "LEFT":    {"EN": "BOOL", "IN": None, "L": None,
+                   "ENO": "BOOL", "OUT": None},
+    "RIGHT":   {"EN": "BOOL", "IN": None, "L": None,
+                   "ENO": "BOOL", "OUT": None},
+    "MID":     {"EN": "BOOL", "IN": None, "L": None, "P": None,
+                   "ENO": "BOOL", "OUT": None},
+    "CONCAT":  {"EN": "BOOL", "IN1": None, "IN2": None,
+                   "ENO": "BOOL", "OUT": None},
+    "INSERT":  {"EN": "BOOL", "IN1": None, "IN2": None, "P": None,
+                   "ENO": "BOOL", "OUT": None},
+    "DELETE":  {"EN": "BOOL", "IN": None, "L": None, "P": None,
+                   "ENO": "BOOL", "OUT": None},
+    "REPLACE": {"EN": "BOOL", "IN1": None, "IN2": None,
+                   "L": None, "P": None,
+                   "ENO": "BOOL", "OUT": None},
+    # MOVE: single polymorphic input + single output of the
+    # same type.  Both pins polymorphic.
+    "MOVE": {"EN": "BOOL", "IN": None,
+                "ENO": "BOOL", "OUT": None},
 }
 
 
