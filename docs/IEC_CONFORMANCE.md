@@ -316,4 +316,4 @@ verification path for any conformance claim.
 [`docs/CONFORMANCE_TEST_PLAN.md`](CONFORMANCE_TEST_PLAN.md) maps
 each row above to a concrete test fixture under `tests/` and
 tracks what the corpus does + doesn't yet cover.  Updated as
-slices land; the current pass count is 1220.
+slices land; the current pass count is 1229.

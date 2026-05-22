@@ -8,6 +8,7 @@ A thin Typer wrapper over the library's existing entry points:
   ``um diff <a> <b>``     line-diff two IL programs (JSON form)
   ``um import <file.xml>``  parse a PLCopen TC6 XML doc into IL JSON
   ``um lint <file> -f text|json``  CI-friendly validation; accepts JSON or XML
+  ``um convert <in> <out>``  translate between formats (JSON / XML / ST) via the IL
 
 The CLI takes IL programs in their JSON form (the
 ``universal_machinery.serialisation`` format).  Vendor-format
@@ -411,6 +412,126 @@ def _read_lint_input(path: Path) -> Program:
         err.print(f"[red]error[/red]: {path}: top-level value is not a Program")
         raise typer.Exit(code=2)
     return prog
+
+
+# -----------------------------------------------------------------------------
+# ``um convert``: translate between formats via the IL
+# -----------------------------------------------------------------------------
+
+
+def _read_any(path: Path) -> Program:
+    """Load a Program from ``path``, dispatching on suffix.
+
+    Supported inputs:
+      - ``.json``: canonical IL JSON (the ``serialisation`` format).
+      - ``.xml``:  PLCopen TC6 XML document.
+
+    ``.st`` isn't supported on the read side yet -- the parent project
+    ships an ST expression / statement parser but no full-program ST
+    parser that reconstructs Subroutine + Configuration + TYPE blocks.
+    """
+    if str(path) == "-":
+        err.print(
+            "[red]error[/red]: ``um convert`` cannot read stdin -- "
+            "format dispatch is by file suffix"
+        )
+        raise typer.Exit(code=2)
+
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        return _read_program(path)
+    if suffix == ".xml":
+        from .parsers.plcopen_xml import (
+            PlcopenParseError, parse_plcopen_xml_file,
+        )
+        try:
+            return parse_plcopen_xml_file(path)
+        except FileNotFoundError:
+            err.print(f"[red]error[/red]: file not found: {path}")
+            raise typer.Exit(code=2)
+        except PlcopenParseError as exc:
+            err.print(f"[red]error[/red]: PLCopen parse failed: {exc}")
+            raise typer.Exit(code=2)
+    if suffix == ".st":
+        err.print(
+            f"[red]error[/red]: reading {path}: ``.st`` parsing not "
+            "yet supported (no full-program ST parser).  Round-trip "
+            "via .xml or .json instead"
+        )
+        raise typer.Exit(code=2)
+    err.print(
+        f"[red]error[/red]: {path}: unrecognised input suffix "
+        f"{suffix!r}; expected .json or .xml"
+    )
+    raise typer.Exit(code=2)
+
+
+def _write_any(program: Program, path: Path) -> None:
+    """Lower ``program`` to ``path``, dispatching on suffix.
+
+    Supported outputs: ``.json`` (canonical IL), ``.xml`` (PLCopen
+    TC6), ``.st`` (IEC §3 Structured Text).  ``-`` writes to stdout
+    using the ``.json`` shape as a sensible default (matching the
+    rest of the CLI's stdin/stdout convention).
+    """
+    if str(path) == "-":
+        sys.stdout.write(to_json(program, sort_keys=True))
+        sys.stdout.write("\n")
+        return
+
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        path.write_text(to_json(program, indent=2), encoding="utf-8")
+        return
+    if suffix == ".xml":
+        from .emitters.plcopen_xml import emit_xml
+        path.write_text(emit_xml(program), encoding="utf-8")
+        return
+    if suffix == ".st":
+        from .emitters.st import emit_program
+        path.write_text(emit_program(program), encoding="utf-8")
+        return
+    err.print(
+        f"[red]error[/red]: {path}: unrecognised output suffix "
+        f"{suffix!r}; expected .json, .xml, or .st"
+    )
+    raise typer.Exit(code=2)
+
+
+@app.command()
+def convert(
+    input: Path = typer.Argument(
+        ...,
+        help="Input file.  Format inferred from suffix: ``.json`` "
+             "(IL canonical) or ``.xml`` (PLCopen TC6).",
+    ),
+    output: Path = typer.Argument(
+        ...,
+        help="Output file.  Format inferred from suffix: ``.json`` "
+             "/ ``.xml`` / ``.st``; ``-`` writes JSON to stdout.",
+    ),
+) -> None:
+    """Convert between IL / PLCopen XML / Structured Text formats.
+
+    Routes the input through the IL and re-emits in the requested
+    output format.  Every format pair where both halves are
+    bidirectional (``.json`` and ``.xml``) round-trips losslessly;
+    ``.st`` is write-only today (no full-program ST parser).
+
+    Examples::
+
+        um convert prog.xml prog.json       # PLCopen XML -> IL JSON
+        um convert prog.json prog.st        # IL JSON -> IEC ST
+        um convert prog.xml prog.st         # PLCopen XML -> IEC ST
+        um convert prog.json prog.xml       # IL JSON -> PLCopen XML
+
+    Unifies the older ``um emit`` (JSON -> ST/XML/JSON) and
+    ``um import`` (XML -> JSON) verbs under one consistent
+    suffix-driven dispatch.  Those verbs still work for backwards
+    compat.
+    """
+    program = _read_any(input)
+    _write_any(program, output)
 
 
 # -----------------------------------------------------------------------------
