@@ -127,7 +127,10 @@ _ENUMS: dict[str, type[Enum]] = {
 }
 
 
-class SerialisationError(Exception):
+from .exceptions import UniversalMachineryError
+
+
+class SerialisationError(UniversalMachineryError):
     """Raised when an unsupported value is encountered during
     encode/decode -- e.g. an object that's neither a recognised
     dataclass nor a JSON-compatible primitive."""

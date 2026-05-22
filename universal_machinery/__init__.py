@@ -22,13 +22,25 @@ supported PLC.
 
 Status: ALPHA.  CLICK read+write works end-to-end via the click_plc
 backend.  IL design is complete enough to round-trip CLICK programs.
-OpenPLC backend is a skeleton.
+OpenPLC backend dispatches to the parent's IEC ST / PLCopen XML
+emitters and is registered via ``@register("openplc")``.
 
 See ``docs/ARCHITECTURE.md`` for the design and ``backends/<vendor>/``
 for each backend's status.
 """
 from . import il
 from .backends import Backend
+from .exceptions import (
+    LoweringError,
+    RoundTripError,
+    UniversalMachineryError,
+)
 
-__all__ = ["il", "Backend"]
+__all__ = [
+    "il",
+    "Backend",
+    "UniversalMachineryError",
+    "LoweringError",
+    "RoundTripError",
+]
 __version__ = "0.1.0"
