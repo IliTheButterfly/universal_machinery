@@ -173,6 +173,7 @@ Status legend:
 | IL → PLCopen XML → IL (SFC body)           | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
 | IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
 | FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
+| IL → ST → matiec ``iec2c`` parse-accept    | ⚠️ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / Compare+Move / BinaryMath / ABS / FB call / SFC / jump+label representative programs |
 
 ## XSD-level conformance
 
@@ -232,11 +233,20 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
 
 ## What's NOT covered (and why)
 
-1. **PLCopen reference-tool round-trip**.  XSD validity is necessary
-   but not sufficient for cert; the next major slice runs emitted
-   XML through matiec / Beremiz / OpenPLC editor as a subprocess
-   and confirms they accept + re-emit it.  External-tooling
-   dependency makes this a follow-up.
+1. ⚠️ **PLCopen reference-tool round-trip**.  XSD validity is
+   necessary but not sufficient for cert; the practical signal
+   is that an accredited IEC compiler accepts our output.
+   ``tests/test_matiec_roundtrip.py`` drives matiec's
+   ``iec2c`` against representative LD / SFC / FB / Compare /
+   Move / BinaryMath / StdFunc programs as a subprocess.  CI
+   doesn't require matiec to pass; the module skips cleanly
+   when ``iec2c`` isn't on ``$PATH`` (or via ``MATIEC_BIN``).
+   Beremiz and openplc_editor are GUI tools that want a full
+   Beremiz-project layout (``plc.xml`` + ``beremiz.xml`` +
+   confnode tree) rather than a single PLCopen XML, so they're
+   probed by the ``verify-cert`` skill but not driven from CI;
+   building a Beremiz-project-from-IL synthesiser would be a
+   separate slice.
 2. ✅ ~~**Semantic type checking**.~~ *Done* for the
    self-contained set: rung ops, ST AST bodies, SFC transition
    conditions, struct field / array element access through UDTs,
