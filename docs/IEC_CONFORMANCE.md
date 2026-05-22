@@ -41,11 +41,11 @@ through the PLCopen TC6 XML schema.  Vendor-specific extensions
 | §2.2 | PROGRAM | ✅ | `Subroutine(kind=PouKind.PROGRAM)` | |
 | §2.2 | FUNCTION | ✅ | `Subroutine(kind=PouKind.FUNCTION, return_type=...)` | |
 | §2.2 | FUNCTION_BLOCK | ✅ | `Subroutine(kind=PouKind.FUNCTION_BLOCK)` + instance `DataBlock` | |
-| §2.5.1.5 | METHOD (3rd ed.) | ⚠️ | `Method` declared inside `Subroutine.methods` (FB) or `Interface.methods` | ST emitter renders full `METHOD ... END_METHOD` with PUBLIC/PRIVATE/PROTECTED/INTERNAL access specifiers, ABSTRACT, OVERRIDE.  **Doubly blocked for cert today**: (a) PLCopen TC6 v2.01 XSD predates the 3rd edition and has no `<method>` element (v2.02+ schema upgrade not yet available outside vendor distributions); (b) matiec (`iec2c`), the only accredited free IEC compiler on the project's bench, rejects `METHOD ... END_METHOD` outright (it's a 2nd-edition compiler).  ST emit is structurally valid IEC 3rd-edition text but has no accredited downstream parser to confirm it |
-| §2.5.1.5 | INTERFACE (3rd ed.) | ⚠️ | `Interface` declared in `Program.interfaces`; FBs reference via `Subroutine.implements=[...]` | Multiple inheritance for interfaces supported; single inheritance for FBs (`Subroutine.extends`).  Same doubly-blocked cert posture as METHOD: no v2.02 XSD, and matiec rejects `INTERFACE ... END_INTERFACE` |
-| §2.5.1.5 | EXTENDS (3rd ed.) | ⚠️ | `Subroutine.extends: Optional[str]` (single inheritance) | ST emits `FUNCTION_BLOCK Child EXTENDS Parent`; PLCopen XML omits per XSD limitation; matiec also rejects `EXTENDS` |
-| §2.5.1.5 | IMPLEMENTS (3rd ed.) | ⚠️ | `Subroutine.implements: list[str]` | ST emits `FUNCTION_BLOCK Name IMPLEMENTS I1, I2`; PLCopen XML omits per XSD limitation; matiec rejects (depends on INTERFACE) |
-| §2.5.1.5 | ABSTRACT (3rd ed.) | ⚠️ | `Subroutine.abstract: bool`, `Method.abstract: bool` | ST emits `FUNCTION_BLOCK ABSTRACT Name`; PLCopen XML omits per XSD limitation; matiec rejects (depends on METHOD) |
+| §2.5.1.5 | METHOD (3rd ed.) | ⚠️ | `Method` declared inside `Subroutine.methods` (FB) or `Interface.methods` | ST emitter renders full `METHOD ... END_METHOD` with PUBLIC/PRIVATE/PROTECTED/INTERNAL access specifiers, ABSTRACT, OVERRIDE.  **Cert posture now half-unlocked**: (a) PLCopen TC6 v2.01 XSD still predates the 3rd edition (no `<method>` element; v2.02+ not publicly available outside vendor distributions); (b) **rusty** (`plc`), the second reference compiler on the bench (added 2026-05-22 via the `backends/rusty/` submodule), accepts `METHOD ... END_METHOD` and validates the ST-emit path end to end.  matiec still rejects it -- that asymmetry is the headline difference between the two reference compilers |
+| §2.5.1.5 | INTERFACE (3rd ed.) | ⚠️ | `Interface` declared in `Program.interfaces`; FBs reference via `Subroutine.implements=[...]` | Multiple inheritance for interfaces supported; single inheritance for FBs (`Subroutine.extends`).  Same half-unlocked posture as METHOD: rusty validates `INTERFACE ... END_INTERFACE` + `IMPLEMENTS` (parent's `tests/test_rusty_backend_integration.py` plus the submodule's `test_rusty_accepts_3rd_edition_oop`); matiec rejects; PLCopen XML v2.01 has no `<interface>` element |
+| §2.5.1.5 | EXTENDS (3rd ed.) | ⚠️ | `Subroutine.extends: Optional[str]` (single inheritance) | ST emits `FUNCTION_BLOCK Child EXTENDS Parent`; PLCopen XML omits per XSD limitation; rusty accepts; matiec rejects |
+| §2.5.1.5 | IMPLEMENTS (3rd ed.) | ⚠️ | `Subroutine.implements: list[str]` | ST emits `FUNCTION_BLOCK Name IMPLEMENTS I1, I2`; PLCopen XML omits per XSD limitation; rusty accepts; matiec rejects |
+| §2.5.1.5 | ABSTRACT (3rd ed.) | ⚠️ | `Subroutine.abstract: bool`, `Method.abstract: bool` | ST emits `FUNCTION_BLOCK ABSTRACT Name`; PLCopen XML omits per XSD limitation; rusty accepts; matiec rejects |
 | (vendor) | SUBROUTINE | ✅ | `Subroutine(kind=PouKind.SUBROUTINE)` | Vendor-extension kind for CLICK-style unparameterized routines; outside IEC, but coexists |
 
 ## §2.4  Variables
@@ -241,25 +241,32 @@ Concrete slices to close the larger conformance gaps, in priority order:
    addresses (``X001``, ``DS9000``) continue to emit as AT-comment
    annotations.
 
-4. ⚠️ ~~**METHOD / INTERFACE**.~~ *Partial — doubly blocked for cert.*
-   IEC 3rd-edition OOP (`il/oop.py`): `Method`, `Interface`, plus
-   `Subroutine.methods` / `extends` / `implements` / `abstract`
-   fields.  Builder DSL (`method`, `abstract_method`, `interface`),
-   ST emission, JSON serialisation, and validation are complete.
-   **Cert path blocked on two independent axes**:
-   (a) PLCopen TC6 v2.01 XSD predates the 3rd edition and has no
-   `<method>` / `<interface>` elements -- PLCopen XML emission is
-   incomplete until a v2.02+ schema upgrade lands.  The v2.02
-   schema isn't publicly available outside vendor distributions;
-   (b) matiec (`iec2c`), the only accredited free IEC compiler
-   the project drives, is a 2nd-edition compiler -- it rejects
-   `METHOD ... END_METHOD`, `EXTENDS`, and `INTERFACE ... END_INTERFACE`
-   at the parser level (verified 2026-05-21).  ST emit is
-   structurally valid IEC 3rd-edition text, but there is no
-   accredited downstream parser on the bench to confirm
-   round-trip until either a v2.02+ XSD or a 3rd-edition-aware
-   open compiler becomes available.  Closing either axis would
-   unblock the OOP cert claim.
+4. ⚠️ ~~**METHOD / INTERFACE**.~~ *Partial — compiler axis unlocked,
+   XSD axis still blocked.*  IEC 3rd-edition OOP (`il/oop.py`):
+   `Method`, `Interface`, plus `Subroutine.methods` / `extends` /
+   `implements` / `abstract` fields.  Builder DSL (`method`,
+   `abstract_method`, `interface`), ST emission, JSON serialisation,
+   and validation are complete.
+   **Cert posture (after 2026-05-22 rusty integration)**:
+   (a) PLCopen TC6 v2.01 XSD still predates the 3rd edition and
+   has no `<method>` / `<interface>` elements -- PLCopen XML
+   emission is incomplete until a v2.02+ schema upgrade lands.
+   The v2.02 schema isn't publicly available outside vendor
+   distributions;
+   (b) **rusty (`plc`)**, the second accredited reference compiler
+   on the project's bench (driven via the
+   `backends/rusty/` submodule), accepts `METHOD ... END_METHOD`,
+   `INTERFACE ... END_INTERFACE`, `EXTENDS`, and `IMPLEMENTS`
+   at parse + compile time -- verified by the submodule's
+   `test_rusty_accepts_3rd_edition_oop` test, which compiles a
+   full FB-implements-INTERFACE shape through `plc -c` cleanly.
+   matiec still rejects all of these (verified 2026-05-21).
+   The matiec-vs-rusty asymmetry is the headline difference
+   between the two reference compilers.
+
+   Closing the XSD axis (waiting on a v2.02+ schema) would
+   complete the OOP cert claim end to end -- the compiler axis
+   is now closed via rusty.
 
 5. ✅ ~~**CONFIGURATION / RESOURCE / TASK**.~~ *Done.*  IEC §2.7 system-
    organisation model lives in [`il/configuration.py`](../universal_machinery/il/configuration.py).
@@ -316,4 +323,4 @@ verification path for any conformance claim.
 [`docs/CONFORMANCE_TEST_PLAN.md`](CONFORMANCE_TEST_PLAN.md) maps
 each row above to a concrete test fixture under `tests/` and
 tracks what the corpus does + doesn't yet cover.  Updated as
-slices land; the current pass count is 1236.
+slices land; the current pass count is 1240.
