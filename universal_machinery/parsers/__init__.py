@@ -26,7 +26,7 @@ from .plcopen_xml import (
     PlcopenParseError, parse_plcopen_xml, parse_plcopen_xml_file,
 )
 from .st_text import (
-    StParseError, parse_st_body, parse_st_expression,
+    StParseError, parse_program, parse_st_body, parse_st_expression,
 )
 
 __all__ = [
@@ -34,6 +34,7 @@ __all__ = [
     "StParseError",
     "parse_plcopen_xml",
     "parse_plcopen_xml_file",
+    "parse_program",
     "parse_st_body",
     "parse_st_expression",
     "plcopen_xml",

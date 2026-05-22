@@ -849,3 +849,362 @@ def parse_st_expression(src: str) -> Expression:
     """
     tokens = _tokenize(src)
     return _Parser(tokens).parse_one_expression()
+
+
+# -----------------------------------------------------------------------------
+# Full-program parser (v1)
+# -----------------------------------------------------------------------------
+#
+# Closes the read(.st) gap that ``openplc_backend`` / ``rusty_backend``
+# previously raised ``NotImplementedError`` for.  Round-trip:
+#
+#     IL Program -> emit_program(p) -> ST source
+#                                          |
+#                                          v
+#     IL Program <- parse_program(src) <- ST source
+#
+# Scope (v1):
+#   - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs
+#   - VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR (local) blocks
+#   - Variable declarations: ``name : TYPE;``, optional ``:= init``,
+#     optional trailing ``(* comment *)`` -- elementary types AND
+#     NamedType (FB instance / UDT reference) both supported
+#   - Body: every shape ``parse_body`` already covers
+#
+# Out of scope (v1; raise StParseError):
+#   - VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL
+#   - AT clauses (``name AT %IX0.0 : BOOL;``)
+#   - TYPE ... END_TYPE blocks (UDTs)
+#   - CONFIGURATION / RESOURCE / TASK
+#   - METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT
+#   - SFC text representation
+#   - LD body parsing (no IEC ST equivalent; round-trip LD via XML)
+
+
+# Names of the elementary IEC types we recognise verbatim.  Maps
+# the uppercase IEC name to ``TagType`` (when it's elementary) or
+# to ``None`` (then we treat the name as a NamedType reference to
+# a user-defined type / FB type).  Imported lazily at parse time
+# to avoid a circular import with ``il`` (which the emitter side
+# uses).
+def _elementary_typemap():
+    from .. import il
+    return {t.name: t for t in il.TagType}
+
+
+# Direction strings <-> VarDirection.  Direction strings other
+# than these raise an "out of scope" error at parse time.
+_VAR_DIRECTION_KEYWORDS = {
+    "VAR_INPUT":   "INPUT",
+    "VAR_OUTPUT":  "OUTPUT",
+    "VAR_IN_OUT":  "IN_OUT",
+    "VAR":         "LOCAL",
+}
+
+
+_POU_KEYWORDS = {"PROGRAM", "FUNCTION_BLOCK", "FUNCTION"}
+
+
+def _peek_identifier_keyword(parser: _Parser) -> Optional[str]:
+    """Return the *uppercase* lexeme of the next token IFF it's a
+    bare identifier, else ``None``.  PROGRAM / VAR / END_VAR etc.
+    aren't first-class TokKinds; we match them by uppercased
+    lexeme since IEC ST is case-insensitive for keywords.
+    """
+    tok = parser._peek()
+    if tok.kind is not TokKind.IDENT:
+        return None
+    return tok.lexeme.upper()
+
+
+def _parse_data_type(parser: _Parser):
+    """``: TYPE`` -- consume ``COLON`` then an identifier and
+    return the resolved ``DataType``.
+
+    Elementary type names (``BOOL`` / ``INT`` / ...) resolve to
+    ``TagType``; anything else becomes a ``NamedType`` reference
+    (FB instance, UDT, etc.).  TYPE-block declarations aren't
+    parsed in v1, so the NamedType won't have its definition
+    attached -- callers that need the definition must pre-populate
+    ``Program.user_types`` and/or rely on a separate parser pass.
+    """
+    from ..il.types import NamedType
+    type_tok = parser._consume(
+        TokKind.IDENT, "expected a type name after ':'"
+    )
+    elementary = _elementary_typemap()
+    name = type_tok.lexeme.upper()
+    if name in elementary:
+        return elementary[name]
+    # Preserve original casing for NamedType so emit_program can
+    # round-trip the name verbatim.
+    return NamedType(type_tok.lexeme)
+
+
+def _parse_var_decl(parser: _Parser, direction: str):
+    """One ``name : TYPE [:= init] ; [(* comment *)]`` line."""
+    from ..il.ast import Var, VarDirection
+    name_tok = parser._consume(
+        TokKind.IDENT,
+        "expected a variable name inside VAR block"
+    )
+
+    # AT clauses (``name AT %IX0.0 : BOOL;``) are out of scope in
+    # v1 -- surface a clear error rather than misparse.
+    if (parser._peek().kind is TokKind.IDENT
+            and parser._peek().lexeme.upper() == "AT"):
+        tok = parser._peek()
+        raise StParseError(
+            "AT direct-rep clauses are not yet supported by "
+            "parse_program (v1).  Strip the AT clause before "
+            "parsing, or wait for the follow-up that wires "
+            "Address-aware var-decl parsing.",
+            line=tok.line, column=tok.column, lexeme=tok.lexeme,
+        )
+
+    parser._consume(TokKind.COLON, "expected ':' after variable name")
+    data_type = _parse_data_type(parser)
+
+    initial_value = ""
+    if parser._match(TokKind.ASSIGN):
+        parser._advance()
+        # We treat the initial value as a verbatim text snippet --
+        # the IL's ``Var.initial_value`` is a string today, and
+        # forcing it through ``parse_st_expression`` would change
+        # the shape (and lose source fidelity for e.g. T# literals).
+        # Slurp until the terminating semicolon.
+        start = parser.pos
+        depth = 0
+        while True:
+            tok = parser._peek()
+            if tok.kind is TokKind.EOF:
+                raise StParseError(
+                    "unterminated initial value", line=tok.line,
+                    column=tok.column, lexeme=tok.lexeme,
+                )
+            if depth == 0 and tok.kind is TokKind.SEMI:
+                break
+            if tok.kind is TokKind.LPAREN:
+                depth += 1
+            elif tok.kind is TokKind.RPAREN:
+                depth -= 1
+            parser._advance()
+        init_tokens = parser.tokens[start:parser.pos]
+        # Rebuild the source slice from the tokens' lexemes; loses
+        # original whitespace but preserves the value's textual
+        # shape (Literal-stringified for emit round-trip).
+        initial_value = " ".join(t.lexeme for t in init_tokens)
+
+    parser._consume(TokKind.SEMI, "expected ';' after var declaration")
+
+    return Var(
+        name=name_tok.lexeme,
+        data_type=data_type,
+        direction=VarDirection[direction],
+        initial_value=initial_value,
+    )
+
+
+def _parse_var_block(parser: _Parser) -> tuple[str, list]:
+    """One ``VAR* ... END_VAR`` block.
+
+    Returns ``(direction_string, list_of_Var)``.  Caller routes
+    the list to the right Subroutine field.
+    """
+    kw = _peek_identifier_keyword(parser)
+    if kw not in _VAR_DIRECTION_KEYWORDS:
+        tok = parser._peek()
+        raise StParseError(
+            f"expected VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR; "
+            f"got {tok.lexeme!r}",
+            line=tok.line, column=tok.column, lexeme=tok.lexeme,
+        )
+    direction = _VAR_DIRECTION_KEYWORDS[kw]
+    parser._advance()  # consume VAR*
+    vars_: list = []
+    while True:
+        kw = _peek_identifier_keyword(parser)
+        if kw == "END_VAR":
+            parser._advance()
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                "unterminated VAR block (missing END_VAR)",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        vars_.append(_parse_var_decl(parser, direction))
+    return direction, vars_
+
+
+def _parse_pou(parser: _Parser):
+    """One ``PROGRAM`` / ``FUNCTION`` / ``FUNCTION_BLOCK`` declaration.
+
+    The interpretive scope at this point in the input is the bare
+    POU keyword (``PROGRAM`` / ``FUNCTION`` / ``FUNCTION_BLOCK``)
+    followed by name, optional return type for FUNCTION, optional
+    VAR blocks, the body, and the matching ``END_*`` keyword.
+
+    Returns the constructed ``Subroutine``.
+    """
+    from ..il.ast import PouKind, Subroutine
+
+    kw = _peek_identifier_keyword(parser)
+    if kw not in _POU_KEYWORDS:
+        tok = parser._peek()
+        raise StParseError(
+            f"expected POU keyword (PROGRAM / FUNCTION / "
+            f"FUNCTION_BLOCK); got {tok.lexeme!r}",
+            line=tok.line, column=tok.column, lexeme=tok.lexeme,
+        )
+    parser._advance()  # consume the POU kind keyword
+    pou_kind = {
+        "PROGRAM":        PouKind.PROGRAM,
+        "FUNCTION":       PouKind.FUNCTION,
+        "FUNCTION_BLOCK": PouKind.FUNCTION_BLOCK,
+    }[kw]
+    end_kw = {
+        "PROGRAM":        "END_PROGRAM",
+        "FUNCTION":       "END_FUNCTION",
+        "FUNCTION_BLOCK": "END_FUNCTION_BLOCK",
+    }[kw]
+
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected POU name after declaration keyword"
+    )
+    name = name_tok.lexeme
+
+    # FUNCTION has a required ``: ReturnType`` after the name.
+    return_type = None
+    if kw == "FUNCTION":
+        parser._consume(TokKind.COLON, "expected ':' for FUNCTION return type")
+        return_type = _parse_data_type(parser)
+
+    inputs: list = []
+    outputs: list = []
+    in_outs: list = []
+    local_vars: list = []
+
+    # Zero or more VAR* blocks.  Any VAR_* keyword we don't yet
+    # parse (VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL) raises a
+    # focused error -- otherwise we'd fall into body parsing and
+    # surface a confusing statement-parser error instead.
+    _unsupported_var_keywords = (
+        "VAR_EXTERNAL", "VAR_TEMP", "VAR_GLOBAL",
+    )
+    while True:
+        nxt = _peek_identifier_keyword(parser)
+        if nxt in _VAR_DIRECTION_KEYWORDS:
+            direction, items = _parse_var_block(parser)
+            {
+                "INPUT":   inputs,
+                "OUTPUT":  outputs,
+                "IN_OUT":  in_outs,
+                "LOCAL":   local_vars,
+            }[direction].extend(items)
+        elif nxt in _unsupported_var_keywords:
+            tok = parser._peek()
+            raise StParseError(
+                f"{tok.lexeme} blocks are not yet supported by "
+                f"parse_program (v1).  Accepted today: "
+                f"VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR.",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        else:
+            break
+
+    # Body: every statement until ``END_<kind>``.
+    body_stmts: list = []
+    while True:
+        nxt = _peek_identifier_keyword(parser)
+        if nxt == end_kw:
+            parser._advance()
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                f"unterminated POU (missing {end_kw})",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        body_stmts.append(parser._parse_statement())
+
+    return Subroutine(
+        name=name,
+        kind=pou_kind,
+        main=(pou_kind is PouKind.PROGRAM),
+        inputs=inputs,
+        outputs=outputs,
+        in_outs=in_outs,
+        local_vars=local_vars,
+        return_type=return_type,
+        st_body=body_stmts,
+    )
+
+
+def parse_program(src: str):
+    """Parse ST source text into an IL ``Program``.
+
+    Closes the read(.st) gap for ``openplc_backend`` /
+    ``rusty_backend``.  Scope (v1):
+
+      - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs with their
+        VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR (local) blocks
+      - Body via the existing statement parser
+      - Multiple POUs in one source
+
+    Not yet supported (raise ``StParseError``):
+
+      - VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL
+      - AT clauses on variables (``name AT %IX0.0 : BOOL;``)
+      - TYPE ... END_TYPE blocks (UDT declarations)
+      - CONFIGURATION / RESOURCE / TASK
+      - METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT
+      - SFC text representation
+
+    These omissions reflect what the v1 round-trip needs to be
+    useful for the common case (a single PROGRAM POU with
+    elementary-typed locals and an ST body).  Each is a follow-up
+    slice; the StParseError message points to which scope item
+    you've hit.
+    """
+    from ..il.ast import Program
+
+    tokens = _tokenize(src)
+    parser = _Parser(tokens)
+
+    subroutines: list = []
+    while not parser._match(TokKind.EOF):
+        kw = _peek_identifier_keyword(parser)
+        if kw in _POU_KEYWORDS:
+            subroutines.append(_parse_pou(parser))
+        elif kw == "TYPE":
+            tok = parser._peek()
+            raise StParseError(
+                "TYPE ... END_TYPE block parsing is not yet "
+                "supported by parse_program (v1).  Strip TYPE "
+                "blocks before parsing.",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        elif kw == "CONFIGURATION":
+            tok = parser._peek()
+            raise StParseError(
+                "CONFIGURATION ... END_CONFIGURATION block parsing "
+                "is not yet supported by parse_program (v1).",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        elif kw == "INTERFACE":
+            tok = parser._peek()
+            raise StParseError(
+                "INTERFACE ... END_INTERFACE block parsing is not "
+                "yet supported by parse_program (v1).",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        else:
+            tok = parser._peek()
+            raise StParseError(
+                f"expected POU keyword at program scope; got "
+                f"{tok.lexeme!r}",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+
+    return Program(subroutines=subroutines)
