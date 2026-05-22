@@ -370,6 +370,63 @@ def test_program_tag_with_iec_direct_rep_emits_inline_AT():
     assert "LED : BOOL;  (* AT %QX0.0" not in text, text
 
 
+def test_data_block_emit_preserves_member_attributes():
+    """A ``DataBlock`` carries vendor-extension semantics
+    (S7-style global DB / CLICK instance) but its IL fields
+    -- ``base_address``, ``comment``, plus each member's
+    ``address`` / ``initial_value`` / ``comment`` -- describe
+    real binding intent that the ST emit must preserve.
+
+    Previously the DB emit rendered just ``<dbname>_<member> :
+    <type>;`` per member, silently dropping five IL fields per
+    DB.  This regression test pins the new shape:
+      - Header carries base_address + comment in the (* ... *) line
+      - IEC direct rep member addresses emit as inline AT clause
+      - Vendor-style member addresses emit as (* AT ... *) comment
+      - Member initial values emit after the type
+      - Member comments emit at the end of the line"""
+    from universal_machinery.il.ast import (
+        Address, DataBlock, Var, VarDirection,
+    )
+    db = DataBlock(
+        name="PID_state",
+        members=[
+            Var(name="setpoint", data_type=TagType.REAL,
+                direction=VarDirection.LOCAL,
+                address=Address("%MD0.0"),
+                initial_value="100.0",
+                comment="target value"),
+            Var(name="kp", data_type=TagType.REAL,
+                direction=VarDirection.LOCAL,
+                address=Address("DB100.0"),
+                initial_value="2.5"),
+            Var(name="output", data_type=TagType.REAL,
+                direction=VarDirection.LOCAL),
+        ],
+        base_address=Address("DB100"),
+        fb_template="PID",
+        comment="instance for tank-1 pressure loop",
+    )
+    p = program(data_blocks=[db])
+    text = emit_program(p)
+    # Header preserves fb_template, base_address, comment
+    assert "DATA_BLOCK PID_state" in text, text
+    assert "instance of PID" in text, text
+    assert "AT DB100" in text, text
+    assert "instance for tank-1 pressure loop" in text, text
+    # Member with IEC direct rep + initial + comment
+    assert (
+        "PID_state_setpoint AT %MD0.0 : REAL := 100.0;  "
+        "(* target value *)"
+    ) in text, text
+    # Member with vendor-style address + initial (no comment)
+    assert (
+        "PID_state_kp : REAL := 2.5;  (* AT DB100.0 *)"
+    ) in text, text
+    # Member with no address / no initial / no comment
+    assert "PID_state_output : REAL;" in text, text
+
+
 def test_program_emits_pou_per_subroutine():
     p = program(subroutines=[
         prog("Main", main=True, rungs=[rung(no("X1"), coil("Y1"))]),
