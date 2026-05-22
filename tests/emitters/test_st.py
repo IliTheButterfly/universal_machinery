@@ -427,6 +427,57 @@ def test_data_block_emit_preserves_member_attributes():
     assert "PID_state_output : REAL;" in text, text
 
 
+def test_user_type_emits_optional_comment_header():
+    """``StructType.comment`` / ``AliasType.comment`` /
+    ``EnumType.comment`` / ``SubrangeType.comment`` /
+    ``ArrayType.comment`` describe the UDT's purpose; the ST
+    emit must preserve them as a ``(* ... *)`` line above the
+    ``TYPE`` keyword so they survive round-trip.  Previously
+    these comments were silently dropped."""
+    from universal_machinery.il.types import (
+        AliasType, ArrayType, EnumType, StructType, SubrangeType,
+    )
+    from universal_machinery.il.ast import Var, VarDirection
+    from universal_machinery.emitters.st import _fmt_user_type_decl
+    s = StructType(
+        name="Motor",
+        members=(
+            Var(name="speed", data_type=TagType.INT,
+                direction=VarDirection.LOCAL),
+        ),
+        comment="Motor control struct",
+    )
+    assert "(* Motor control struct *)" in _fmt_user_type_decl(s)
+    a = AliasType(name="Speed", base=TagType.REAL, comment="m/s")
+    assert "(* m/s *)" in _fmt_user_type_decl(a)
+    e = EnumType(name="State", values=("IDLE", "RUN"), comment="FSM")
+    assert "(* FSM *)" in _fmt_user_type_decl(e)
+    sub = SubrangeType(name="Pct", base=TagType.INT,
+                          lower=0, upper=100, comment="0-100")
+    assert "(* 0-100 *)" in _fmt_user_type_decl(sub)
+    arr = ArrayType(name="Vec", element_type=TagType.INT,
+                       bounds=((0, 9),), comment="10-element buffer")
+    assert "(* 10-element buffer *)" in _fmt_user_type_decl(arr)
+
+
+def test_task_and_pou_instance_emit_optional_comment():
+    """``TaskSpec.comment`` and ``PouInstance.comment`` describe
+    why the task / binding exists.  Previously dropped on ST
+    emit; now appended as a trailing ``(* ... *)`` annotation."""
+    from universal_machinery.il.configuration import (
+        PouInstance, TaskSpec,
+    )
+    from universal_machinery.emitters.st import (
+        _fmt_pou_instance, _fmt_task,
+    )
+    t = TaskSpec(name="Fast", interval="T#100ms", priority=1,
+                   comment="10Hz cyclic")
+    assert "(* 10Hz cyclic *)" in _fmt_task(t)
+    inst = PouInstance(name="Main", type_name="MainProgram",
+                          task="Fast", comment="top-level")
+    assert "(* top-level *)" in _fmt_pou_instance(inst)
+
+
 def test_program_emits_pou_per_subroutine():
     p = program(subroutines=[
         prog("Main", main=True, rungs=[rung(no("X1"), coil("Y1"))]),

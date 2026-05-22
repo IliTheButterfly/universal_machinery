@@ -957,29 +957,38 @@ def _fmt_user_type_decl(ut) -> str:
     ``_fmt_iec_type`` -- which renders both elementary and
     user-defined types by their IEC name.
     """
+    # Optional UDT-level comment: emit on the line above the
+    # ``TYPE`` keyword so it documents the whole block without
+    # interfering with the IEC syntax of the body.
+    header = (
+        [f"(* {ut.comment} *)", "TYPE"]
+        if getattr(ut, "comment", "") else
+        ["TYPE"]
+    )
+
     if isinstance(ut, SubrangeType):
         body = (f"    {ut.name} : "
                 f"{_fmt_iec_type(ut.base)} "
                 f"({ut.lower}..{ut.upper});")
-        return "\n".join(["TYPE", body, "END_TYPE"])
+        return "\n".join([*header, body, "END_TYPE"])
 
     if isinstance(ut, AliasType):
         body = f"    {ut.name} : {_fmt_iec_type(ut.base)};"
-        return "\n".join(["TYPE", body, "END_TYPE"])
+        return "\n".join([*header, body, "END_TYPE"])
 
     if isinstance(ut, EnumType):
         values = ", ".join(ut.values)
         body = f"    {ut.name} : ({values});"
-        return "\n".join(["TYPE", body, "END_TYPE"])
+        return "\n".join([*header, body, "END_TYPE"])
 
     if isinstance(ut, ArrayType):
         bounds_str = ", ".join(f"{lo}..{hi}" for lo, hi in ut.bounds)
         elem = _fmt_iec_type(ut.element_type)
         body = f"    {ut.name} : ARRAY [{bounds_str}] OF {elem};"
-        return "\n".join(["TYPE", body, "END_TYPE"])
+        return "\n".join([*header, body, "END_TYPE"])
 
     if isinstance(ut, StructType):
-        lines = ["TYPE", f"    {ut.name} :", "        STRUCT"]
+        lines = [*header, f"    {ut.name} :", "        STRUCT"]
         for m in ut.members:
             init = f" := {m.initial_value}" if m.initial_value else ""
             comment = f"  (* {m.comment} *)" if m.comment else ""
@@ -1002,13 +1011,17 @@ def _fmt_task(task: TaskSpec) -> str:
     if task.interrupt is not None:
         attrs.append(f"INTERRUPT := {task.interrupt}")
     attrs.append(f"PRIORITY := {task.priority}")
-    return f"        TASK {task.name}({', '.join(attrs)});"
+    comment = f"  (* {task.comment} *)" if task.comment else ""
+    return f"        TASK {task.name}({', '.join(attrs)});{comment}"
 
 
 def _fmt_pou_instance(inst: PouInstance) -> str:
     """One IEC ``PROGRAM Name WITH Task : Type;`` declaration."""
     bind = f" WITH {inst.task}" if inst.task else ""
-    return f"        PROGRAM {inst.name}{bind} : {inst.type_name};"
+    comment = f"  (* {inst.comment} *)" if inst.comment else ""
+    return (
+        f"        PROGRAM {inst.name}{bind} : {inst.type_name};{comment}"
+    )
 
 
 def _fmt_resource(r: Resource) -> str:
