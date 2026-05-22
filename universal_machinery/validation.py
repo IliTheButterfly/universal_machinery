@@ -905,6 +905,104 @@ _TIME_TYPES = frozenset({"TIME", "DATE", "TOD", "DT"})
 _STRING_TYPES = frozenset({"STRING", "WSTRING"})
 
 
+#: Builtin FBD-block pin signatures for IEC §2.5.2.3 standard
+#: function blocks + a few common §2.5.2 functions.  Maps a
+#: ``<block typeName>`` to its per-pin expected type.
+#:
+#: Pin value is either:
+#:   - a concrete IEC type name (e.g. ``"BOOL"`` / ``"TIME"``):
+#:     ``_are_types_compatible`` checks the producer / consumer
+#:     against this directly, falling through to the bucket
+#:     comparison for cross-family matches
+#:   - ``None``: the pin is polymorphic (overloaded across IEC
+#:     types -- ADD's IN1, MOVE's IN, MUX's IN0..N).  The pin
+#:     type check skips polymorphic pins rather than guessing.
+#:
+#: This isn't exhaustive -- it covers the IEC §2.5.2.3 stateful
+#: FBs (where every pin has a concrete type) and a handful of
+#: §2.5.2 functions whose output type is concrete even when the
+#: inputs are polymorphic (the comparison family's ``OUT``
+#: is always ``BOOL``).
+_BUILTIN_BLOCK_PIN_TYPES: dict[str, dict[str, "Optional[str]"]] = {
+    # IEC §2.5.2.3.1 timers
+    "TON": {"EN": "BOOL", "IN": "BOOL", "PT": "TIME",
+              "ENO": "BOOL", "Q": "BOOL", "ET": "TIME"},
+    "TOF": {"EN": "BOOL", "IN": "BOOL", "PT": "TIME",
+              "ENO": "BOOL", "Q": "BOOL", "ET": "TIME"},
+    "TP":  {"EN": "BOOL", "IN": "BOOL", "PT": "TIME",
+              "ENO": "BOOL", "Q": "BOOL", "ET": "TIME"},
+    # IEC §2.5.2.3.2 counters (PV / CV are INT in the standard;
+    # vendors widely accept any integer-family type, hence we
+    # leave PV polymorphic to avoid false positives -- the
+    # cross-bucket comparison catches gross errors anyway).
+    "CTU":  {"EN": "BOOL", "CU": "BOOL", "R": "BOOL",
+               "PV": None,
+               "ENO": "BOOL", "Q": "BOOL", "CV": None},
+    "CTD":  {"EN": "BOOL", "CD": "BOOL", "LD": "BOOL",
+               "PV": None,
+               "ENO": "BOOL", "Q": "BOOL", "CV": None},
+    "CTUD": {"EN": "BOOL", "CU": "BOOL", "CD": "BOOL",
+               "R": "BOOL", "LD": "BOOL", "PV": None,
+               "ENO": "BOOL", "QU": "BOOL", "QD": "BOOL",
+               "CV": None},
+    # IEC §2.5.2.3.3 bistables + edge triggers
+    "SR":     {"EN": "BOOL", "S1": "BOOL", "R": "BOOL",
+                  "ENO": "BOOL", "Q1": "BOOL"},
+    "RS":     {"EN": "BOOL", "R1": "BOOL", "S": "BOOL",
+                  "ENO": "BOOL", "Q1": "BOOL"},
+    "R_TRIG": {"EN": "BOOL", "CLK": "BOOL",
+                  "ENO": "BOOL", "Q": "BOOL"},
+    "F_TRIG": {"EN": "BOOL", "CLK": "BOOL",
+                  "ENO": "BOOL", "Q": "BOOL"},
+    # §2.5.2.8 comparison functions: inputs are polymorphic (any
+    # type within an IEC §6.5 bucket); output is always BOOL.
+    "EQ": {"EN": "BOOL", "IN1": None, "IN2": None,
+             "ENO": "BOOL", "OUT": "BOOL"},
+    "NE": {"EN": "BOOL", "IN1": None, "IN2": None,
+             "ENO": "BOOL", "OUT": "BOOL"},
+    "LT": {"EN": "BOOL", "IN1": None, "IN2": None,
+             "ENO": "BOOL", "OUT": "BOOL"},
+    "LE": {"EN": "BOOL", "IN1": None, "IN2": None,
+             "ENO": "BOOL", "OUT": "BOOL"},
+    "GT": {"EN": "BOOL", "IN1": None, "IN2": None,
+             "ENO": "BOOL", "OUT": "BOOL"},
+    "GE": {"EN": "BOOL", "IN1": None, "IN2": None,
+             "ENO": "BOOL", "OUT": "BOOL"},
+    # §2.5.2.7 bitwise / boolean -- all pins share the bool-or-
+    # bit-string family.  Leave polymorphic so cross-bucket
+    # comparisons (BOOL vs BYTE, etc.) don't false-positive.
+    "AND": {"EN": "BOOL", "IN1": None, "IN2": None,
+              "ENO": "BOOL", "OUT": None},
+    "OR":  {"EN": "BOOL", "IN1": None, "IN2": None,
+              "ENO": "BOOL", "OUT": None},
+    "XOR": {"EN": "BOOL", "IN1": None, "IN2": None,
+              "ENO": "BOOL", "OUT": None},
+    "NOT": {"EN": "BOOL", "IN": None,
+              "ENO": "BOOL", "OUT": None},
+}
+
+
+def _lookup_builtin_pin_type(block_typeName: str,
+                                pin_name: str) -> tuple[bool, Optional[str]]:
+    """Look up a builtin block's expected / produced pin type.
+
+    Returns ``(known, type_name)``:
+      - ``known=True`` and ``type_name`` is a concrete IEC type:
+        the caller uses this directly for compatibility checks.
+      - ``known=True`` and ``type_name`` is ``None``: the pin is
+        polymorphic -- caller should skip the check.
+      - ``known=False``: the block typeName isn't in the signature
+        database; caller falls back to whatever it did before
+        (skip the check, or try resolving as a user-defined POU).
+    """
+    sig = _BUILTIN_BLOCK_PIN_TYPES.get(block_typeName)
+    if sig is None:
+        return False, None
+    if pin_name not in sig:
+        return False, None
+    return True, sig[pin_name]
+
+
 def _tagtype_name(t) -> Optional[str]:
     """Return the IEC type-name string for a ``TagType`` /
     ``NamedType`` / UserType, or ``None`` if the type is unknown
@@ -1091,6 +1189,13 @@ def _producer_pin_type(element, pin_name: Optional[str],
     if isinstance(element, FbBlock):
         callee = prog.find_subroutine(element.type_name)
         if callee is None:
+            # Try the builtin signature database before giving up.
+            if pin_name is not None:
+                known, t = _lookup_builtin_pin_type(
+                    element.type_name, pin_name
+                )
+                if known:
+                    return t
             return None
         # Find the named output pin
         if pin_name is not None:
@@ -1110,13 +1215,23 @@ def _consumer_pin_type(block, formal_parameter: str,
                        prog: Program) -> Optional[str]:
     """Type the block's named input pin expects.
 
-    Only user-defined POU calls resolve -- we look up the callee
-    in ``Program.subroutines`` and find the matching VAR_INPUT /
-    VAR_IN_OUT.  Builtin block names (TON, ADD, etc.) return
-    None until we plumb in a builtin signature database.
+    Resolution order:
+      1. User-defined POU call: look up the callee in
+         ``Program.subroutines`` and find the matching
+         VAR_INPUT / VAR_IN_OUT declaration.
+      2. Builtin block (TON / CTU / EQ / ...): consult
+         ``_BUILTIN_BLOCK_PIN_TYPES`` for a concrete pin type.
+         Polymorphic pins return ``None`` so the caller skips
+         the check (we won't flag e.g. ``ADD.IN1`` as a type
+         mismatch since the standard accepts any numeric).
     """
     callee = prog.find_subroutine(block.type_name)
     if callee is None:
+        known, t = _lookup_builtin_pin_type(
+            block.type_name, formal_parameter
+        )
+        if known:
+            return t
         return None
     for v in callee.inputs + callee.in_outs:
         if v.name == formal_parameter:
@@ -1162,8 +1277,13 @@ def _check_fbd_pin_types(prog: Program) -> list[ValidationError]:
         for block in net.elements:
             if not isinstance(block, FbBlock):
                 continue
-            # Only check user-defined POU calls
-            if prog.find_subroutine(block.type_name) is None:
+            # Either a user-defined POU call or a builtin block
+            # whose pin signature lives in
+            # ``_BUILTIN_BLOCK_PIN_TYPES``.  Skip blocks whose
+            # type isn't recognised on either path.
+            is_user = prog.find_subroutine(block.type_name) is not None
+            is_builtin = block.type_name in _BUILTIN_BLOCK_PIN_TYPES
+            if not (is_user or is_builtin):
                 continue
             for pin in block.inputs + block.in_outs:
                 conn = pin.connection

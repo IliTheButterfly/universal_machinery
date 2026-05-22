@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1170 tests**.
+counts are snapshotted; the current passing total is **1172 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -221,7 +221,7 @@ distinct error codes covering:
 | `sfc-contact-not-bool`            | SFC transition contact target isn't BOOL |
 | `sfc-compare-type-mismatch`       | SFC transition compare operands cross IEC §6.5 buckets |
 | `subrange-out-of-range`           | Literal value assigned to a SUBRANGE-typed target is outside `[lower, upper]` |
-| `fbd-pin-type-mismatch`           | FBD block input pin's expected type doesn't match its producer's output type (user-defined POU calls only) |
+| `fbd-pin-type-mismatch`           | FBD block input pin's expected type doesn't match its producer's output type.  Resolves against user-defined POU calls + the bundled IEC §2.5.2.3 builtin signature database (TON/TOF/TP, CTU/CTD/CTUD, SR/RS/R_TRIG/F_TRIG) and the comparison/logical families on their concrete pins; polymorphic pins are skipped to avoid false positives |
 
 Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
 `tests/il/test_st_ast.py`, `tests/il/test_fbd.py`,
@@ -248,11 +248,15 @@ Coverage: `tests/il/test_validation.py`, `tests/il/test_oop.py`,
    SUBRANGE literal-bounds checks (signed + unsigned + alias
    chains + struct/array members), and FBD pin connections
    against the referenced user-defined POU's interface.  31
-   distinct error codes across the type system.  Remaining
-   gaps that need new infrastructure (out of scope for V1
-   type-checker work): builtin FBD pin signature database
-   (TON / CTU / ADD / etc.), value-flow analysis for
-   non-literal SUBRANGE RHS, multi-level constant evaluation.
+   distinct error codes across the type system.  A bundled
+   builtin FBD pin signature database covers the IEC §2.5.2.3
+   stateful FBs (TON / TOF / TP, CTU / CTD / CTUD, SR / RS,
+   R_TRIG / F_TRIG) and the comparison / logical families on
+   their concrete pins; polymorphic pins (ADD / MUX / MOVE
+   etc.) skip the check rather than guessing.  Remaining gaps
+   that need new infrastructure (out of scope for V1
+   type-checker work): value-flow analysis for non-literal
+   SUBRANGE RHS, multi-level constant evaluation.
 3. **Hardware-in-the-loop**.  Per `docs/ARCHITECTURE.md`: the
    ultimate verification posture is emulator-validated-by-hardware;
    the corpus here is the seed.
@@ -264,4 +268,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1170 / 1170 passing**.
+status: **1172 / 1172 passing**.
