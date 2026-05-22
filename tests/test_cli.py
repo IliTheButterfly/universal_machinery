@@ -388,3 +388,137 @@ def test_lint_malformed_xml_exits_2(tmp_path):
     result = runner.invoke(app, ["lint", str(bad)])
     assert result.exit_code == 2
     assert "PLCopen parse failed" in result.output
+
+
+# -----------------------------------------------------------------------------
+# ``um convert``: format-to-format translation via the IL
+# -----------------------------------------------------------------------------
+
+
+def _sample_program():
+    """LD + FUNCTION sample used across the convert tests so the
+    same Program survives every format pair."""
+    return program(subroutines=[
+        prog("Main", main=True,
+             rungs=[rung(no("X1"), coil("Y1"))]),
+        fn("Avg",
+           inputs=[var_in("a", TagType.INT), var_in("b", TagType.INT)],
+           outputs=[var_out("r", TagType.INT)],
+           return_type=TagType.INT,
+           rungs=[rung(add(tag("a"), tag("b"), tag("r")))]),
+    ])
+
+
+def test_convert_json_to_xml_round_trips(tmp_path):
+    """``um convert prog.json prog.xml`` writes XSD-valid PLCopen
+    TC6 XML.  The XML can be read back into an IL that preserves
+    the POU set."""
+    from universal_machinery.emitters.plcopen_xml import (
+        validate_plcopen_xml,
+    )
+    from universal_machinery.parsers.plcopen_xml import (
+        parse_plcopen_xml,
+    )
+    src_json = tmp_path / "src.json"
+    src_json.write_text(to_json(_sample_program()))
+    dst_xml = tmp_path / "out.xml"
+    result = runner.invoke(app, ["convert", str(src_json), str(dst_xml)])
+    assert result.exit_code == 0, result.output
+    text = dst_xml.read_text()
+    validate_plcopen_xml(text)
+    p2 = parse_plcopen_xml(text)
+    assert sorted(s.name for s in p2.subroutines) == ["Avg", "Main"]
+
+
+def test_convert_xml_to_json_round_trips(tmp_path):
+    """``um convert prog.xml prog.json`` re-emits canonical IL JSON
+    that round-trips through ``from_json`` back into a Program with
+    the same POUs."""
+    from universal_machinery.emitters.plcopen_xml import emit_xml
+    from universal_machinery.serialisation import from_json
+    src_xml = tmp_path / "src.xml"
+    src_xml.write_text(emit_xml(_sample_program()))
+    dst_json = tmp_path / "out.json"
+    result = runner.invoke(app, ["convert", str(src_xml), str(dst_json)])
+    assert result.exit_code == 0, result.output
+    p2 = from_json(dst_json.read_text())
+    assert sorted(s.name for s in p2.subroutines) == ["Avg", "Main"]
+
+
+def test_convert_json_to_st_writes_iec_text(tmp_path):
+    """``um convert prog.json prog.st`` emits IEC §3 Structured
+    Text with the distinctive POU headers."""
+    src_json = tmp_path / "src.json"
+    src_json.write_text(to_json(_sample_program()))
+    dst_st = tmp_path / "out.st"
+    result = runner.invoke(app, ["convert", str(src_json), str(dst_st)])
+    assert result.exit_code == 0, result.output
+    text = dst_st.read_text()
+    assert "PROGRAM Main" in text
+    assert "FUNCTION Avg" in text
+    assert "END_PROGRAM" in text
+
+
+def test_convert_xml_to_st_chains_parse_and_emit(tmp_path):
+    """``um convert prog.xml prog.st`` chains the PLCopen reader
+    and the ST emitter in one step, demonstrating the IL as a
+    real interchange format."""
+    from universal_machinery.emitters.plcopen_xml import emit_xml
+    src_xml = tmp_path / "src.xml"
+    src_xml.write_text(emit_xml(_sample_program()))
+    dst_st = tmp_path / "out.st"
+    result = runner.invoke(app, ["convert", str(src_xml), str(dst_st)])
+    assert result.exit_code == 0, result.output
+    text = dst_st.read_text()
+    assert "PROGRAM Main" in text
+    assert "FUNCTION Avg" in text
+
+
+def test_convert_st_read_not_supported(tmp_path):
+    """``um convert prog.st <anything>`` exits with code 2 and
+    explains that full-program ST parsing isn't yet wired
+    upstream.  Rejecting cleanly beats silently emitting an
+    empty Program."""
+    src = tmp_path / "src.st"
+    src.write_text("PROGRAM Main\nEND_PROGRAM\n")
+    result = runner.invoke(app, ["convert", str(src), str(tmp_path / "out.json")])
+    assert result.exit_code == 2
+    assert ".st" in result.output and "not yet supported" in result.output
+
+
+def test_convert_unknown_input_suffix_exits_2(tmp_path):
+    bogus = tmp_path / "src.txt"
+    bogus.write_text("nope")
+    result = runner.invoke(app, ["convert", str(bogus), str(tmp_path / "out.json")])
+    assert result.exit_code == 2
+    assert "unrecognised input suffix" in result.output
+
+
+def test_convert_unknown_output_suffix_exits_2(tmp_path):
+    src = tmp_path / "src.json"
+    src.write_text(to_json(_sample_program()))
+    result = runner.invoke(app, ["convert", str(src), str(tmp_path / "out.txt")])
+    assert result.exit_code == 2
+    assert "unrecognised output suffix" in result.output
+
+
+def test_convert_stdout_writes_canonical_json(tmp_path):
+    """``um convert prog.xml -`` writes canonical IL JSON to stdout
+    -- the sensible default for ``-`` matches the rest of the CLI's
+    stdin/stdout convention."""
+    from universal_machinery.emitters.plcopen_xml import emit_xml
+    from universal_machinery.serialisation import from_json
+    src_xml = tmp_path / "src.xml"
+    src_xml.write_text(emit_xml(_sample_program()))
+    result = runner.invoke(app, ["convert", str(src_xml), "-"])
+    assert result.exit_code == 0, result.output
+    p2 = from_json(result.output)
+    assert sorted(s.name for s in p2.subroutines) == ["Avg", "Main"]
+
+
+def test_convert_input_missing_exits_2(tmp_path):
+    result = runner.invoke(app, ["convert",
+                                   str(tmp_path / "nope.xml"),
+                                   str(tmp_path / "out.json")])
+    assert result.exit_code == 2
+    assert "file not found" in result.output
