@@ -767,3 +767,73 @@ def test_configuration_resource_task_parses_in_matiec():
     )
     rc, _out, err = _run_matiec(emit_program(p))
     assert rc == 0, f"matiec rejected CONFIGURATION program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# §2.4.1.1 direct representation (%I / %Q / %M) round-trip via matiec
+# -----------------------------------------------------------------------------
+
+
+def test_iec_direct_representation_parses_in_matiec():
+    """Variables with ``Address('%IX0.0')`` / ``Address('%QX0.0')``
+    emit as ``name AT %IX0.0 : BOOL;`` per IEC §2.4.1.1.  Vendor-
+    style addresses (``X001``) emit as ``(* AT X001 *)`` comments
+    rather than IEC AT-form, so matiec only sees the IEC subset.
+
+    Catches the gap where the ST emitter previously dropped the
+    address attribute entirely -- the PLCopen XML side emits the
+    address attribute on ``<variable>``, but ST emit was silent."""
+    from universal_machinery.il.ast import Address, Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 Var(name="in1", data_type=TagType.BOOL,
+                     direction=VarDirection.LOCAL,
+                     address=Address("%IX0.0")),
+                 Var(name="out1", data_type=TagType.BOOL,
+                     direction=VarDirection.LOCAL,
+                     address=Address("%QX0.0")),
+             ],
+             rungs=[
+                 rung(no("in1"), coil("out1")),
+             ]),
+    ])
+    out = emit_program(p)
+    # Sanity-check the emit shape before piping through matiec,
+    # so a regression in _fmt_var_block surfaces here with a
+    # clearer error than matiec's parser message.
+    assert "in1 AT %IX0.0 : BOOL" in out, (
+        f"ST emit did not produce IEC §2.4.1.1 AT clause:\n{out}"
+    )
+    assert "out1 AT %QX0.0 : BOOL" in out, out
+    rc, _out, err = _run_matiec(out)
+    assert rc == 0, f"matiec rejected IEC direct-rep program:\n{err}"
+
+
+def test_vendor_address_falls_back_to_comment_in_st():
+    """Vendor-style addresses (CLICK ``X001``, ``Y002``) fall back
+    to a trailing ``(* AT X001 *)`` comment, since they aren't
+    valid IEC §2.4.1.1 direct representation.  The resulting ST
+    must still parse cleanly -- the comment annotation is a hint
+    for human readers / non-IEC backends, not a directive."""
+    from universal_machinery.il.ast import Address, Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 Var(name="lamp", data_type=TagType.BOOL,
+                     direction=VarDirection.LOCAL,
+                     address=Address("Y002")),
+                 var("trigger", TagType.BOOL),
+             ],
+             rungs=[
+                 rung(no("trigger"), coil("lamp")),
+             ]),
+    ])
+    out = emit_program(p)
+    assert "lamp : BOOL;  (* AT Y002 *)" in out, (
+        f"vendor address not emitted as AT-comment:\n{out}"
+    )
+    # And it parses through matiec (since the AT is a comment,
+    # not a directive, matiec sees plain ``lamp : BOOL;``).
+    rc, _out, err = _run_matiec(out)
+    assert rc == 0, f"matiec rejected vendor-AT-comment program:\n{err}"
