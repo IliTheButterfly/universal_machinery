@@ -16,6 +16,14 @@ Or via the registry helper for backend-agnostic code::
 Backend authors: see ``base.py`` for the ``Backend`` ABC and the
 ``register()`` decorator.
 """
-from .base import Backend, get_backend, register, registered_names
+from .base import (
+    Backend, UnsupportedOpError, get_backend, register, registered_names,
+)
 
-__all__ = ["Backend", "get_backend", "register", "registered_names"]
+__all__ = [
+    "Backend",
+    "UnsupportedOpError",
+    "get_backend",
+    "register",
+    "registered_names",
+]

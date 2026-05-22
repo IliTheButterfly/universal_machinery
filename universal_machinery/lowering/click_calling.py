@@ -76,14 +76,15 @@ from ..il.ops import (
 IDLE_POU_ID = 0
 
 
-class LoweringError(Exception):
-    """Raised when the CLICK lowering can't be performed.
+from ..exceptions import LoweringError  # re-exported for back-compat
 
-    Surfaces as a compile-time diagnostic; never silently dropped.
-    Causes: unknown call target, unknown formal-parameter name,
-    instance binding on a non-FB target, return_to on an
-    output-less POU, malformed reserved-region base address.
-    """
+# ``LoweringError`` historically lived in this module; it now lives in
+# ``universal_machinery.exceptions`` so the FBD-to-ST lowering and the
+# CLICK calling lowering share the same exception class.  ``from
+# universal_machinery.lowering.click_calling import LoweringError`` and
+# ``from universal_machinery.lowering.fbd_to_st import LoweringError``
+# both now refer to the same class; ``except LoweringError`` catches
+# both lowering passes' failures.
 
 
 # -----------------------------------------------------------------------------

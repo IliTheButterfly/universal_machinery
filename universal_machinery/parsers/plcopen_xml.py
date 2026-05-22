@@ -87,7 +87,10 @@ from ..il.ops import (
 PLCOPEN_NS = "http://www.plcopen.org/xml/tc6_0201"
 
 
-class PlcopenParseError(Exception):
+from ..exceptions import UniversalMachineryError
+
+
+class PlcopenParseError(UniversalMachineryError):
     """Raised when a ``<project>`` document can't be parsed into IL.
 
     Carries the offending element's tag and (where useful) its

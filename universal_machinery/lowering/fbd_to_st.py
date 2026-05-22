@@ -86,10 +86,12 @@ from ..il import (
 from ..il.ast import Address
 
 
-class LoweringError(Exception):
-    """Raised when an FBD network can't be lowered to ST -- typically
-    cycles in the wire graph or references to undeclared elements.
-    Validation should catch most of these before lowering runs."""
+from ..exceptions import LoweringError  # re-exported for back-compat
+
+# ``LoweringError`` historically lived in this module; it now lives in
+# ``universal_machinery.exceptions`` so the FBD-to-ST lowering and the
+# CLICK calling lowering share the same exception class.  Same
+# rationale as the click_calling re-export.
 
 
 # -----------------------------------------------------------------------------

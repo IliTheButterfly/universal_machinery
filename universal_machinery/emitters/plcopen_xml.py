@@ -3055,7 +3055,10 @@ def emit_xml(prog: Program,
 _BUNDLED_XSD_NAME = "tc6_xml_v201.xsd"
 
 
-class XMLSchemaError(Exception):
+from ..exceptions import UniversalMachineryError
+
+
+class XMLSchemaError(UniversalMachineryError):
     """Raised by ``validate_plcopen_xml`` when the document doesn't
     conform to the PLCopen TC6 schema, or when the validator
     dependency (``xmlschema``) isn't installed.

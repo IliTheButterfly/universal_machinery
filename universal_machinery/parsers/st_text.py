@@ -109,7 +109,10 @@ from ..il import (
 # -----------------------------------------------------------------------------
 
 
-class StParseError(Exception):
+from ..exceptions import UniversalMachineryError
+
+
+class StParseError(UniversalMachineryError):
     """Raised when ST source can't be parsed.
 
     Carries the 1-indexed ``line``/``column`` where the parser

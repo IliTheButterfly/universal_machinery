@@ -56,10 +56,11 @@ from __future__ import annotations
 import abc
 from typing import Callable, ClassVar, TypeVar
 
+from universal_machinery.exceptions import UniversalMachineryError
 from universal_machinery.il import Program
 
 
-class UnsupportedOpError(Exception):
+class UnsupportedOpError(UniversalMachineryError):
     """Raised by a backend when it cannot lower a given IL op."""
 
 
