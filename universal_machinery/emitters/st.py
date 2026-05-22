@@ -154,6 +154,24 @@ def _wrap_if(stmt: str, gate: str) -> list[str]:
     return [f"IF {gate} THEN {stmt} END_IF;"]
 
 
+def _wrap_if_or_comment(text: str, gate: str) -> list[str]:
+    """Like ``_wrap_if`` but safe for comment-only ``text``.
+
+    IEC §3 ST requires at least one statement inside an ``IF``
+    block; matiec and other accredited compilers reject
+    ``IF gate THEN (* comment *) END_IF;`` because the comment
+    isn't a statement.  For comment-only outputs the gate is
+    semantically irrelevant anyway -- emit the comment
+    standalone, optionally prefixed with the gate as
+    documentation."""
+    if gate == "TRUE":
+        return [text]
+    # Embed the gate as documentation inside the comment so the
+    # original rung-gate intent isn't completely lost.  The
+    # comment still parses cleanly through matiec.
+    return [f"(* gated by {gate} *) {text}"]
+
+
 def _fmt_output(op, gate: str) -> list[str]:
     """Emit ST for one output op gated by ``gate``."""
 
@@ -195,61 +213,117 @@ def _fmt_output(op, gate: str) -> list[str]:
         return []
 
     if isinstance(op, Jump):
-        return _wrap_if(f"GOTO {op.label};", gate)
+        # IEC 61131-3 §3 ST grammar has no GOTO statement -- the
+        # unstructured-jump shape only exists in LD (``<jump>``,
+        # PR #51) and IL.  Emit as a comment so the surrounding
+        # ST text still parses through accredited compilers
+        # (matiec, etc.); document the lossiness explicitly so a
+        # human reader of the ST output sees the dropped op.
+        return _wrap_if_or_comment(
+            f"(* JUMP {op.label} -- not representable in IEC §3 ST; "
+            f"the LD ``<jump>`` element via PLCopen XML preserves it *)",
+            gate,
+        )
 
     if isinstance(op, Label):
-        return [f"{op.name}:"]
+        # Standard IEC ST has no label syntax either.  Same
+        # treatment as Jump above.
+        return [
+            f"(* LABEL {op.name} -- not representable in IEC §3 ST; "
+            f"LD ``<label>`` via PLCopen XML preserves it *)"
+        ]
 
-    # Stateful FBs.  Conformant ST requires an instance variable per
-    # use site; this first cut emits a structural-comment form so
-    # the rung's intent is preserved verbatim.  A follow-up pass
-    # will synthesise instance declarations + canonical ST calls.
+    # Stateful FBs lower to canonical IEC ST FB-instance calls:
+    #
+    #     instance(IN := <gate>, PT := T#<ms>ms);
+    #     <done_bit>     := instance.Q;     -- if set
+    #     <accumulator>  := instance.ET;    -- if set
+    #
+    # The instance variable must be declared in a VAR block with
+    # the right FB type (``t1 : TON;``); the IL doesn't track FB
+    # instance vars distinctly from data vars today, so it's the
+    # caller's responsibility to declare them correctly.  matiec
+    # (and any other accredited IEC compiler) will reject the
+    # call site if the declaration is wrong.
     if isinstance(op, (TON, TOF, TP)):
-        kind = type(op).__name__
-        return _wrap_if(
-            f"(* {kind}: {_fmt_value(op.address)} PT:=T#{op.preset_ms}ms *)",
-            gate,
+        inst = _fmt_value(op.address)
+        gate_text = gate if gate else "TRUE"
+        call_line = (
+            f"{inst}(IN := {gate_text}, PT := T#{op.preset_ms}ms);"
         )
+        lines = [call_line]
+        if op.done_bit is not None:
+            lines.append(f"{_fmt_value(op.done_bit)} := {inst}.Q;")
+        if op.accumulator is not None:
+            lines.append(f"{_fmt_value(op.accumulator)} := {inst}.ET;")
+        return lines
 
     if isinstance(op, (CTU, CTD)):
-        kind = type(op).__name__
-        return _wrap_if(
-            f"(* {kind}: {_fmt_value(op.address)} PV:={op.preset} *)",
-            gate,
-        )
+        inst = _fmt_value(op.address)
+        gate_text = gate if gate else "TRUE"
+        if isinstance(op, CTU):
+            primary_pin = "CU"
+            aux_pin, aux_src = "R", op.reset
+        else:
+            primary_pin = "CD"
+            aux_pin, aux_src = "LD", op.load
+        args = [f"{primary_pin} := {gate_text}"]
+        if aux_src is not None:
+            args.append(f"{aux_pin} := {_fmt_value(aux_src)}")
+        args.append(f"PV := {op.preset}")
+        lines = [f"{inst}({', '.join(args)});"]
+        if op.done_bit is not None:
+            lines.append(f"{_fmt_value(op.done_bit)} := {inst}.Q;")
+        if op.accumulator is not None:
+            lines.append(f"{_fmt_value(op.accumulator)} := {inst}.CV;")
+        return lines
 
     if isinstance(op, CTUD):
-        return _wrap_if(
-            f"(* CTUD: {_fmt_value(op.address)} PV:={op.preset} *)", gate,
-        )
+        inst = _fmt_value(op.address)
+        args = [
+            f"CU := {_fmt_value(op.cu_input)}",
+            f"CD := {_fmt_value(op.cd_input)}",
+        ]
+        if op.reset is not None:
+            args.append(f"R := {_fmt_value(op.reset)}")
+        if op.load is not None:
+            args.append(f"LD := {_fmt_value(op.load)}")
+        args.append(f"PV := {op.preset}")
+        lines = [f"{inst}({', '.join(args)});"]
+        if op.qu is not None:
+            lines.append(f"{_fmt_value(op.qu)} := {inst}.QU;")
+        if op.qd is not None:
+            lines.append(f"{_fmt_value(op.qd)} := {inst}.QD;")
+        if op.accumulator is not None:
+            lines.append(f"{_fmt_value(op.accumulator)} := {inst}.CV;")
+        return lines
 
-    if isinstance(op, RTrig):
-        return _wrap_if(
-            f"(* R_TRIG: state={_fmt_value(op.state)} "
-            f"clk={_fmt_value(op.clk)} q={_fmt_value(op.q)} *)",
-            gate,
-        )
-
-    if isinstance(op, FTrig):
-        return _wrap_if(
-            f"(* F_TRIG: state={_fmt_value(op.state)} "
-            f"clk={_fmt_value(op.clk)} q={_fmt_value(op.q)} *)",
-            gate,
-        )
+    if isinstance(op, (RTrig, FTrig)):
+        # Per IEC §2.5.2.3.3, R_TRIG / F_TRIG are FB instances
+        # carrying their previous-CLK state internally.  The IL
+        # exposes the ``state`` field separately for backends
+        # that can't access FB private state (CLICK lowers it to
+        # an explicit memory bit) -- in canonical ST we drop the
+        # ``state`` field and rely on the FB's own storage.
+        inst = _fmt_value(op.state)
+        lines = [f"{inst}(CLK := {_fmt_value(op.clk)});"]
+        lines.append(f"{_fmt_value(op.q)} := {inst}.Q;")
+        return lines
 
     if isinstance(op, SR):
-        return _wrap_if(
-            f"(* SR: q1={_fmt_value(op.q1)} "
-            f"s1={_fmt_value(op.s1)} r={_fmt_value(op.r)} *)",
-            gate,
-        )
+        # SR's Q1 storage IS the instance name per IEC §2.5.2.3.3.
+        inst = _fmt_value(op.q1)
+        return [
+            f"{inst}(S1 := {_fmt_value(op.s1)}, "
+            f"R := {_fmt_value(op.r)});"
+        ]
 
     if isinstance(op, RS):
-        return _wrap_if(
-            f"(* RS: q1={_fmt_value(op.q1)} "
-            f"r1={_fmt_value(op.r1)} s={_fmt_value(op.s)} *)",
-            gate,
-        )
+        inst = _fmt_value(op.q1)
+        return [
+            f"{inst}(R1 := {_fmt_value(op.r1)}, "
+            f"S := {_fmt_value(op.s)});"
+        ]
 
     if isinstance(op, VendorOp):
         return [f"(* VendorOp {op.vendor}:{op.name} -- "
