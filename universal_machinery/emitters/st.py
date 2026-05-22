@@ -583,14 +583,37 @@ def emit_st_body(stmts, indent: str = "    ", level: int = 1) -> list[str]:
 
 
 def _fmt_var_block(direction_keyword: str, vars_: Sequence[Var]) -> list[str]:
-    """One VAR_INPUT / VAR_OUTPUT / VAR / etc. block as ST text."""
+    """One VAR_INPUT / VAR_OUTPUT / VAR / etc. block as ST text.
+
+    Honours ``Var.address`` per IEC §2.4.1.1:
+      - IEC direct rep (``%I*`` / ``%Q*`` / ``%M*``) emits inline:
+        ``name AT %IX0.0 : BOOL;``
+      - Vendor-style (CLICK ``X001``, etc.) falls back to a trailing
+        ``(* AT X001 *)`` comment, since those aren't valid IEC direct
+        rep and any accredited IEC parser would reject them.
+    """
     if not vars_:
         return []
     lines = [direction_keyword]
     for v in vars_:
+        at_inline = ""
+        comment_parts: list[str] = []
+        if v.address is not None:
+            raw = v.address.raw
+            if raw.startswith("%"):
+                at_inline = f" AT {raw}"
+            else:
+                comment_parts.append(f"AT {raw}")
+        if v.comment:
+            comment_parts.append(v.comment)
         init = f" := {v.initial_value}" if v.initial_value else ""
-        comment = f"  (* {v.comment} *)" if v.comment else ""
-        lines.append(f"    {v.name} : {_fmt_iec_type(v.data_type)}{init};{comment}")
+        comment = (
+            f"  (* {'; '.join(comment_parts)} *)" if comment_parts else ""
+        )
+        lines.append(
+            f"    {v.name}{at_inline} : "
+            f"{_fmt_iec_type(v.data_type)}{init};{comment}"
+        )
     lines.append("END_VAR")
     return lines
 
