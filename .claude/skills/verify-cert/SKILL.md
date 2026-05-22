@@ -36,6 +36,7 @@ The conformance plan rows all point at fixtures under `tests/`; running this sub
 ```bash
 python -m pytest \
   tests/test_conformance_plan_pointers.py \
+  tests/test_matiec_roundtrip.py \
   tests/emitters/test_plcopen_xml.py \
   tests/emitters/test_plcopen_xml_ld.py \
   tests/emitters/test_plcopen_xml_sfc.py \
@@ -52,6 +53,10 @@ python -m pytest \
 
 Record:
 - **Pass count** from the last line ("N passed").
+- **Skip count** for `test_matiec_roundtrip.py` -- 0 if matiec is
+  installed (8 round-trip tests ran), 8 if matiec is missing.  A
+  partial skip (some ran, some didn't) means a stdlib-resolution
+  issue.
 - **Failures**, if any — quote the first ~5 to keep the report short.
 
 ### Step 2 — Compare actual pass count to the doc's snapshot
@@ -127,15 +132,23 @@ Group by reason:
 
 ### Step 5 — Check for external reference-tool readiness
 
-The cert path's "real" deliverable is round-trip through accredited PLCopen tools. We don't run them in CI yet, but check whether they're installed locally so the user knows whether a manual round-trip is a quick `which matiec` away or needs a setup pass.
+The cert path's "real" deliverable is round-trip through accredited PLCopen tools.  ``iec2c`` is driven automatically by `tests/test_matiec_roundtrip.py` (skipped in CI when not present); Beremiz / openplc_editor are GUI tools that want a full Beremiz-project layout to drive automatically, so they're reported here as readiness signals only.
 
 ```bash
-which matiec 2>/dev/null || echo "  matiec: NOT INSTALLED"
-which beremiz 2>/dev/null || echo "  beremiz: NOT INSTALLED"
-which openplc_editor 2>/dev/null || echo "  openplc_editor: NOT INSTALLED"
+which iec2c 2>/dev/null && echo "  iec2c (matiec): PRESENT — round-trip tests run" \
+                       || echo "  iec2c (matiec): MISSING — round-trip tests skipped"
+which beremiz 2>/dev/null || echo "  beremiz: MISSING (probe-only; not driven from CI)"
+which openplc_editor 2>/dev/null || echo "  openplc_editor: MISSING (probe-only)"
 ```
 
-Note in the report which (if any) are present. **Don't actually pipe emitted XML through them in this skill** — that's a separate engagement.
+When ``iec2c`` is present, also confirm the matiec stdlib include directory resolves -- without it the TON / ABS / etc. parse-accept tests will skip individually:
+
+```bash
+python - <<'PY'
+from tests.test_matiec_roundtrip import MATIEC_STDLIB
+print(f"  matiec stdlib include: {MATIEC_STDLIB or 'NOT FOUND'}")
+PY
+```
 
 ### Step 6 — Print the structured summary
 
@@ -145,9 +158,10 @@ Format:
 PLCopen TC6 v2.01 Cert Readiness — <YYYY-MM-DD>
 
 Verification harness:
-  ✅ Cert-subset pytest:        <N> passed, <M> failed
+  ✅ Cert-subset pytest:        <N> passed, <M> failed, <S> skipped
   ✅ Conformance-doc auditor:    PASS / FAIL
   ✅ XSD spot-check (sample):    VALID / INVALID
+  ✅ matiec round-trip:          <PRESENT, ran K of 8 | SKIPPED (not installed)>
   ⚠️ Pass-count snapshot drift: <doc> doc vs <actual> actual
 
 Outstanding rows in the plan:
@@ -165,7 +179,7 @@ External tools (for manual round-trip):
 
 Tier 1 (PLCopen XML) cert claim:
   - Structural alignment: <SOUND | DEGRADED>  (driven by failing tests + XSD spot-check)
-  - Reference-tool round-trip: <UNVERIFIED>     (always — this skill doesn't run external tools)
+  - Reference-tool round-trip: <VERIFIED (matiec K/8) | PARTIAL (matiec K/8, M skipped) | UNVERIFIED (matiec not installed)>
 
 Tier 2 (full IEC 61131-3 language) cert:
   - Phased; backend reach (CLICK / OpenPLC lowering) is the gating factor.
@@ -185,6 +199,8 @@ Keep it terse — the report is informational, not an audit log. Quote specific 
 | Doc snapshot drift | Hand-tracking failure | Update the snapshot count in both docs |
 | Conformance-doc auditor failure | Test renamed / moved without doc update | `tests/test_conformance_plan_pointers.py` will pinpoint the broken pointer |
 | Cert-subset pytest passes; full `pytest` fails | Non-cert test broke | Out of cert scope; report it but don't gate the cert claim on it |
+| matiec round-trip: TON / ABS test individually skipped | Matiec stdlib include dir didn't resolve | Set ``MATIEC_BIN`` to a build that ships ``lib/`` alongside, or symlink ``/usr/share/matiec/lib`` |
+| matiec round-trip: parse failure with our ST output | Our ST emitter diverged from matiec's grammar | Quote the matiec stderr; usually a specific construct (FB instance declaration, SFC action shape) — narrow it and either adjust the emit or skip the test pending a follow-up |
 
 ## Notes
 
