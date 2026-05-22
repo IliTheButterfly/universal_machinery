@@ -74,10 +74,10 @@ from pathlib import Path
 import pytest
 
 from universal_machinery.builders import (
-    abs_, add, and_, assign, case_, case_clause, coil, ctu, eq, fb,
-    fcall_expr, fn, for_, if_, jump, label_, move, no, prog, program,
-    r_trig, repeat_, ret, rung, sel, sr, ton, var, var_in, var_out,
-    while_,
+    abs_, add, and_, assign, case_, case_clause, coil, ctd, ctu, ctud,
+    eq, f_trig, fb, fcall_expr, fn, for_, if_, jump, label_, move, no,
+    prog, program, r_trig, repeat_, ret, rs, rung, sel, sr, tof, ton,
+    tp, var, var_in, var_out, while_,
 )
 from universal_machinery.il import TagType
 from universal_machinery.il.configuration import (
@@ -321,6 +321,192 @@ def test_ld_with_sr_bistable_FB_parses_in_matiec():
     ])
     rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
     assert rc == 0, f"matiec rejected SR program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# Sibling FBs of the families already covered: TOF/TP (timers),
+# CTD/CTUD (counters), F_TRIG (edge), RS (bistable).  Each mirrors
+# the shape of its already-covered sibling per IEC §2.5.2.3.
+# -----------------------------------------------------------------------------
+
+
+def test_ld_with_TOF_FB_parses_in_matiec():
+    """TOF off-delay timer: same call shape as TON
+    (``inst(IN := gate, PT := T#1000ms); done := inst.Q;``)
+    per IEC §2.5.2.3.1."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "TOF prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("trigger", TagType.BOOL),
+                 var("done", TagType.BOOL),
+                 Var(name="t1", data_type=NamedType("TOF"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(no("trigger"),
+                       tof("t1", 1000, done_bit="done")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected TOF program:\n{err}"
+
+
+def test_ld_with_TP_FB_parses_in_matiec():
+    """TP pulse timer: same call shape as TON per IEC §2.5.2.3.1."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "TP prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("trigger", TagType.BOOL),
+                 var("done", TagType.BOOL),
+                 Var(name="t1", data_type=NamedType("TP"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(no("trigger"),
+                       tp("t1", 1000, done_bit="done")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected TP program:\n{err}"
+
+
+def test_ld_with_down_counter_FB_parses_in_matiec():
+    """CTD down-counter: ``inst(CD := gate, LD := load, PV := 5);``
+    per IEC §2.5.2.3.2.  ``LD`` is the load input (vs CTU's ``R``
+    reset input)."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "CTD prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("gate", TagType.BOOL),
+                 var("load_bit", TagType.BOOL),
+                 var("done", TagType.BOOL),
+                 var("cv", TagType.INT),
+                 Var(name="counter_inst", data_type=NamedType("CTD"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(no("gate"),
+                       ctd("counter_inst", 5,
+                           load="load_bit",
+                           done_bit="done",
+                           accumulator="cv")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected CTD program:\n{err}"
+
+
+def test_ld_with_up_down_counter_FB_parses_in_matiec():
+    """CTUD up/down counter: both ``CU`` and ``CD`` inputs plus
+    optional ``R`` (reset to 0) and ``LD`` (load PV) per IEC
+    §2.5.2.3.2.  Most complex of the counter family -- worth
+    its own test independent of CTU / CTD."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "CTUD prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("up_input", TagType.BOOL),
+                 var("down_input", TagType.BOOL),
+                 var("reset_bit", TagType.BOOL),
+                 var("load_bit", TagType.BOOL),
+                 var("qu", TagType.BOOL),
+                 var("qd", TagType.BOOL),
+                 var("cv", TagType.INT),
+                 Var(name="counter_inst", data_type=NamedType("CTUD"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(ctud("counter_inst", 5,
+                             cu_input="up_input",
+                             cd_input="down_input",
+                             reset="reset_bit",
+                             load="load_bit",
+                             qu="qu", qd="qd",
+                             accumulator="cv")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected CTUD program:\n{err}"
+
+
+def test_ld_with_f_trig_FB_parses_in_matiec():
+    """F_TRIG falling-edge detector: ``ft(CLK := trigger); pulse
+    := ft.Q;`` per IEC §2.5.2.3.3.  Mirrors R_TRIG."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "F_TRIG prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("trigger", TagType.BOOL),
+                 var("pulse", TagType.BOOL),
+                 Var(name="ft", data_type=NamedType("F_TRIG"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(f_trig(state="ft", clk="trigger", q="pulse")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected F_TRIG program:\n{err}"
+
+
+def test_ld_with_rs_bistable_FB_parses_in_matiec():
+    """RS reset-dominant bistable: ``output(R1 := resetbtn, S :=
+    setbtn);`` per IEC §2.5.2.3.3.  Mirrors SR -- ``R1`` is the
+    dominant reset (vs SR's ``S1`` dominant set)."""
+    if MATIEC_STDLIB is None:
+        pytest.skip(
+            "matiec stdlib include dir not found; can't resolve "
+            "RS prototype"
+        )
+    from universal_machinery.il import NamedType
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("setbtn", TagType.BOOL),
+                 var("resetbtn", TagType.BOOL),
+                 Var(name="output", data_type=NamedType("RS"),
+                     direction=VarDirection.LOCAL),
+             ],
+             rungs=[
+                 rung(rs(q1="output", r1="resetbtn", s="setbtn")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p), need_stdlib=True)
+    assert rc == 0, f"matiec rejected RS program:\n{err}"
 
 
 def test_ld_with_compare_and_move_parses_in_matiec():

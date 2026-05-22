@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1250 tests**.
+counts are snapshotted; the current passing total is **1256 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -173,7 +173,7 @@ Status legend:
 | IL → PLCopen XML → IL (SFC body)           | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
 | IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
 | FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
-| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / TON / CTU / R_TRIG / SR / Compare+Move / BinaryMath / ABS / FB call / FUNCTION POU + call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions + hierarchical macroStep) / UDTs (STRUCT field access + ARRAY index + ENUM literal + SUBRANGE + ALIAS) / ST control flow (IF-ELSE / CASE / FOR / WHILE / REPEAT) / CONFIGURATION + RESOURCE + TASK / direct rep AT clause (%IX/%QX) + vendor-AT comment fallback / VAR_EXTERNAL ↔ VAR_GLOBAL binding with config-scope AT clause / §2.5.2 stdlib (SEL/MIN/MAX/LIMIT selection + CONCAT/LEN string + INT_TO_REAL/REAL_TO_INT conversion).  32/32 cases pass on a real matiec install. |
+| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / full timer family TON+TOF+TP / full counter family CTU+CTD+CTUD / full edge family R_TRIG+F_TRIG / full bistable family SR+RS / Compare+Move / BinaryMath / ABS / FB call / FUNCTION POU + call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions + hierarchical macroStep) / UDTs (STRUCT field access + ARRAY index + ENUM literal + SUBRANGE + ALIAS) / ST control flow (IF-ELSE / CASE / FOR / WHILE / REPEAT) / CONFIGURATION + RESOURCE + TASK / direct rep AT clause (%IX/%QX) + vendor-AT comment fallback / VAR_EXTERNAL ↔ VAR_GLOBAL binding with config-scope AT clause / §2.5.2 stdlib (SEL/MIN/MAX/LIMIT selection + CONCAT/LEN string + INT_TO_REAL/REAL_TO_INT conversion).  38/38 cases pass on a real matiec install. |
 | IL → ST → rusty ``plc -c`` parse + compile-accept | ✅ | tests/test_rusty_backend_integration.py — parent-side API-shape integration (4 tests); subprocess validation lives in the `rusty_backend` submodule's own CI on Ubuntu 24.04.  Submodule test corpus mirrors matiec's: 32 cases via `tests/test_rusty_roundtrip.py` (24 pass, 8 xfail), plus 2 API + 2 round-trip tests in `tests/test_smoke.py`.  rusty + matiec acceptance asymmetries: see the [reference-compiler matrix](#reference-compiler-acceptance-matrix) below |
 
 ## Reference-compiler acceptance matrix
@@ -186,11 +186,11 @@ Two reference compilers exercise the ST emit path: **matiec** (a 2nd-edition IEC
 | Compare + Move | ✅ | ✅ | |
 | BinaryMath (ADD/SUB/MUL/...) | ✅ | ✅ | |
 | jump + label | ✅ | ✅ | ST emit lowers to documenting comments per IEC §3 |
-| Timers (TON/TOF/TP) | ✅ | ✅ | both via stdlib |
-| Counters (CTU/CTD/CTUD) | ✅ | ✅ | both via stdlib |
-| Edge detectors (R_TRIG/F_TRIG) | ✅ | ✅ | |
+| Timers (TON/TOF/TP) | ✅ all 3 | ✅ TON (siblings pending) | matiec tests all three; rusty TON validated, TOF/TP pending submodule sibling PR |
+| Counters (CTU/CTD/CTUD) | ✅ all 3 | ✅ CTU (siblings pending) | matiec tests all three; rusty CTU validated, CTD/CTUD pending submodule sibling PR |
+| Edge detectors (R_TRIG/F_TRIG) | ✅ both | ✅ R_TRIG (F_TRIG pending) | matiec tests both; rusty R_TRIG validated, F_TRIG pending submodule sibling PR |
 | SR set-dominant bistable | ✅ | xfail | rusty stdlib uses `SET1`/`RESET` (non-IEC names) |
-| RS reset-dominant bistable | ✅ | unverified | same shape as SR — likely same xfail |
+| RS reset-dominant bistable | ✅ | unverified (pending) | matiec validated (PR this round); rusty likely same xfail as SR — pending the submodule's sibling-FB round-trip PR |
 | `ABS` (stdlib call) | ✅ | ✅ | |
 | User FUNCTION_BLOCK + instance call | ✅ | ✅ | |
 | User FUNCTION POU + call | ✅ | ✅ | |
@@ -321,4 +321,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1250 / 1250 passing**.
+status: **1256 / 1256 passing**.
