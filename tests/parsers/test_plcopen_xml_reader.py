@@ -154,6 +154,53 @@ def test_round_trip_configuration_with_task_and_pou_instance():
     assert pi.task == "Fast"
 
 
+def test_round_trip_configuration_preserves_documentation_comments():
+    """PLCopen TC6 v2.01 ``<documentation>`` children survive the
+    full IL -> XML -> IL cycle for the four §2.7.1 system-organisation
+    dataclasses that carry a ``comment`` field:
+
+      - ``TaskSpec.comment``     <- <task><documentation>
+      - ``Resource.comment``      <- <resource><documentation>
+      - ``Configuration.comment`` <- <configuration><documentation>
+      - ``PouInstance.comment``   <- <pouInstance><documentation>
+
+    Before this fix, three of the four were dropped on emit and
+    one was dropped on read (asymmetric round-trip failure for
+    ``PouInstance`` -- the comment hit XML but never made it back
+    to the IL).  Both halves are fixed now, so the round-trip
+    pins all four."""
+    from universal_machinery.il.configuration import (
+        Configuration, PouInstance, Resource, TaskSpec,
+    )
+    p = program(
+        subroutines=[prog("Main", main=False)],
+        configurations=[Configuration(
+            name="Default",
+            comment="rooftop unit cell",
+            resources=[Resource(
+                name="R1",
+                comment="primary CPU",
+                tasks=[TaskSpec(name="Fast",
+                                  interval="T#10ms",
+                                  priority=2,
+                                  comment="10Hz cyclic loop")],
+                pou_instances=[PouInstance(
+                    name="MainProg",
+                    type_name="Main",
+                    task="Fast",
+                    comment="top-level instance")],
+            )],
+        )],
+    )
+    p2 = _round_trip(p)
+    cfg = p2.configurations[0]
+    assert cfg.comment == "rooftop unit cell"
+    r = cfg.resources[0]
+    assert r.comment == "primary CPU"
+    assert r.tasks[0].comment == "10Hz cyclic loop"
+    assert r.pou_instances[0].comment == "top-level instance"
+
+
 def test_round_trip_access_vars_and_config_vars():
     p = program(
         subroutines=[prog("Main", main=True)],
