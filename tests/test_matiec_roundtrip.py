@@ -1488,6 +1488,45 @@ def test_type_conversion_functions_parse_in_matiec():
     assert rc == 0, f"matiec rejected type-conv program:\n{err}"
 
 
+def test_type_conversion_family_parses_in_matiec():
+    """Broader coverage across the IEC §2.5.2.1 ``<SRC>_TO_<DST>``
+    family.  ``test_type_conversion_functions_parse_in_matiec``
+    pins the ``INT_TO_REAL`` / ``REAL_TO_INT`` headline pair;
+    this fills in the matiec-accepted variants across BOOL /
+    integer widths / REAL / SINT / LINT.
+
+    BYTE / WORD / DWORD / LWORD variable declarations are
+    rejected by this matiec build (it doesn't accept bit-string
+    types as declared variables, only as function-arg types),
+    so the bit-string-to-X / X-to-bit-string conversions stay
+    registry-only.  Same for the BOOL <-> bit-string corner."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("b", TagType.BOOL),
+                 var("s", TagType.SINT),
+                 var("i", TagType.INT),
+                 var("di", TagType.DINT),
+                 var("li", TagType.LINT),
+                 var("r", TagType.REAL),
+             ],
+             st_body=[
+                 # BOOL <-> integer
+                 assign("i", fcall_expr("BOOL_TO_INT", "b")),
+                 assign("b", fcall_expr("INT_TO_BOOL", "i")),
+                 # Integer-width widening / narrowing
+                 assign("di", fcall_expr("INT_TO_DINT", "i")),
+                 assign("i", fcall_expr("DINT_TO_INT", "di")),
+                 assign("li", fcall_expr("DINT_TO_LINT", "di")),
+                 assign("s", fcall_expr("INT_TO_SINT", "i")),
+                 # Integer <-> REAL
+                 assign("r", fcall_expr("DINT_TO_REAL", "di")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected type-conversion family:\n{err}"
+
+
 # -----------------------------------------------------------------------------
 # End-to-end: emit -> parse_program -> emit -> matiec
 #
