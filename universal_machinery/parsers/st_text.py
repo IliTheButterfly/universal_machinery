@@ -1613,6 +1613,145 @@ def _parse_var_block(parser: _Parser) -> tuple[str, list]:
     return block_kw, vars_
 
 
+_ACCESS_SPECS = {"PUBLIC", "PRIVATE", "PROTECTED", "INTERNAL"}
+
+
+def _parse_method(parser: _Parser):
+    """One ``METHOD ... END_METHOD`` block inside an FB or
+    INTERFACE.  Layout::
+
+        METHOD [PUBLIC|PRIVATE|PROTECTED|INTERNAL]
+               [ABSTRACT|OVERRIDE]
+               <name>
+               [: <return_type>]
+            <VAR_* blocks>
+            <body>          (omitted for ABSTRACT methods inside
+                              interfaces)
+        END_METHOD
+    """
+    from ..il.ast import Var, VarDirection
+    from ..il.oop import AccessSpec, Method
+
+    # Caller has already peeked ``METHOD``; consume it.
+    parser._advance()
+
+    access = AccessSpec.PUBLIC
+    abstract = False
+    override = False
+
+    # Optional access specifier.
+    kw = _peek_identifier_keyword(parser)
+    if kw in _ACCESS_SPECS:
+        access = AccessSpec[kw]
+        parser._advance()
+        kw = _peek_identifier_keyword(parser)
+
+    # Optional ABSTRACT / OVERRIDE qualifier (mutually exclusive
+    # by IEC, but accept either ordering).
+    if kw == "ABSTRACT":
+        abstract = True
+        parser._advance()
+        kw = _peek_identifier_keyword(parser)
+    elif kw == "OVERRIDE":
+        override = True
+        parser._advance()
+        kw = _peek_identifier_keyword(parser)
+
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected method name"
+    )
+
+    # Optional return type.
+    return_type = None
+    if parser._peek().kind is TokKind.COLON:
+        parser._advance()
+        return_type = _parse_data_type_after_colon_already_consumed(parser)
+
+    inputs: list = []
+    outputs: list = []
+    in_outs: list = []
+    local_vars: list = []
+    _routing = {
+        "VAR_INPUT":  inputs,
+        "VAR_OUTPUT": outputs,
+        "VAR_IN_OUT": in_outs,
+        "VAR":        local_vars,
+    }
+    while True:
+        nxt = _peek_identifier_keyword(parser)
+        if nxt in _routing:
+            block_kw, items = _parse_var_block(parser)
+            _routing[block_kw].extend(items)
+        else:
+            break
+
+    body_stmts: list = []
+    while True:
+        nxt = _peek_identifier_keyword(parser)
+        if nxt == "END_METHOD":
+            parser._advance()
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                "unterminated METHOD (missing END_METHOD)",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        body_stmts.append(parser._parse_statement())
+
+    return Method(
+        name=name_tok.lexeme,
+        access=access,
+        abstract=abstract,
+        override=override,
+        inputs=inputs,
+        outputs=outputs,
+        in_outs=in_outs,
+        local_vars=local_vars,
+        return_type=return_type,
+        st_body=body_stmts if body_stmts else None,
+    )
+
+
+def _parse_interface_block(parser: _Parser):
+    """One ``INTERFACE Name [EXTENDS Parent[, Other]*] ...
+    END_INTERFACE`` block.  Body is a list of METHOD signatures
+    (no body)."""
+    from ..il.oop import Interface
+
+    parser._advance()  # consume INTERFACE
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected interface name"
+    )
+
+    methods: list = []
+    while True:
+        kw = _peek_identifier_keyword(parser)
+        if kw == "END_INTERFACE":
+            parser._advance()
+            break
+        if kw == "METHOD":
+            methods.append(_parse_method(parser))
+            continue
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                "unterminated INTERFACE (missing END_INTERFACE)",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        tok = parser._peek()
+        raise StParseError(
+            f"unexpected token inside INTERFACE: {tok.lexeme!r}.  "
+            f"Expected METHOD or END_INTERFACE.",
+            line=tok.line, column=tok.column, lexeme=tok.lexeme,
+        )
+
+    return Interface(
+        name=name_tok.lexeme,
+        methods=methods,
+    )
+
+
 def _parse_pou(parser: _Parser):
     """One ``PROGRAM`` / ``FUNCTION`` / ``FUNCTION_BLOCK`` declaration.
 
@@ -1620,6 +1759,14 @@ def _parse_pou(parser: _Parser):
     POU keyword (``PROGRAM`` / ``FUNCTION`` / ``FUNCTION_BLOCK``)
     followed by name, optional return type for FUNCTION, optional
     VAR blocks, the body, and the matching ``END_*`` keyword.
+
+    FUNCTION_BLOCK additionally accepts:
+      - optional ``ABSTRACT`` qualifier between the kind keyword
+        and the name (``FUNCTION_BLOCK ABSTRACT Name``)
+      - optional ``EXTENDS Parent`` for single inheritance
+      - optional ``IMPLEMENTS I1, I2, ...`` for interface impl
+      - METHOD blocks inside the body (parsed into
+        ``Subroutine.methods``)
 
     Returns the constructed ``Subroutine``.
     """
@@ -1645,6 +1792,13 @@ def _parse_pou(parser: _Parser):
         "FUNCTION_BLOCK": "END_FUNCTION_BLOCK",
     }[kw]
 
+    # ``FUNCTION_BLOCK ABSTRACT Name`` -- ABSTRACT before the name.
+    abstract = False
+    if (kw == "FUNCTION_BLOCK"
+            and _peek_identifier_keyword(parser) == "ABSTRACT"):
+        abstract = True
+        parser._advance()
+
     name_tok = parser._consume(
         TokKind.IDENT, "expected POU name after declaration keyword"
     )
@@ -1655,6 +1809,32 @@ def _parse_pou(parser: _Parser):
     if kw == "FUNCTION":
         parser._consume(TokKind.COLON, "expected ':' for FUNCTION return type")
         return_type = _parse_data_type(parser)
+
+    # ``FUNCTION_BLOCK Name EXTENDS Parent`` (single inheritance).
+    extends = None
+    if (kw == "FUNCTION_BLOCK"
+            and _peek_identifier_keyword(parser) == "EXTENDS"):
+        parser._advance()
+        ext_tok = parser._consume(
+            TokKind.IDENT, "expected parent FB name after EXTENDS"
+        )
+        extends = ext_tok.lexeme
+
+    # ``FUNCTION_BLOCK Name IMPLEMENTS I1, I2, ...`` (multi).
+    implements: list = []
+    if (kw == "FUNCTION_BLOCK"
+            and _peek_identifier_keyword(parser) == "IMPLEMENTS"):
+        parser._advance()
+        while True:
+            impl_tok = parser._consume(
+                TokKind.IDENT,
+                "expected interface name after IMPLEMENTS"
+            )
+            implements.append(impl_tok.lexeme)
+            if parser._peek().kind is TokKind.COMMA:
+                parser._advance()
+                continue
+            break
 
     inputs: list = []
     outputs: list = []
@@ -1686,6 +1866,13 @@ def _parse_pou(parser: _Parser):
         else:
             break
 
+    # Optional METHOD blocks (FUNCTION_BLOCK only per IEC 3rd ed.,
+    # but we don't gate -- if a user puts METHOD inside PROGRAM
+    # we'll parse it; validation flags it later).
+    methods: list = []
+    while _peek_identifier_keyword(parser) == "METHOD":
+        methods.append(_parse_method(parser))
+
     # Body: every statement until ``END_<kind>``.
     body_stmts: list = []
     while True:
@@ -1713,7 +1900,11 @@ def _parse_pou(parser: _Parser):
         temp_vars=temp_vars,
         global_vars=global_vars,
         return_type=return_type,
-        st_body=body_stmts,
+        st_body=body_stmts if body_stmts else None,
+        methods=methods,
+        extends=extends,
+        implements=implements,
+        abstract=abstract,
     )
 
 
@@ -1721,7 +1912,7 @@ def parse_program(src: str):
     """Parse ST source text into an IL ``Program``.
 
     Closes the read(.st) gap for ``openplc_backend`` /
-    ``rusty_backend``.  Scope (v3):
+    ``rusty_backend``.  Scope (v5):
 
       - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs
       - All seven IEC §2.4.3 VAR_* directions: VAR_INPUT /
@@ -1732,14 +1923,27 @@ def parse_program(src: str):
       - IEC §2.3.3 TYPE ... END_TYPE blocks: STRUCT / ARRAY /
         ENUM / SUBRANGE / ALIAS variants.  Multiple UDTs per
         block accepted; ``Program.user_types`` populated.
+      - IEC §2.7 CONFIGURATION / RESOURCE / TASK blocks with
+        VAR_GLOBAL, VAR_ACCESS, VAR_CONFIG, PROGRAM instances,
+        and TASK specs (priority/interval/single); populated
+        into ``Program.configurations``.
+      - IEC 3rd-edition OOP: METHOD inside FUNCTION_BLOCK
+        (with access specs PUBLIC/PRIVATE/PROTECTED/INTERNAL,
+        ABSTRACT, OVERRIDE, optional return type, VAR blocks
+        and body), INTERFACE blocks, EXTENDS (single
+        inheritance), IMPLEMENTS (multiple), ABSTRACT
+        FUNCTION_BLOCK.  Populated into ``Subroutine.methods``
+        / ``.extends`` / ``.implements`` / ``.abstract`` and
+        ``Program.interfaces``.
       - Body via the existing statement parser
       - Multiple POUs in one source
 
     Not yet supported (raise ``StParseError``):
 
-      - CONFIGURATION / RESOURCE / TASK
-      - METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT
-      - SFC text representation
+      - SFC text representation (INITIAL_STEP / STEP /
+        TRANSITION / ACTION at body scope)
+      - CLASS / EXTENDS at the class level (3rd-edition OOP
+        beyond FUNCTION_BLOCK)
       - Vendor-style AT clauses (``name AT X001 : BOOL;`` --
         these appear as trailing ``(* AT X001 *)`` comments on
         the emit side, not inline AT, so this scope is honest)
@@ -1755,6 +1959,7 @@ def parse_program(src: str):
     subroutines: list = []
     user_types: list = []
     configurations: list = []
+    interfaces: list = []
     while not parser._match(TokKind.EOF):
         kw = _peek_identifier_keyword(parser)
         if kw in _POU_KEYWORDS:
@@ -1763,20 +1968,8 @@ def parse_program(src: str):
             user_types.extend(_parse_type_block(parser))
         elif kw == "CONFIGURATION":
             configurations.append(_parse_configuration_block(parser))
-        elif kw == "CONFIGURATION":
-            tok = parser._peek()
-            raise StParseError(
-                "CONFIGURATION ... END_CONFIGURATION block parsing "
-                "is not yet supported by parse_program (v1).",
-                line=tok.line, column=tok.column, lexeme=tok.lexeme,
-            )
         elif kw == "INTERFACE":
-            tok = parser._peek()
-            raise StParseError(
-                "INTERFACE ... END_INTERFACE block parsing is not "
-                "yet supported by parse_program (v1).",
-                line=tok.line, column=tok.column, lexeme=tok.lexeme,
-            )
+            interfaces.append(_parse_interface_block(parser))
         else:
             tok = parser._peek()
             raise StParseError(
@@ -1789,4 +1982,5 @@ def parse_program(src: str):
         subroutines=subroutines,
         user_types=user_types,
         configurations=configurations,
+        interfaces=interfaces,
     )

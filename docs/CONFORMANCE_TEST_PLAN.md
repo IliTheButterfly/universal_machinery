@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1293 tests**.
+counts are snapshotted; the current passing total is **1298 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/tests/test_conformance_plan_pointers.py)
@@ -43,11 +43,11 @@ Status legend:
 | §2.2    | PROGRAM          | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_program_with_inputs_outputs_locals |
 | §2.2    | FUNCTION         | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_function_preserves_return_type |
 | §2.2    | FUNCTION_BLOCK   | ✅     | tests/il/test_pou_db_sfc.py, tests/parsers/test_plcopen_xml_reader.py::test_round_trip_function_block_with_in_out |
-| §2.5.1.5| METHOD (3rd ed.) | ⚠️     | tests/il/test_oop.py — ST + JSON; compiler axis closed via rusty (`backends/rusty/tests/test_smoke.py::test_rusty_accepts_3rd_edition_oop`); XSD axis still blocked (no v2.02) and matiec still rejects |
-| §2.5.1.5| INTERFACE        | ⚠️     | tests/il/test_oop.py — same posture: rusty validates, matiec rejects, XSD blocked |
-| §2.5.1.5| EXTENDS          | ⚠️     | tests/il/test_oop.py — rusty accepts; matiec rejects |
-| §2.5.1.5| IMPLEMENTS       | ⚠️     | tests/il/test_oop.py — rusty accepts; matiec rejects (depends on INTERFACE) |
-| §2.5.1.5| ABSTRACT         | ⚠️     | tests/il/test_oop.py — rusty accepts; matiec rejects (depends on METHOD) |
+| §2.5.1.5| METHOD (3rd ed.) | ⚠️     | tests/il/test_oop.py — ST + JSON; ST text parser round-trip via tests/parsers/test_st_program_parser.py::test_function_block_with_methods_round_trips; compiler axis closed via rusty (`backends/rusty/tests/test_smoke.py::test_rusty_accepts_3rd_edition_oop`); XSD axis still blocked (no v2.02) and matiec still rejects |
+| §2.5.1.5| INTERFACE        | ⚠️     | tests/il/test_oop.py + tests/parsers/test_st_program_parser.py::test_interface_block_round_trips — same posture: rusty validates, matiec rejects, XSD blocked |
+| §2.5.1.5| EXTENDS          | ⚠️     | tests/il/test_oop.py + tests/parsers/test_st_program_parser.py::test_function_block_extends_implements_round_trips — rusty accepts; matiec rejects |
+| §2.5.1.5| IMPLEMENTS       | ⚠️     | tests/il/test_oop.py + tests/parsers/test_st_program_parser.py::test_function_block_extends_implements_round_trips — rusty accepts; matiec rejects (depends on INTERFACE) |
+| §2.5.1.5| ABSTRACT         | ⚠️     | tests/il/test_oop.py + tests/parsers/test_st_program_parser.py::test_function_block_extends_implements_round_trips — rusty accepts; matiec rejects (depends on METHOD) |
 
 ## §2.3.3 User-defined types
 
@@ -321,4 +321,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1293 / 1293 passing**.
+status: **1298 / 1298 passing**.
