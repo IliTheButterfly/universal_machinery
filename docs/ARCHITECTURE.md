@@ -82,7 +82,7 @@ site supplies the DB to `Call.instance`.
 
 **SFC** (grafcet) is an alternative POU body composed of `Step`s with
 `Action`s, joined by guarded `Transition`s -- see
-[`il/sfc.py`](../universal_machinery/il/sfc.py).
+[`il/sfc.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/sfc.py).
 
 For how all of this lowers onto a vendor target that has neither
 parameters nor nested calls, see
@@ -90,7 +90,7 @@ parameters nor nested calls, see
 
 ### Op categories
 
-See [`universal_machinery/il/ops.py`](../universal_machinery/il/ops.py)
+See [`universal_machinery/il/ops.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/ops.py)
 for the canonical list.  Categories:
 
   - **Bit input**: `ContactNO`, `ContactNC`, `ContactRisingEdge`,
@@ -174,7 +174,7 @@ Every IL op should be lowerable to every backend given enough memory
 to declare **how** -- natively or via synthesis -- and at what cost.
 
 The standard capability strings on `Backend.capabilities` (see
-[`base.py`](../universal_machinery/backends/base.py)) cover op
+[`base.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/backends/base.py)) cover op
 categories; per-op cost models are TBD as a future addition.
 
 When a backend genuinely cannot lower an op (e.g. a `VendorOp` from a
