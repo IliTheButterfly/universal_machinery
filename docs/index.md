@@ -20,7 +20,7 @@ Write your control logic once in a vendor-neutral IL.  Emit to any supported PLC
 ## What it does today
 
 - **Author IL** in Python via the `builders` DSL — LD / SFC / ST / FBD / FUNCTION / FUNCTION_BLOCK + IEC 3rd-edition OOP (`METHOD` / `INTERFACE` / `EXTENDS` / `IMPLEMENTS` / `ABSTRACT`).
-- **Emit** to IEC §3 Structured Text or PLCopen TC6 v2.01 XML.  Output is XSD-validated; matiec round-trip passes 45/45 cases (43 single-emit + 2 end-to-end emit→parse_program→re-emit), rusty 29/38 (with 9 xfailed tracking rusty-side stdlib divergences).
+- **Emit** to IEC §3 Structured Text or PLCopen TC6 v2.01 XML.  Output is XSD-validated; matiec round-trip passes 48/48 cases (46 single-emit + 2 end-to-end emit→parse_program→re-emit), rusty 29/38 (with 9 xfailed tracking rusty-side stdlib divergences).
 - **Parse** PLCopen XML back into IL — lossless for everything the v2.01 schema covers (POU declarations, var blocks, configuration model, ST bodies as raw text, FBD/SFC bodies).
 - **Validate** structurally with 31 distinct error codes (`um lint` consumes this).
 - **Three vendor backends** registered: `openplc` (ST + XML), `rusty` (ST, validates 3rd-ed OOP), `click` (scaffold — encoder pending).
