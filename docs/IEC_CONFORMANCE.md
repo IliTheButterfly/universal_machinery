@@ -102,7 +102,7 @@ signed/unsigned classification of the underlying integer base.
 | --- | --- | --- | --- | --- |
 | §2.5.2.1 | Type conversion (BOOL_TO_INT, INT_TO_REAL, ...) | ✅ | `StdFunc(name="INT_TO_REAL", ...)` or `convert("INT", "REAL", src, dst)` | All ``<SRC>_TO_<DST>`` pairs (21 IEC elementary types × 20 distinct destinations = 420 conversions) generated programmatically.  BCD family (``BCD_TO_INT``, ``INT_TO_BCD``, ...) and TRUNC family (generic ``TRUNC`` + 16 typed ``REAL_TRUNC_*`` / ``LREAL_TRUNC_*`` variants) included.  ``is_iec_std_function(name)`` predicate for backend / validation gatekeeping |
 | §2.5.2.4 | Numerical (ABS, SQRT, LN, LOG, EXP, SIN/COS/TAN, ASIN/ACOS/ATAN) | ✅ | `StdFunc(name="ABS", ...)` | All standard names registered; backend support varies |
-| §2.5.2.5 | Arithmetic (ADD, SUB, MUL, DIV, MOD) | ✅ | `BinaryMath(op="+", ...)` | Modeled as dedicated op since `dst = lhs OP rhs` is universal |
+| §2.5.2.5 | Arithmetic (ADD, SUB, MUL, DIV, MOD, EXPT, MOVE) | ✅ | `BinaryMath(op="+", ...)` / `Move(...)` plus function-call form via `StdFunc(name="ADD", ...)` etc. | The IL renders arithmetic via the dedicated `BinaryMath` op (and assignment via `Move`), emitting the infix form (`dst := lhs + rhs;`).  Per IEC §2.5.2.5 table 24 the names are also registered in `STD_FUNCTION_NAMES` for parser / validator recognition of the function-call form (`r := ADD(a, b);`, `r := EXPT(x, y);`, `r := MOVE(a);`), which matiec compiles cleanly.  The PLCopen XML reader still prefers the first-class `Move` op when it encounters `<block typeName="MOVE">`, dispatching ahead of the generic `StdFunc` path |
 | §2.5.2.6 | Bit-string (SHL, SHR, ROR, ROL) | ✅ | `StdFunc(name="SHL", ...)` | |
 | §2.5.2.7 | Logical / bitwise (AND, OR, XOR, NOT) | ✅ | `StdFunc(name="AND", ...)` | Applies to BOOL or bit-string per IEC |
 | §2.5.2.8 | Selection (SEL, MAX, MIN, LIMIT, MUX) | ✅ | `StdFunc(name="SEL", ...)` | |
@@ -323,4 +323,4 @@ verification path for any conformance claim.
 [`docs/CONFORMANCE_TEST_PLAN.md`](CONFORMANCE_TEST_PLAN.md) maps
 each row above to a concrete test fixture under `tests/` and
 tracks what the corpus does + doesn't yet cover.  Updated as
-slices land; the current pass count is 1312.
+slices land; the current pass count is 1320.

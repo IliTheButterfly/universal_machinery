@@ -358,6 +358,19 @@ _NUMERICAL_FUNCTIONS = frozenset({
 })
 
 
+#: §2.5.2.5 Arithmetic functions per IEC table 24.  These are the
+#: function-call form of the arithmetic operators (``+`` / ``-`` /
+#: ``*`` / ``/`` / ``MOD`` / ``**``) plus ``MOVE`` (assignment as a
+#: function -- IEC §2.5.2.1).  The IL normally renders these via
+#: dedicated ``BinaryMath`` / ``Move`` ops emitting the infix
+#: form, so this registry entry exists for parser / validator
+#: recognition of the function form when parsing third-party ST
+#: sources.  matiec compiles ``r := ADD(a, b);`` cleanly.
+_ARITHMETIC_FUNCTIONS = frozenset({
+    "ADD", "SUB", "MUL", "DIV", "MOD", "EXPT", "MOVE",
+})
+
+
 #: §2.5.2.6 Bit-string functions.
 _BIT_STRING_FUNCTIONS = frozenset({
     "SHL", "SHR", "ROR", "ROL",
@@ -401,6 +414,8 @@ _COMPARISON_FUNCTIONS = frozenset({
 #:   - BCD conversions (legacy packed-decimal integers).
 #:   - TRUNC family.
 #:   - Numerical / bit-string / logical / selection helpers.
+#:   - Arithmetic functions (function-call form of +, -, *, /, MOD,
+#:     **, plus MOVE).
 #:   - Comparison functions (function-call form of >, >=, =, <=, <, <>).
 #:   - Character-string library.
 #:   - Time / date arithmetic.
@@ -409,6 +424,7 @@ STD_FUNCTION_NAMES = frozenset(
     | _BCD_CONVERSIONS
     | _TRUNC_FUNCTIONS
     | _NUMERICAL_FUNCTIONS
+    | _ARITHMETIC_FUNCTIONS
     | _BIT_STRING_FUNCTIONS
     | _LOGICAL_FUNCTIONS
     | _SELECTION_FUNCTIONS

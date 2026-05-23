@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1312 tests**.
+counts are snapshotted; the current passing total is **1320 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/tests/test_conformance_plan_pointers.py)
@@ -173,7 +173,7 @@ Status legend:
 | IL → PLCopen XML → IL (SFC body)           | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
 | IL → PLCopen XML → IL (LD body)            | ✅ | tests/emitters/test_plcopen_xml_ld.py |
 | FBD → ST lowering                          | ✅ | tests/lowering/test_fbd_to_st.py |
-| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / full timer family TON+TOF+TP / full counter family CTU+CTD+CTUD / full edge family R_TRIG+F_TRIG / full bistable family SR+RS / Compare+Move / BinaryMath / ABS / FB call / FUNCTION POU + call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions + hierarchical macroStep) / UDTs (STRUCT field access + ARRAY index + ENUM literal + SUBRANGE + ALIAS) / ST control flow (IF-ELSE / CASE / FOR / WHILE / REPEAT) / CONFIGURATION + RESOURCE + TASK / direct rep AT clause (%IX/%QX) + vendor-AT comment fallback / VAR_EXTERNAL ↔ VAR_GLOBAL binding with config-scope AT clause / §2.5.2 stdlib (SEL/MIN/MAX/LIMIT selection + CONCAT/LEN string + INT_TO_REAL/REAL_TO_INT conversion) + emit→parse_program→re-emit→matiec end-to-end round-trip (catches parser-vs-emitter grammar drift on ST and SFC bodies).  41/41 cases pass on a real matiec install. |
+| IL → ST → matiec ``iec2c`` parse-accept    | ✅ | tests/test_matiec_roundtrip.py — CI-skipped when matiec not installed; covers LD / full timer family TON+TOF+TP / full counter family CTU+CTD+CTUD / full edge family R_TRIG+F_TRIG / full bistable family SR+RS / Compare+Move / BinaryMath / ABS / FB call / FUNCTION POU + call / jump+label / SFC (single-flow + simultaneous-convergence + timed actions + hierarchical macroStep) / UDTs (STRUCT field access + ARRAY index + ENUM literal + SUBRANGE + ALIAS) / ST control flow (IF-ELSE / CASE / FOR / WHILE / REPEAT) / CONFIGURATION + RESOURCE + TASK / direct rep AT clause (%IX/%QX) + vendor-AT comment fallback / VAR_EXTERNAL ↔ VAR_GLOBAL binding with config-scope AT clause / §2.5.2 stdlib (SEL/MIN/MAX/LIMIT selection + CONCAT/LEN string + INT_TO_REAL/REAL_TO_INT conversion) + emit→parse_program→re-emit→matiec end-to-end round-trip (catches parser-vs-emitter grammar drift on ST and SFC bodies).  42/42 cases pass on a real matiec install. |
 | IL → ST → rusty ``plc -c`` parse + compile-accept | ✅ | tests/test_rusty_backend_integration.py — parent-side API-shape integration (4 tests); subprocess validation lives in the `rusty_backend` submodule's own CI on Ubuntu 24.04.  Submodule test corpus mirrors matiec's: 38 cases via `tests/test_rusty_roundtrip.py` (29 pass, 9 xfail), plus 2 API + 2 round-trip tests in `tests/test_smoke.py`.  rusty + matiec acceptance asymmetries: see the [reference-compiler matrix](#reference-compiler-acceptance-matrix) below |
 
 ## Reference-compiler acceptance matrix
@@ -208,7 +208,7 @@ Two reference compilers exercise the ST emit path: **matiec** (a 2nd-edition IEC
 | §2.5.2.1 INT_TO_REAL / REAL_TO_INT | ✅ | ✅ | |
 | **IEC 3rd-edition OOP** | ❌ reject | ✅ | matiec is a 2nd-edition compiler; rusty is the only compiler validating METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT |
 
-**Intersection cert claim** (both compilers validate): 29 of the 38 covered constructs.  Big enough to anchor the practical Tier 1 PLCopen XML claim, since round-trip survival of those constructs through *both* reference compilers is the strong cert-grade signal.  matiec at 41/41 (39 single-emit + 2 end-to-end parse_program round-trip); rusty at 29 pass + 9 xfail (rusty-side stdlib divergences + scope gaps -- not parent-emit bugs).
+**Intersection cert claim** (both compilers validate): 29 of the 38 covered constructs.  Big enough to anchor the practical Tier 1 PLCopen XML claim, since round-trip survival of those constructs through *both* reference compilers is the strong cert-grade signal.  matiec at 42/42 (40 single-emit + 2 end-to-end parse_program round-trip); rusty at 29 pass + 9 xfail (rusty-side stdlib divergences + scope gaps -- not parent-emit bugs).
 
 **Asymmetries**:
 - matiec validates SFC text + §2.7 system organisation + the IEC-named-parameter SR / LIMIT shapes that rusty currently rejects.
@@ -321,4 +321,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1312 / 1312 passing**.
+status: **1320 / 1320 passing**.

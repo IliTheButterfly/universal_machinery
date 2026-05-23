@@ -129,6 +129,26 @@ def test_time_date_function_registered(name):
 
 
 # -----------------------------------------------------------------------------
+# §2.5.2.5 -- arithmetic functions (function-call form of +, -, *, /,
+# MOD, **, plus MOVE)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name",
+                            ["ADD", "SUB", "MUL", "DIV", "MOD",
+                             "EXPT", "MOVE"])
+def test_arithmetic_function_registered(name):
+    """IEC §2.5.2.5 table 24 -- the function-call form of the
+    arithmetic operators (plus ``MOVE`` from §2.5.2.1).  The IL
+    normally renders these via ``BinaryMath`` / ``Move`` ops (which
+    produce the infix form), so this registry entry exists for
+    recognition of the function form when parsing third-party ST.
+    matiec accepts both forms; the round-trip test pins the
+    function-call path."""
+    assert is_iec_std_function(name), f"{name!r} missing from registry"
+
+
+# -----------------------------------------------------------------------------
 # §2.5.2.10 -- comparison functions (function-call form of >, >=, =, <=, <, <>)
 # -----------------------------------------------------------------------------
 

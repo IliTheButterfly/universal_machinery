@@ -1513,6 +1513,27 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                     rhs=_compare_operand_from_text(rhs_text),
                     dst=_compare_operand_from_text(dst_text),
                 )
+            if type_name == "MOVE":
+                # Trace IN back to its producing inVariable for
+                # the src operand; the dst comes from whichever
+                # outVariable consumes the block's OUT pin.  MOVE is
+                # also a member of ``STD_FUNCTION_NAMES`` (IEC
+                # §2.5.2.1) -- we keep this dedicated recovery first
+                # so a hand-rolled ``<block typeName="MOVE">`` lands
+                # as the IL's first-class ``Move`` op rather than as
+                # a generic ``StdFunc``.
+                src_text = _trace_block_pin_operand(
+                    elem, "IN", elements_by_id, kind_by_id
+                )
+                dst_text = _trace_block_out_consumer(
+                    node_id, "OUT", elements_by_id, kind_by_id,
+                    incoming_by_id,
+                )
+                from ..il.ops import Move
+                return Move(
+                    src=_compare_operand_from_text(src_text),
+                    dst=_compare_operand_from_text(dst_text),
+                )
             if type_name in STD_FUNCTION_NAMES:
                 # StdFunc dispatch: walk the block's <inputVariables>
                 # to collect each operand text in pin-name order
@@ -1551,22 +1572,6 @@ def _parse_ld_body(ld_elem: ET.Element) -> list[Rung]:
                     inputs=tuple(_compare_operand_from_text(t)
                                   for t in ordered_input_text),
                     output=_compare_operand_from_text(dst_text),
-                )
-            if type_name == "MOVE":
-                # Trace IN back to its producing inVariable for
-                # the src operand; the dst comes from whichever
-                # outVariable consumes the block's OUT pin.
-                src_text = _trace_block_pin_operand(
-                    elem, "IN", elements_by_id, kind_by_id
-                )
-                dst_text = _trace_block_out_consumer(
-                    node_id, "OUT", elements_by_id, kind_by_id,
-                    incoming_by_id,
-                )
-                from ..il.ops import Move
-                return Move(
-                    src=_compare_operand_from_text(src_text),
-                    dst=_compare_operand_from_text(dst_text),
                 )
             if type_name in ("SR", "RS", "R_TRIG", "F_TRIG"):
                 instance = elem.get("instanceName") or ""
