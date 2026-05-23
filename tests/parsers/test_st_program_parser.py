@@ -365,8 +365,9 @@ def test_type_block_with_all_five_variants_round_trips():
         )
 
 
-def test_configuration_block_raises_with_clear_message():
-    """v1 doesn't parse CONFIGURATION ... END_CONFIGURATION."""
+def test_configuration_block_minimal_round_trips():
+    """v4 parses CONFIGURATION blocks.  Minimal: just the
+    name + no resources / vars."""
     src = """\
 PROGRAM Main
 END_PROGRAM
@@ -374,8 +375,75 @@ END_PROGRAM
 CONFIGURATION Plant
 END_CONFIGURATION
 """
-    with pytest.raises(StParseError, match="CONFIGURATION.*not yet"):
-        parse_program(src)
+    p_back = parse_program(src)
+    assert len(p_back.configurations) == 1
+    assert p_back.configurations[0].name == "Plant"
+
+
+def test_configuration_with_resource_task_pou_instance_round_trips():
+    """A representative CONFIGURATION: VAR_GLOBAL / VAR_ACCESS /
+    VAR_CONFIG / RESOURCE (with its own globals + tasks + POU
+    instances) all round-trip via the parser."""
+    from universal_machinery.builders import (
+        access_var, config_var, configuration, pou_instance,
+        resource, task_spec,
+    )
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(
+        subroutines=[prog("Main", main=False, st_body=[])],
+        configurations=[
+            configuration("Plant",
+                access_vars=[access_var(
+                    alias="LAMP_HMI",
+                    instance_path="PLC1.MainInst.lamp",
+                    type_=TagType.BOOL,
+                    direction="READ_WRITE",
+                )],
+                config_vars=[config_var(
+                    instance_path="PLC1.MainInst.lamp",
+                    type_=TagType.BOOL,
+                    initial="FALSE",
+                )],
+                resources=[resource("PLC1",
+                    tasks=[task_spec(
+                        "Fast", interval="T#100ms", priority=1,
+                    )],
+                    pou_instances=[pou_instance(
+                        "MainInst", type_name="Main", task="Fast",
+                    )],
+                    global_vars=[Var(name="G",
+                                       data_type=TagType.INT,
+                                       direction=VarDirection.LOCAL)],
+                )],
+                global_vars=[Var(name="CFG_G",
+                                   data_type=TagType.INT,
+                                   direction=VarDirection.LOCAL)],
+            ),
+        ],
+    )
+    p_back = parse_program(emit_program(p))
+    cfg = p_back.configurations[0]
+    assert cfg.name == "Plant"
+    assert [v.name for v in cfg.global_vars] == ["CFG_G"]
+    assert len(cfg.access_vars) == 1
+    av = cfg.access_vars[0]
+    assert av.alias == "LAMP_HMI"
+    assert av.instance_path == "PLC1.MainInst.lamp"
+    assert av.direction == "READ_WRITE"
+    assert len(cfg.config_vars) == 1
+    cv = cfg.config_vars[0]
+    assert cv.instance_path == "PLC1.MainInst.lamp"
+    assert cv.initial_value == "FALSE"
+    r = cfg.resources[0]
+    assert r.name == "PLC1"
+    assert [t.name for t in r.tasks] == ["Fast"]
+    assert r.tasks[0].interval == "T#100ms"
+    assert r.tasks[0].priority == 1
+    pi = r.pou_instances[0]
+    assert pi.name == "MainInst"
+    assert pi.type_name == "Main"
+    assert pi.task == "Fast"
+    assert [v.name for v in r.global_vars] == ["G"]
 
 
 def test_var_external_block_round_trips():
