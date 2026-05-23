@@ -14,7 +14,7 @@ External formats → IL.
 ## ST text
 
 !!! warning "Experimental"
-    `parse_program` is at v1: PROGRAM / FUNCTION / FUNCTION_BLOCK + VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR (LOCAL) + body.  Out of scope (raise `StParseError`): VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL, AT clauses, TYPE blocks, CONFIGURATION, METHOD / INTERFACE, SFC text.  `parse_st_body` and `parse_st_expression` cover the statement / expression layers.
+    `parse_program` is at v2: PROGRAM / FUNCTION / FUNCTION_BLOCK + all seven VAR_* directions + IEC §2.4.1.1 AT clauses (`%I*` / `%Q*` / `%M*`) + body.  Out of scope (raise `StParseError`): TYPE blocks, CONFIGURATION, METHOD / INTERFACE, SFC text.  `parse_st_body` and `parse_st_expression` cover the statement / expression layers.
 
 ::: universal_machinery.parsers.st_text
     options:
