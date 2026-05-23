@@ -1252,6 +1252,38 @@ def test_string_functions_parse_in_matiec():
     assert rc == 0, f"matiec rejected string-fn program:\n{err}"
 
 
+def test_arithmetic_functions_parse_in_matiec():
+    """IEC §2.5.2.5 arithmetic functions
+    (``ADD`` / ``SUB`` / ``MUL`` / ``DIV`` / ``MOD`` / ``EXPT`` /
+    ``MOVE``) in their function-call form (the alternative to the
+    infix operators).  matiec accepts both forms; pins that our
+    registry recognises the function form too."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("a", TagType.INT),
+                 var("b", TagType.INT),
+                 var("ri", TagType.INT),
+                 var("x", TagType.REAL),
+                 var("y", TagType.REAL),
+                 var("rr", TagType.REAL),
+             ],
+             st_body=[
+                 assign("ri", fcall_expr("ADD", "a", "b")),
+                 assign("ri", fcall_expr("SUB", "a", "b")),
+                 assign("ri", fcall_expr("MUL", "a", "b")),
+                 assign("ri", fcall_expr("DIV", "a", "b")),
+                 assign("ri", fcall_expr("MOD", "a", "b")),
+                 # EXPT is REAL/REAL → REAL per matiec; INT/INT is
+                 # type-ambiguous and won't resolve cleanly.
+                 assign("rr", fcall_expr("EXPT", "x", "y")),
+                 assign("ri", fcall_expr("MOVE", "a")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected arithmetic-fn program:\n{err}"
+
+
 def test_comparison_functions_parse_in_matiec():
     """IEC §2.5.2.10 comparison functions
     (``GT`` / ``GE`` / ``EQ`` / ``LE`` / ``LT`` / ``NE``) in their
