@@ -30,19 +30,20 @@ Concretely this means:
 ## TODOs
 
 ### Library (`universal_machinery`, `backends/click`)
-- [ ] Audit the public API surface and document what is stable vs. experimental.
-- [ ] Settle the IL ↔ CLICK lowering so `Program` can round-trip through `.ckp`.
-- [ ] Finish the OpenPLC emitter so we have a second backend exercising the IL.
-- [ ] Add structured errors (`UnsupportedOpError`, `RoundTripError`, etc.) that the CLI and GUI can surface nicely.
+- [x] Audit the public API surface and document what is stable vs. experimental. — see [`docs/API_STABILITY.md`](API_STABILITY.md).
+- [ ] Settle the IL ↔ CLICK lowering so `Program` can round-trip through `.ckp`.  IL → CLICK calling-convention lowering exists at `universal_machinery.lowering.click_calling`; the `CkpProject` ↔ IL bridge + `.ckp` encoder are still pending (`ClickBackend.write` / `.read` raise `NotImplementedError`).
+- [x] Finish the OpenPLC emitter so we have a second backend exercising the IL. — `backends/openplc/openplc_backend` dispatches to the parent's ST + PLCopen XML emitters; validated by matiec round-trip (49/49) and the submodule's own smoke tests.
+- [x] Add structured errors (`UnsupportedOpError`, `RoundTripError`, etc.) that the CLI and GUI can surface nicely. — `universal_machinery.exceptions` defines `UniversalMachineryError` (base) + `LoweringError` + `RoundTripError`; each subsystem adds its own (`SerialisationError`, `PlcopenParseError`, `StParseError`, `XMLSchemaError`, `UnsupportedOpError`).  31 distinct validation error codes.
 
 ### CLI
-- [ ] Pick a framework — **Typer** recommended (argparse-compatible, type-hint-driven, good `--help` UX).
-- [ ] Verbs to implement, at minimum:
-  - `um inspect <file>` — dump program structure, tags, rung count, etc.
-  - `um convert <in> <out>` — translate between vendor formats via the IL.
-  - `um diff <a> <b>` — semantic diff of two PLC projects (more useful than `git diff` on binary `.ckp`).
-  - `um validate <file>` — check round-trip integrity and IL conformance.
-- [ ] Make sure every CLI verb is a thin wrapper over a library function — no logic in the CLI layer.
+- [x] Pick a framework — **Typer**.
+- [x] Verbs to implement, at minimum:
+  - [x] `um inspect <file>` — dump program structure, tags, rung count, etc.
+  - [x] `um convert <in> <out>` — translate between vendor formats via the IL.
+  - [x] `um diff <a> <b>` — semantic diff of two PLC projects (more useful than `git diff` on binary `.ckp`).
+  - [x] `um validate <file>` — check round-trip integrity and IL conformance.
+  - Plus `emit` / `import` / `lint` for the wider CI surface.
+- [x] Make sure every CLI verb is a thin wrapper over a library function — no logic in the CLI layer.  See [`universal_machinery/cli.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/cli.py) — each verb resolves to a library function via the helpers `_read_program` / `_read_any` / `_write_any`.
 
 ### GUI
 - [ ] Framework: **PySide6 (Qt)**. Native look on Windows + Linux, mature, and `QGraphicsView` is well-suited to drawing ladder diagrams.
@@ -70,9 +71,9 @@ Concretely this means:
 
 ### Documentation
 - [ ] User guide for the GUI (screenshots from both Windows and Linux).
-- [ ] CLI reference generated from Typer.
-- [ ] Library API reference (Sphinx or mkdocs — pick one).
-- [ ] Per-backend capability matrix so users know what round-trips cleanly.
+- [x] CLI reference. — [`docs/api/cli.md`](api/cli.md) lists every verb and pulls docstrings via mkdocstrings.
+- [x] Library API reference (Sphinx or mkdocs — pick one).  Chose mkdocs Material + mkdocstrings; modules under [`docs/api/`](api/) auto-generate the reference from source docstrings.  The site builds with `mkdocs --strict`.
+- [x] Per-backend capability matrix so users know what round-trips cleanly. — [`docs/CONFORMANCE_TEST_PLAN.md`](CONFORMANCE_TEST_PLAN.md#reference-compiler-acceptance-matrix) "Reference-compiler acceptance matrix" plus the IEC §-by-§ status rows in [`docs/IEC_CONFORMANCE.md`](IEC_CONFORMANCE.md).
 
 ## Future / out of scope for now
 
