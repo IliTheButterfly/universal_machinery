@@ -376,6 +376,19 @@ _SELECTION_FUNCTIONS = frozenset({
 })
 
 
+#: §2.5.2.10 Comparison functions per IEC table 33.  These are the
+#: function-call form of the operators ``>``/``>=``/``=``/``<=``/
+#: ``<``/``<>``; both forms are accepted by IEC-conformant compilers
+#: (matiec compiles ``r := GT(a, b);`` cleanly).  The IL itself
+#: normally renders comparisons via ``Compare`` op (which emits the
+#: infix form), so this registry entry mainly exists for validation
+#: passes that need to recognise the function form when parsing
+#: third-party ST sources.
+_COMPARISON_FUNCTIONS = frozenset({
+    "GT", "GE", "EQ", "LE", "LT", "NE",
+})
+
+
 #: The set of IEC 61131-3 §2.5.2 standard-function names this IL
 #: recognises by default.  Backends may emit any name they support;
 #: the registry exists for validation passes that want to flag
@@ -388,6 +401,7 @@ _SELECTION_FUNCTIONS = frozenset({
 #:   - BCD conversions (legacy packed-decimal integers).
 #:   - TRUNC family.
 #:   - Numerical / bit-string / logical / selection helpers.
+#:   - Comparison functions (function-call form of >, >=, =, <=, <, <>).
 #:   - Character-string library.
 #:   - Time / date arithmetic.
 STD_FUNCTION_NAMES = frozenset(
@@ -398,6 +412,7 @@ STD_FUNCTION_NAMES = frozenset(
     | _BIT_STRING_FUNCTIONS
     | _LOGICAL_FUNCTIONS
     | _SELECTION_FUNCTIONS
+    | _COMPARISON_FUNCTIONS
     | _STRING_FUNCTIONS
     | _TIME_DATE_FUNCTIONS
 )

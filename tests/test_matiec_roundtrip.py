@@ -1252,6 +1252,32 @@ def test_string_functions_parse_in_matiec():
     assert rc == 0, f"matiec rejected string-fn program:\n{err}"
 
 
+def test_comparison_functions_parse_in_matiec():
+    """IEC §2.5.2.10 comparison functions
+    (``GT`` / ``GE`` / ``EQ`` / ``LE`` / ``LT`` / ``NE``) in their
+    function-call form (the alternative to the infix operators).
+    matiec accepts both forms; pins that our registry recognises
+    the function form too."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("a", TagType.INT),
+                 var("b", TagType.INT),
+                 var("r", TagType.BOOL),
+             ],
+             st_body=[
+                 assign("r", fcall_expr("GT", "a", "b")),
+                 assign("r", fcall_expr("GE", "a", "b")),
+                 assign("r", fcall_expr("EQ", "a", "b")),
+                 assign("r", fcall_expr("LE", "a", "b")),
+                 assign("r", fcall_expr("LT", "a", "b")),
+                 assign("r", fcall_expr("NE", "a", "b")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected comparison-fn program:\n{err}"
+
+
 def test_type_conversion_functions_parse_in_matiec():
     """IEC §2.5.2.1 type-conversion functions
     (``INT_TO_REAL`` / ``REAL_TO_INT``).  Conversion pairs are the
