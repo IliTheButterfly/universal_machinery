@@ -492,11 +492,15 @@ def test_convert_st_read_round_trips_via_parse_program(tmp_path):
 
 
 def test_convert_st_read_unsupported_shape_exits_2(tmp_path):
-    """v1's scope guards: shapes ``parse_program`` doesn't
-    accept yet (e.g. ``TYPE`` blocks) surface as exit-2 with the
-    ST parser's diagnostic message."""
+    """parse_program's scope guards: shapes it doesn't accept
+    (e.g. ``CONFIGURATION`` blocks) surface as exit-2 with the
+    ST parser's diagnostic message.  Use a v3-out-of-scope
+    shape since TYPE blocks now parse successfully (v3)."""
     src = tmp_path / "src.st"
-    src.write_text("TYPE\n  Pct : INT;\nEND_TYPE\nPROGRAM Main\nEND_PROGRAM\n")
+    src.write_text(
+        "PROGRAM Main\nEND_PROGRAM\n\n"
+        "CONFIGURATION Plant\nEND_CONFIGURATION\n"
+    )
     result = runner.invoke(app, ["convert", str(src), str(tmp_path / "out.json")])
     assert result.exit_code == 2
     assert "ST parse failed" in result.output
