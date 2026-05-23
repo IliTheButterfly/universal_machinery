@@ -1252,6 +1252,81 @@ def test_string_functions_parse_in_matiec():
     assert rc == 0, f"matiec rejected string-fn program:\n{err}"
 
 
+def test_numerical_functions_parse_in_matiec():
+    """IEC §2.5.2.4 table 22 -- the full numerical-function family
+    on REAL: ``SQRT`` / ``LN`` / ``LOG`` / ``EXP`` plus the six
+    trigonometric (``SIN`` / ``COS`` / ``TAN`` / ``ASIN`` /
+    ``ACOS`` / ``ATAN``).  ``ABS`` is already exercised standalone
+    by ``test_ld_with_abs_parses_in_matiec``; this pins the rest
+    of the family together."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("x", TagType.REAL),
+                 var("r", TagType.REAL),
+             ],
+             st_body=[
+                 assign("r", fcall_expr("SQRT", "x")),
+                 assign("r", fcall_expr("LN", "x")),
+                 assign("r", fcall_expr("LOG", "x")),
+                 assign("r", fcall_expr("EXP", "x")),
+                 assign("r", fcall_expr("SIN", "x")),
+                 assign("r", fcall_expr("COS", "x")),
+                 assign("r", fcall_expr("TAN", "x")),
+                 assign("r", fcall_expr("ASIN", "x")),
+                 assign("r", fcall_expr("ACOS", "x")),
+                 assign("r", fcall_expr("ATAN", "x")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected numerical-fn program:\n{err}"
+
+
+def test_logical_functions_parse_in_matiec():
+    """IEC §2.5.2.7 -- ``AND`` / ``OR`` / ``XOR`` / ``NOT`` in
+    their function-call form (the alternative to the infix
+    operators).  matiec accepts the function form even when the
+    same names are also reserved as operators."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("a", TagType.BOOL),
+                 var("b", TagType.BOOL),
+                 var("r", TagType.BOOL),
+             ],
+             st_body=[
+                 assign("r", fcall_expr("AND", "a", "b")),
+                 assign("r", fcall_expr("OR", "a", "b")),
+                 assign("r", fcall_expr("XOR", "a", "b")),
+                 assign("r", fcall_expr("NOT", "a")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected logical-fn program:\n{err}"
+
+
+def test_bit_string_functions_parse_in_matiec():
+    """IEC §2.5.2.6 -- ``SHL`` / ``SHR`` / ``ROL`` / ``ROR``.
+    These take named parameters (``IN := value, N := count``);
+    pin the named-arg call form rather than the positional form
+    (matiec accepts named more reliably for the shift family)."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("x", TagType.WORD),
+                 var("r", TagType.WORD),
+             ],
+             st_body=[
+                 assign("r", fcall_expr("SHL", IN="x", N=1)),
+                 assign("r", fcall_expr("SHR", IN="x", N=1)),
+                 assign("r", fcall_expr("ROL", IN="x", N=1)),
+                 assign("r", fcall_expr("ROR", IN="x", N=1)),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected bit-string-fn program:\n{err}"
+
+
 def test_arithmetic_functions_parse_in_matiec():
     """IEC §2.5.2.5 arithmetic functions
     (``ADD`` / ``SUB`` / ``MUL`` / ``DIV`` / ``MOD`` / ``EXPT`` /
