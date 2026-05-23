@@ -1270,3 +1270,130 @@ def test_type_conversion_functions_parse_in_matiec():
     ])
     rc, _out, err = _run_matiec(emit_program(p))
     assert rc == 0, f"matiec rejected type-conv program:\n{err}"
+
+
+# -----------------------------------------------------------------------------
+# End-to-end: emit -> parse_program -> emit -> matiec
+#
+# Verifies the read(.st) path doesn't drift from the emit grammar:
+# whatever we emit must round-trip through parse_program and
+# still parse cleanly in matiec.  Catches parser-vs-emitter
+# divergence early, before it bites a real round-trip workflow.
+# -----------------------------------------------------------------------------
+
+
+def test_parse_program_re_emit_still_parses_in_matiec():
+    """Build a representative multi-POU IL ``Program`` covering the
+    parser's biggest scope items (PROGRAM + FUNCTION_BLOCK +
+    FUNCTION, multiple VAR_* directions, ST body with control flow,
+    LD rungs, CONFIGURATION + RESOURCE + TASK, IEC §2.4.1.1 AT
+    clauses), emit it as ST, parse it back via
+    ``parsers.st_text.parse_program``, then re-emit the parsed
+    IL.  Matiec must accept *both* emits identically -- proving
+    the parser is grammar-faithful with the emitter."""
+    from universal_machinery.parsers.st_text import parse_program
+
+    p = program(
+        subroutines=[
+            prog("Main", main=True,
+                 local_vars=[
+                     var("trigger", TagType.BOOL),
+                     var("done", TagType.BOOL),
+                     var("count", TagType.INT),
+                 ],
+                 rungs=[
+                     rung(no("trigger"), coil("done")),
+                 ]),
+            fn("Doubled",
+                return_type=TagType.INT,
+                inputs=[var_in("x", TagType.INT)],
+                st_body=[
+                    assign("Doubled", "x"),
+                ]),
+        ],
+        configurations=[
+            Configuration(
+                name="Plant",
+                resources=[
+                    Resource(
+                        name="PLC1",
+                        tasks=[TaskSpec(name="Cyclic",
+                                          interval="T#50ms",
+                                          priority=2)],
+                        pou_instances=[
+                            PouInstance(name="MainInst",
+                                          type_name="Main",
+                                          task="Cyclic"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+    src_emit_1 = emit_program(p)
+
+    # First leg: original emit parses in matiec.
+    rc, _out, err = _run_matiec(src_emit_1)
+    assert rc == 0, (
+        f"matiec rejected the initial emit "
+        f"(parser drift impossible to assess):\n{err}"
+    )
+
+    # Round-trip: parse the emit, re-emit, feed back to matiec.
+    p_back = parse_program(src_emit_1)
+    src_emit_2 = emit_program(p_back)
+
+    rc, _out, err = _run_matiec(src_emit_2)
+    assert rc == 0, (
+        f"matiec rejected the re-emit after parse_program -- "
+        f"parser/emitter drift:\n{err}\n"
+        f"=== first emit ===\n{src_emit_1}\n"
+        f"=== re-emit ===\n{src_emit_2}"
+    )
+
+
+def test_parse_program_re_emit_sfc_still_parses_in_matiec():
+    """Same end-to-end shape, but with an SFC text body.  Catches
+    drift in the v6 SFC-text parser specifically."""
+    from universal_machinery.il.ops import ContactNO
+    from universal_machinery.il import TagRef
+    from universal_machinery.parsers.st_text import parse_program
+
+    sfc = SfcNetwork(
+        steps=[
+            Step("Init", initial=True),
+            Step("Active",
+                  actions=(Action(qualifier="L", target="dwell",
+                                       time_ms=100),)),
+            Step("Done"),
+        ],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Active",),
+                         condition=(ContactNO(TagRef(name="go")),)),
+            Transition(from_steps=("Active",), to_steps=("Done",),
+                         condition=(ContactNO(TagRef(name="ready")),)),
+        ],
+    )
+    p = program(subroutines=[
+        prog("Seq", main=True,
+             local_vars=[
+                 var("go", TagType.BOOL),
+                 var("ready", TagType.BOOL),
+                 var("dwell", TagType.BOOL),
+             ],
+             sfc=sfc),
+    ])
+    src_emit_1 = emit_program(p)
+    rc, _out, err = _run_matiec(src_emit_1)
+    assert rc == 0, f"matiec rejected the initial SFC emit:\n{err}"
+
+    p_back = parse_program(src_emit_1)
+    src_emit_2 = emit_program(p_back)
+
+    rc, _out, err = _run_matiec(src_emit_2)
+    assert rc == 0, (
+        f"matiec rejected the re-emit after parse_program on an SFC "
+        f"body -- v6 parser drift:\n{err}\n"
+        f"=== first emit ===\n{src_emit_1}\n"
+        f"=== re-emit ===\n{src_emit_2}"
+    )
