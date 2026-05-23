@@ -1752,6 +1752,345 @@ def _parse_interface_block(parser: _Parser):
     )
 
 
+_SFC_BODY_KEYWORDS = {"INITIAL_STEP", "STEP", "TRANSITION", "ACTION"}
+
+
+def _expression_to_ld_ops(expr):
+    """Lower an ST ``Expression`` AST to a tuple of IL LD ops.
+
+    Mirrors the helper in ``parsers.plcopen_xml`` so SFC transition
+    conditions round-trip via the same lowering rules: ``VarRef``
+    -> ``ContactNO``, ``NOT VarRef`` -> ``ContactNC``, ``AND`` ->
+    concatenation, ``OR`` -> ``ParallelGroup``.  Returns ``None``
+    when the expression doesn't fit the LD subset -- caller falls
+    back to a single ``ContactNO`` carrying the raw text."""
+    from ..il.ops import ContactNO, ContactNC, ParallelGroup
+    from ..il.ast import Address
+
+    def _operand(addr_expr):
+        if isinstance(addr_expr, VarRef):
+            ref = addr_expr.ref
+            if isinstance(ref, (Address, TagRef)):
+                return ref
+        return None
+
+    if isinstance(expr, VarRef):
+        op_addr = _operand(expr)
+        if op_addr is None:
+            return None
+        return (ContactNO(op_addr),)
+
+    if isinstance(expr, UnaryExpr) and expr.op is UnaryOp.NOT:
+        inner = _expression_to_ld_ops(expr.operand)
+        if inner is None:
+            return None
+        if len(inner) == 1 and isinstance(inner[0], ContactNO):
+            return (ContactNC(inner[0].address),)
+        if len(inner) == 1 and isinstance(inner[0], ContactNC):
+            return (ContactNO(inner[0].address),)
+        return None
+
+    if isinstance(expr, BinaryExpr):
+        if expr.op is BinaryOp.AND:
+            lhs_ops = _expression_to_ld_ops(expr.lhs)
+            rhs_ops = _expression_to_ld_ops(expr.rhs)
+            if lhs_ops is None or rhs_ops is None:
+                return None
+            return lhs_ops + rhs_ops
+        if expr.op is BinaryOp.OR:
+            lhs_ops = _expression_to_ld_ops(expr.lhs)
+            rhs_ops = _expression_to_ld_ops(expr.rhs)
+            if lhs_ops is None or rhs_ops is None:
+                return None
+
+            def _branches(ops):
+                if (len(ops) == 1
+                        and isinstance(ops[0], ParallelGroup)):
+                    return list(ops[0].branches)
+                return [tuple(ops)]
+            branches = tuple(_branches(lhs_ops) + _branches(rhs_ops))
+            return (ParallelGroup(branches=branches),)
+
+    return None
+
+
+def _parse_time_ms(parser: _Parser) -> int:
+    """Parse a ``T#<int>ms`` typed literal and return the
+    milliseconds value.  The SFC emit path always renders action
+    times in ``ms``; this parser is intentionally narrow."""
+    tok = parser._consume(
+        TokKind.TYPED_LIT, "expected T#<int>ms time literal"
+    )
+    text = tok.lexeme
+    if not text.upper().startswith("T#"):
+        raise StParseError(
+            f"expected T# time literal, got {text!r}",
+            line=tok.line, column=tok.column, lexeme=text,
+        )
+    body = text[2:]
+    if body.lower().endswith("ms"):
+        num = body[:-2]
+    else:
+        raise StParseError(
+            f"unsupported time literal {text!r}; only T#<int>ms is "
+            "accepted by the SFC text parser",
+            line=tok.line, column=tok.column, lexeme=text,
+        )
+    try:
+        return int(num)
+    except ValueError as e:
+        raise StParseError(
+            f"non-integer time value in {text!r}",
+            line=tok.line, column=tok.column, lexeme=text,
+        ) from e
+
+
+def _parse_sfc_step_list(parser: _Parser) -> tuple[str, ...]:
+    """Parse either ``Name`` or ``(Name1, Name2, ...)`` -- used for
+    transition ``FROM`` / ``TO`` operands (simultaneous div / conv).
+    """
+    if parser._peek().kind is TokKind.LPAREN:
+        parser._advance()
+        names = [parser._consume(
+            TokKind.IDENT, "expected step name in step list"
+        ).lexeme]
+        while parser._peek().kind is TokKind.COMMA:
+            parser._advance()
+            names.append(parser._consume(
+                TokKind.IDENT, "expected step name after ',' in step list"
+            ).lexeme)
+        parser._consume(TokKind.RPAREN, "expected ')' closing step list")
+        return tuple(names)
+    return (parser._consume(
+        TokKind.IDENT, "expected step name"
+    ).lexeme,)
+
+
+def _parse_sfc_step_action(parser: _Parser):
+    """One ``actname(qualifier[, T#time]);`` line inside a STEP."""
+    from ..il.sfc import Action
+    target_tok = parser._consume(
+        TokKind.IDENT, "expected action target identifier"
+    )
+    parser._consume(TokKind.LPAREN, "expected '(' after action target")
+    qual_tok = parser._consume(
+        TokKind.IDENT, "expected action qualifier (N / R / S / L / ...)"
+    )
+    time_ms = None
+    if parser._peek().kind is TokKind.COMMA:
+        parser._advance()
+        time_ms = _parse_time_ms(parser)
+    parser._consume(TokKind.RPAREN, "expected ')' closing action call")
+    parser._consume(TokKind.SEMI, "expected ';' after action call")
+    return Action(
+        qualifier=qual_tok.lexeme.upper(),
+        target=target_tok.lexeme,
+        time_ms=time_ms,
+    )
+
+
+def _parse_sfc_step(parser: _Parser, initial: bool):
+    """One ``[INITIAL_]STEP Name: ... END_STEP`` block."""
+    from ..il.sfc import Step
+    parser._advance()  # consume STEP / INITIAL_STEP
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected step name"
+    )
+    parser._consume(TokKind.COLON, "expected ':' after step name")
+    actions: list = []
+    while True:
+        kw = _peek_identifier_keyword(parser)
+        if kw == "END_STEP":
+            parser._advance()
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                f"unterminated STEP {name_tok.lexeme!r} (missing END_STEP)",
+                line=tok.line, column=tok.column,
+                lexeme=tok.lexeme,
+            )
+        actions.append(_parse_sfc_step_action(parser))
+    return Step(
+        name=name_tok.lexeme,
+        initial=initial,
+        actions=tuple(actions),
+    )
+
+
+def _parse_sfc_transition(parser: _Parser):
+    """One ``TRANSITION FROM <from> TO <to> := <expr>;
+    END_TRANSITION`` block."""
+    from ..il.sfc import Transition
+    from ..il.ops import ContactNO
+
+    parser._advance()  # consume TRANSITION
+    kw_tok = parser._peek()
+    if kw_tok.lexeme.upper() != "FROM":
+        raise StParseError(
+            "expected FROM after TRANSITION",
+            line=kw_tok.line, column=kw_tok.column,
+            lexeme=kw_tok.lexeme,
+        )
+    parser._advance()
+    from_steps = _parse_sfc_step_list(parser)
+
+    # ``TO`` is a first-class keyword (TokKind.KW_TO) since it's
+    # also used in FOR loops; match it by token kind, not by
+    # ``_peek_identifier_keyword`` (which only sees IDENT tokens).
+    kw_tok = parser._peek()
+    if kw_tok.kind is not TokKind.KW_TO:
+        raise StParseError(
+            "expected TO in TRANSITION",
+            line=kw_tok.line, column=kw_tok.column,
+            lexeme=kw_tok.lexeme,
+        )
+    parser._advance()
+    to_steps = _parse_sfc_step_list(parser)
+
+    parser._consume(
+        TokKind.ASSIGN, "expected ':=' before transition condition"
+    )
+    expr = parser._parse_expression()
+    parser._consume(TokKind.SEMI, "expected ';' after transition condition")
+
+    kw_tok = parser._peek()
+    if _peek_identifier_keyword(parser) != "END_TRANSITION":
+        raise StParseError(
+            "expected END_TRANSITION",
+            line=kw_tok.line, column=kw_tok.column,
+            lexeme=kw_tok.lexeme,
+        )
+    parser._advance()
+
+    # Lower expression to LD-style ops where possible; fall back to
+    # a single ContactNO carrying the literal/expression text.  TRUE
+    # collapses to an empty condition (matches the emit-side
+    # ``_fmt_gate`` convention).
+    condition_ops: tuple = ()
+    if isinstance(expr, Literal) and expr.value.upper() == "TRUE":
+        condition_ops = ()
+    else:
+        lowered = _expression_to_ld_ops(expr)
+        if lowered is not None:
+            condition_ops = lowered
+        else:
+            # Fall back: derive a textual placeholder from the
+            # rebuilt expression source.  For a single VarRef of
+            # unresolvable type this still falls through to a raw
+            # contact.
+            if isinstance(expr, VarRef):
+                condition_ops = (ContactNO(expr.ref),)
+            else:
+                # Best-effort: render the expression via the emitter
+                # to keep the raw text available.
+                from ..emitters.st import emit_expression
+                condition_ops = (
+                    ContactNO(TagRef(name=emit_expression(expr))),
+                )
+
+    return Transition(
+        from_steps=from_steps,
+        to_steps=to_steps,
+        condition=condition_ops,
+    )
+
+
+def _parse_sfc_action_block(parser: _Parser):
+    """One ``ACTION Name: <body> END_ACTION`` block.  Returns
+    ``(name, body_stmts)`` so the caller can attach the body to the
+    matching step action's ``inline_body``."""
+    parser._advance()  # consume ACTION
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected action block name"
+    )
+    parser._consume(TokKind.COLON, "expected ':' after action name")
+    body_stmts: list = []
+    while True:
+        kw = _peek_identifier_keyword(parser)
+        if kw == "END_ACTION":
+            parser._advance()
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                f"unterminated ACTION {name_tok.lexeme!r} "
+                "(missing END_ACTION)",
+                line=tok.line, column=tok.column,
+                lexeme=tok.lexeme,
+            )
+        body_stmts.append(parser._parse_statement())
+    return name_tok.lexeme, tuple(body_stmts)
+
+
+def _parse_sfc_body(parser: _Parser, end_kw: str):
+    """Parse a POU body as an IEC §6.7 SFC text network.
+
+    Loops until the enclosing POU's ``END_<kind>`` keyword.
+    After collecting steps / transitions / action-blocks, any
+    step action whose ``target`` matches an action-block name
+    gets that block's statements moved onto ``inline_body``
+    (and ``target`` cleared) -- this reverses the emitter's
+    synthesised-name handling so inline-bodied actions round-
+    trip cleanly."""
+    from dataclasses import replace
+    from ..il.sfc import SfcNetwork
+
+    steps: list = []
+    transitions: list = []
+    action_bodies: dict = {}
+
+    while True:
+        kw = _peek_identifier_keyword(parser)
+        if kw == end_kw:
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                f"unterminated SFC body (missing {end_kw})",
+                line=tok.line, column=tok.column,
+                lexeme=tok.lexeme,
+            )
+        if kw == "INITIAL_STEP":
+            steps.append(_parse_sfc_step(parser, initial=True))
+        elif kw == "STEP":
+            steps.append(_parse_sfc_step(parser, initial=False))
+        elif kw == "TRANSITION":
+            transitions.append(_parse_sfc_transition(parser))
+        elif kw == "ACTION":
+            name, body = _parse_sfc_action_block(parser)
+            action_bodies[name] = body
+        else:
+            tok = parser._peek()
+            raise StParseError(
+                f"unexpected token {tok.lexeme!r} in SFC body; "
+                "expected STEP / INITIAL_STEP / TRANSITION / "
+                f"ACTION / {end_kw}",
+                line=tok.line, column=tok.column,
+                lexeme=tok.lexeme,
+            )
+
+    # Attach inline-action bodies back onto the matching step actions.
+    if action_bodies:
+        new_steps: list = []
+        for step in steps:
+            new_actions = []
+            for action in step.actions:
+                if (isinstance(action.target, str)
+                        and action.target in action_bodies):
+                    new_actions.append(replace(
+                        action,
+                        target="",
+                        inline_body=action_bodies[action.target],
+                    ))
+                else:
+                    new_actions.append(action)
+            new_steps.append(replace(step, actions=tuple(new_actions)))
+        steps = new_steps
+
+    return SfcNetwork(steps=steps, transitions=transitions)
+
+
 def _parse_pou(parser: _Parser):
     """One ``PROGRAM`` / ``FUNCTION`` / ``FUNCTION_BLOCK`` declaration.
 
@@ -1873,20 +2212,29 @@ def _parse_pou(parser: _Parser):
     while _peek_identifier_keyword(parser) == "METHOD":
         methods.append(_parse_method(parser))
 
-    # Body: every statement until ``END_<kind>``.
+    # Body: peek the first keyword to decide whether this is an
+    # SFC body (INITIAL_STEP / STEP open the network) or an ordinary
+    # ST statement body.  Empty body: just consume END_<kind>.
+    sfc_net = None
     body_stmts: list = []
-    while True:
-        nxt = _peek_identifier_keyword(parser)
-        if nxt == end_kw:
-            parser._advance()
-            break
-        if parser._peek().kind is TokKind.EOF:
-            tok = parser._peek()
-            raise StParseError(
-                f"unterminated POU (missing {end_kw})",
-                line=tok.line, column=tok.column, lexeme=tok.lexeme,
-            )
-        body_stmts.append(parser._parse_statement())
+    first_kw = _peek_identifier_keyword(parser)
+    if first_kw in {"INITIAL_STEP", "STEP"}:
+        sfc_net = _parse_sfc_body(parser, end_kw)
+        # _parse_sfc_body stops at end_kw without consuming it
+        parser._advance()
+    else:
+        while True:
+            nxt = _peek_identifier_keyword(parser)
+            if nxt == end_kw:
+                parser._advance()
+                break
+            if parser._peek().kind is TokKind.EOF:
+                tok = parser._peek()
+                raise StParseError(
+                    f"unterminated POU (missing {end_kw})",
+                    line=tok.line, column=tok.column, lexeme=tok.lexeme,
+                )
+            body_stmts.append(parser._parse_statement())
 
     return Subroutine(
         name=name,
@@ -1901,6 +2249,7 @@ def _parse_pou(parser: _Parser):
         global_vars=global_vars,
         return_type=return_type,
         st_body=body_stmts if body_stmts else None,
+        sfc=sfc_net,
         methods=methods,
         extends=extends,
         implements=implements,
@@ -1912,7 +2261,7 @@ def parse_program(src: str):
     """Parse ST source text into an IL ``Program``.
 
     Closes the read(.st) gap for ``openplc_backend`` /
-    ``rusty_backend``.  Scope (v5):
+    ``rusty_backend``.  Scope (v6):
 
       - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs
       - All seven IEC §2.4.3 VAR_* directions: VAR_INPUT /
@@ -1935,15 +2284,29 @@ def parse_program(src: str):
         FUNCTION_BLOCK.  Populated into ``Subroutine.methods``
         / ``.extends`` / ``.implements`` / ``.abstract`` and
         ``Program.interfaces``.
-      - Body via the existing statement parser
+      - IEC §6.7 SFC text representation: INITIAL_STEP /
+        STEP / END_STEP (with ``action_target(qualifier
+        [, T#<ms>ms]);`` action calls), TRANSITION FROM ...
+        TO ... := <expr>; END_TRANSITION (single or
+        ``(a, b)`` step lists for simultaneous div / conv),
+        ACTION ... END_ACTION (inline-body action blocks
+        re-attached to the corresponding step action's
+        ``inline_body``).  Populated into ``Subroutine.sfc``.
+        Transition conditions lower to ``ContactNO`` /
+        ``ContactNC`` / ``ParallelGroup`` via the same AND /
+        OR / NOT subset the PLCopen XML reader recognises;
+        non-LD shapes fall back to a textual placeholder.
+      - Body via the existing statement parser (for non-SFC POUs)
       - Multiple POUs in one source
 
     Not yet supported (raise ``StParseError``):
 
-      - SFC text representation (INITIAL_STEP / STEP /
-        TRANSITION / ACTION at body scope)
       - CLASS / EXTENDS at the class level (3rd-edition OOP
         beyond FUNCTION_BLOCK)
+      - macroStep / jumpStep (lossless via PLCopen XML
+        ``<macroStep>`` / ``<jumpStep>``; in ST text they
+        appear as documenting comments rather than first-class
+        constructs, so the parser treats them as plain steps)
       - Vendor-style AT clauses (``name AT X001 : BOOL;`` --
         these appear as trailing ``(* AT X001 *)`` comments on
         the emit side, not inline AT, so this scope is honest)

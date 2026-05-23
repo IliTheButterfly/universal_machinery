@@ -682,6 +682,170 @@ def test_method_with_override_round_trips():
     assert m.return_type is TagType.INT
 
 
+def test_sfc_body_minimal_round_trips():
+    """v6 parses IEC §6.7 SFC text bodies -- POUs whose body
+    opens with INITIAL_STEP / STEP route to ``Subroutine.sfc``
+    instead of ``Subroutine.st_body``."""
+    from universal_machinery.il.sfc import (
+        Action, SfcNetwork, Step, Transition,
+    )
+    from universal_machinery.il.ops import ContactNO
+    from universal_machinery.il import TagRef
+    sfc = SfcNetwork(
+        steps=[
+            Step("Init", initial=True,
+                  actions=(Action(qualifier="N", target="run_pou"),)),
+            Step("Done"),
+        ],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Done",),
+                         condition=(ContactNO(TagRef(name="finished")),)),
+        ],
+    )
+    p = program(subroutines=[prog("Seq", main=False, sfc=sfc)])
+    p_back = parse_program(emit_program(p))
+    sub = p_back.subroutines[0]
+    assert sub.sfc is not None
+    assert sub.st_body is None
+    assert [s.name for s in sub.sfc.steps] == ["Init", "Done"]
+    assert [s.name for s in sub.sfc.steps if s.initial] == ["Init"]
+    assert sub.sfc.steps[0].actions[0].qualifier == "N"
+    assert sub.sfc.steps[0].actions[0].target == "run_pou"
+    assert len(sub.sfc.transitions) == 1
+    t = sub.sfc.transitions[0]
+    assert t.from_steps == ("Init",)
+    assert t.to_steps == ("Done",)
+    assert isinstance(t.condition[0], ContactNO)
+
+
+def test_sfc_body_time_qualified_action_round_trips():
+    """``L`` / ``D`` / ``SD`` etc. carry a ``T#<int>ms`` time
+    literal; v6 parses it back into ``Action.time_ms``."""
+    from universal_machinery.il.sfc import (
+        Action, SfcNetwork, Step, Transition,
+    )
+    from universal_machinery.il.ops import ContactNO
+    from universal_machinery.il import TagRef
+    sfc = SfcNetwork(
+        steps=[
+            Step("S1", initial=True,
+                  actions=(Action(qualifier="L", target="dwell",
+                                       time_ms=750),)),
+            Step("S2"),
+        ],
+        transitions=[
+            Transition(from_steps=("S1",), to_steps=("S2",),
+                         condition=(ContactNO(TagRef(name="go")),)),
+        ],
+    )
+    p_back = parse_program(
+        emit_program(program(subroutines=[prog("T", main=False, sfc=sfc)]))
+    )
+    a = p_back.subroutines[0].sfc.steps[0].actions[0]
+    assert a.qualifier == "L"
+    assert a.target == "dwell"
+    assert a.time_ms == 750
+
+
+def test_sfc_body_inline_action_round_trips():
+    """v6 reverses the emitter's synthesised ACTION block: action
+    targets that match an ``ACTION ... END_ACTION`` block get
+    their body moved onto ``Action.inline_body`` with the target
+    cleared."""
+    from universal_machinery.il.sfc import (
+        Action, SfcNetwork, Step, Transition,
+    )
+    from universal_machinery.il.ops import ContactNO
+    from universal_machinery.il import TagRef
+    sfc = SfcNetwork(
+        steps=[
+            Step("Init", initial=True, actions=(
+                Action(qualifier="N", inline_body=(assign("y", "TRUE"),)),
+            )),
+            Step("Done"),
+        ],
+        transitions=[
+            Transition(from_steps=("Init",), to_steps=("Done",),
+                         condition=(ContactNO(TagRef(name="ready")),)),
+        ],
+    )
+    p_back = parse_program(
+        emit_program(program(subroutines=[prog("S", main=False, sfc=sfc)]))
+    )
+    a = p_back.subroutines[0].sfc.steps[0].actions[0]
+    assert a.target == ""
+    assert len(a.inline_body) == 1
+    # body is a single Assignment of y := TRUE
+    stmt = a.inline_body[0]
+    assert stmt.__class__.__name__ == "Assignment"
+
+
+def test_sfc_body_condition_with_not_and_or_round_trips():
+    """v6 lowers the boolean AND / OR / NOT subset of the
+    transition condition expression to ``ContactNO`` /
+    ``ContactNC`` / ``ParallelGroup`` IL ops."""
+    from universal_machinery.il.sfc import (
+        SfcNetwork, Step, Transition,
+    )
+    from universal_machinery.il.ops import (
+        ContactNO, ContactNC, ParallelGroup,
+    )
+    from universal_machinery.il import TagRef
+    sfc = SfcNetwork(
+        steps=[Step("A", initial=True), Step("B"), Step("C")],
+        transitions=[
+            Transition(from_steps=("A",), to_steps=("B",),
+                         condition=(ContactNC(TagRef(name="halt")),
+                                       ContactNO(TagRef(name="ok")))),
+            Transition(from_steps=("B",), to_steps=("C",),
+                         condition=(ParallelGroup(branches=(
+                             (ContactNO(TagRef(name="x")),),
+                             (ContactNO(TagRef(name="y")),),
+                         )),)),
+        ],
+    )
+    p_back = parse_program(
+        emit_program(program(subroutines=[prog("Q", main=False, sfc=sfc)]))
+    )
+    sfc_back = p_back.subroutines[0].sfc
+    t1, t2 = sfc_back.transitions
+    assert isinstance(t1.condition[0], ContactNC)
+    assert isinstance(t1.condition[1], ContactNO)
+    assert isinstance(t2.condition[0], ParallelGroup)
+
+
+def test_sfc_body_simultaneous_divergence_round_trips():
+    """Multi-step ``FROM (a, b) TO (c, d)`` transitions round-trip
+    via parenthesised step lists."""
+    from universal_machinery.il.sfc import (
+        SfcNetwork, Step, Transition,
+    )
+    from universal_machinery.il.ops import ContactNO
+    from universal_machinery.il import TagRef
+    sfc = SfcNetwork(
+        steps=[
+            Step("Start", initial=True),
+            Step("Left"), Step("Right"), Step("Join"),
+        ],
+        transitions=[
+            Transition(from_steps=("Start",),
+                         to_steps=("Left", "Right"),
+                         condition=(ContactNO(TagRef(name="split")),)),
+            Transition(from_steps=("Left", "Right"),
+                         to_steps=("Join",),
+                         condition=(ContactNO(TagRef(name="merge")),)),
+        ],
+    )
+    p_back = parse_program(
+        emit_program(program(subroutines=[prog("P", main=False, sfc=sfc)]))
+    )
+    transitions = p_back.subroutines[0].sfc.transitions
+    assert transitions[0].from_steps == ("Start",)
+    assert transitions[0].to_steps == ("Left", "Right")
+    assert transitions[1].from_steps == ("Left", "Right")
+    assert transitions[1].to_steps == ("Join",)
+
+
 def test_class_at_top_level_still_out_of_scope():
     """v5 accepts FB-level OOP but class-level CLASS / EXTENDS
     are still out of scope -- they should raise StParseError."""
