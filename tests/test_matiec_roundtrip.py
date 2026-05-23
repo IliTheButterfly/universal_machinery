@@ -74,9 +74,9 @@ from pathlib import Path
 import pytest
 
 from universal_machinery.builders import (
-    abs_, add, and_, assign, case_, case_clause, coil, ctd, ctu, ctud,
-    eq, f_trig, fb, fcall_expr, fn, for_, if_, jump, label_, move, no,
-    prog, program, r_trig, repeat_, ret, rs, rung, sel, sr, tof, ton,
+    abs_, add, assign, case_, case_clause, coil, ctd, ctu, ctud,
+    f_trig, fb, fcall_expr, fn, for_, if_, jump, label_, move, no,
+    prog, program, r_trig, repeat_, rs, rung, sr, tof, ton,
     tp, var, var_in, var_out, while_,
 )
 from universal_machinery.il import TagType

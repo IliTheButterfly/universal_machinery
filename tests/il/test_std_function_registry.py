@@ -30,9 +30,26 @@ from universal_machinery.il import (
 
 
 def test_registry_size_grew_past_legacy_floor():
-    """A floor on the size so a regression that drops back to the
-    legacy ~50-name set is caught."""
-    assert len(STD_FUNCTION_NAMES) >= 400
+    """A floor on the size so a regression that drops a whole
+    family is caught.
+
+    Current breakdown (511 names total):
+      - 420 ``<SRC>_TO_<DST>`` type-conversion pairs
+      - 12 BCD conversion pairs
+      - 17 TRUNC family (generic + 16 typed variants)
+      - 11 numerical functions
+      - 7 arithmetic functions
+      - 4 bit-string functions
+      - 4 logical functions
+      - 5 selection functions
+      - 6 comparison functions
+      - 9 string functions
+      - 17 time/date functions
+
+    The 500 floor catches a regression that removes any of the
+    smaller families wholesale; the 400 floor was the original
+    "did we drop back to the legacy ~50-name set" sanity check."""
+    assert len(STD_FUNCTION_NAMES) >= 500
 
 
 def test_iec_convertible_types_returns_tuple():
