@@ -8,4 +8,5 @@
 	branch = main
 [submodule "backends/rusty"]
 	path = backends/rusty
-	url = git@github.com:IliTheButterfly/universal_machinery_rusty.git
+	url = ../universal_machinery_rusty.git
+	branch = main
