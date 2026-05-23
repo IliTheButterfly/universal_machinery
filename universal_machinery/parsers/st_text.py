@@ -954,6 +954,203 @@ def _peek_identifier_keyword(parser: _Parser) -> Optional[str]:
     return tok.lexeme.upper()
 
 
+def _parse_signed_int(parser: _Parser) -> int:
+    """Consume an optionally-signed integer literal.
+
+    Used for ``ARRAY`` bounds and ``SUBRANGE`` ranges where IEC
+    allows negative lower bounds (``SmallInt : INT (-100..100);``).
+    """
+    sign = 1
+    if parser._peek().kind is TokKind.MINUS:
+        parser._advance()
+        sign = -1
+    tok = parser._consume(
+        TokKind.INT, "expected an integer bound"
+    )
+    return sign * int(tok.lexeme)
+
+
+def _consume_range_dots(parser: _Parser):
+    """Consume the ``..`` separator (two ``.`` tokens) between
+    range bounds.  Surface a clear error if only one ``.`` is
+    present."""
+    parser._consume(TokKind.DOT, "expected '..' in range")
+    parser._consume(TokKind.DOT, "expected '..' in range")
+
+
+def _parse_type_block(parser: _Parser) -> list:
+    """One ``TYPE ... END_TYPE`` block.  Returns the list of
+    UDTs declared inside it.
+
+    Each entry inside the block is one of:
+
+      Name : STRUCT field : type; ... END_STRUCT;
+      Name : ARRAY [lo..hi (, lo..hi)*] OF type;
+      Name : (V1, V2, ...);
+      Name : Base (lo..hi);            -- SUBRANGE
+      Name : Base;                     -- ALIAS
+
+    A single TYPE block can declare multiple UDTs (separated by
+    further ``Name : ...;`` entries before the closing
+    ``END_TYPE``).  The emitter currently writes one UDT per
+    block; multiple-UDT input is accepted for robustness.
+    """
+    from ..il import NamedType
+    from ..il.types import (
+        AliasType, ArrayType, EnumType, StructType, SubrangeType,
+    )
+    from ..il.ast import Var, VarDirection
+
+    # Consume the ``TYPE`` keyword (caller has peeked it).
+    parser._advance()
+
+    udts: list = []
+    elementary = _elementary_typemap()
+
+    while True:
+        # Closing ``END_TYPE``?
+        kw = _peek_identifier_keyword(parser)
+        if kw == "END_TYPE":
+            parser._advance()
+            return udts
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                "unterminated TYPE block (missing END_TYPE)",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+
+        # One UDT declaration: Name : <body> ;
+        name_tok = parser._consume(
+            TokKind.IDENT, "expected UDT name inside TYPE block"
+        )
+        parser._consume(TokKind.COLON, "expected ':' after UDT name")
+
+        nxt = _peek_identifier_keyword(parser)
+        if nxt == "STRUCT":
+            parser._advance()  # consume STRUCT
+            members: list = []
+            while True:
+                kw = _peek_identifier_keyword(parser)
+                if kw == "END_STRUCT":
+                    parser._advance()
+                    break
+                if parser._peek().kind is TokKind.EOF:
+                    tok = parser._peek()
+                    raise StParseError(
+                        "unterminated STRUCT (missing END_STRUCT)",
+                        line=tok.line, column=tok.column,
+                        lexeme=tok.lexeme,
+                    )
+                # STRUCT members reuse the regular var-decl
+                # grammar minus the AT clause (no IEC support
+                # for field-level direct rep inside STRUCT).
+                members.append(_parse_var_decl(parser, "LOCAL"))
+            udts.append(StructType(
+                name=name_tok.lexeme,
+                members=tuple(members),
+            ))
+
+        elif nxt == "ARRAY":
+            parser._advance()  # consume ARRAY
+            parser._consume(
+                TokKind.LBRACK, "expected '[' after ARRAY"
+            )
+            bounds: list = []
+            while True:
+                lo = _parse_signed_int(parser)
+                _consume_range_dots(parser)
+                hi = _parse_signed_int(parser)
+                bounds.append((lo, hi))
+                if parser._peek().kind is TokKind.COMMA:
+                    parser._advance()
+                    continue
+                break
+            parser._consume(
+                TokKind.RBRACK, "expected ']' to close ARRAY bounds"
+            )
+            # ``OF`` is its own TokKind (KW_OF, used in CASE
+            # statements too) -- match directly, not via the
+            # identifier-keyword helper.
+            parser._consume(
+                TokKind.KW_OF, "expected 'OF' after ARRAY bounds"
+            )
+            elem_tok = parser._consume(
+                TokKind.IDENT, "expected element type after OF"
+            )
+            elem_name = elem_tok.lexeme.upper()
+            element_type = (
+                elementary[elem_name]
+                if elem_name in elementary
+                else NamedType(elem_tok.lexeme)
+            )
+            udts.append(ArrayType(
+                name=name_tok.lexeme,
+                element_type=element_type,
+                bounds=tuple(bounds),
+            ))
+
+        elif parser._peek().kind is TokKind.LPAREN:
+            # ENUM: ``(V1, V2, V3)``
+            parser._advance()  # consume LPAREN
+            values: list = []
+            while True:
+                v_tok = parser._consume(
+                    TokKind.IDENT, "expected enum value name"
+                )
+                values.append(v_tok.lexeme)
+                if parser._peek().kind is TokKind.COMMA:
+                    parser._advance()
+                    continue
+                break
+            parser._consume(
+                TokKind.RPAREN, "expected ')' to close enum list"
+            )
+            udts.append(EnumType(
+                name=name_tok.lexeme,
+                values=tuple(values),
+            ))
+
+        else:
+            # Base type identifier; followed by either:
+            #   (lo..hi)  -> SubrangeType
+            #   nothing   -> AliasType
+            base_tok = parser._consume(
+                TokKind.IDENT,
+                "expected base type name in UDT body"
+            )
+            base_name = base_tok.lexeme.upper()
+            base = (
+                elementary[base_name]
+                if base_name in elementary
+                else NamedType(base_tok.lexeme)
+            )
+            if parser._peek().kind is TokKind.LPAREN:
+                parser._advance()  # consume LPAREN
+                lo = _parse_signed_int(parser)
+                _consume_range_dots(parser)
+                hi = _parse_signed_int(parser)
+                parser._consume(
+                    TokKind.RPAREN,
+                    "expected ')' to close subrange bounds"
+                )
+                udts.append(SubrangeType(
+                    name=name_tok.lexeme,
+                    base=base,
+                    lower=lo,
+                    upper=hi,
+                ))
+            else:
+                udts.append(AliasType(
+                    name=name_tok.lexeme,
+                    base=base,
+                ))
+
+        parser._consume(
+            TokKind.SEMI, "expected ';' after UDT declaration"
+        )
+
+
 def _parse_data_type(parser: _Parser):
     """``: TYPE`` -- consume ``COLON`` then an identifier and
     return the resolved ``DataType``.
@@ -1192,21 +1389,22 @@ def parse_program(src: str):
     """Parse ST source text into an IL ``Program``.
 
     Closes the read(.st) gap for ``openplc_backend`` /
-    ``rusty_backend``.  Scope (v2):
+    ``rusty_backend``.  Scope (v3):
 
       - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs
       - All seven IEC §2.4.3 VAR_* directions: VAR_INPUT /
         VAR_OUTPUT / VAR_IN_OUT / VAR / VAR_EXTERNAL /
         VAR_TEMP / VAR_GLOBAL
       - IEC §2.4.1.1 AT clauses on variables:
-        ``name AT %IX0.0 : BOOL;`` (``%I`` / ``%Q`` / ``%M``
-        prefixes; X/B/W/D/L size letters; dotted indices)
+        ``name AT %IX0.0 : BOOL;``
+      - IEC §2.3.3 TYPE ... END_TYPE blocks: STRUCT / ARRAY /
+        ENUM / SUBRANGE / ALIAS variants.  Multiple UDTs per
+        block accepted; ``Program.user_types`` populated.
       - Body via the existing statement parser
       - Multiple POUs in one source
 
     Not yet supported (raise ``StParseError``):
 
-      - TYPE ... END_TYPE blocks (UDT declarations)
       - CONFIGURATION / RESOURCE / TASK
       - METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT
       - SFC text representation
@@ -1223,18 +1421,13 @@ def parse_program(src: str):
     parser = _Parser(tokens)
 
     subroutines: list = []
+    user_types: list = []
     while not parser._match(TokKind.EOF):
         kw = _peek_identifier_keyword(parser)
         if kw in _POU_KEYWORDS:
             subroutines.append(_parse_pou(parser))
         elif kw == "TYPE":
-            tok = parser._peek()
-            raise StParseError(
-                "TYPE ... END_TYPE block parsing is not yet "
-                "supported by parse_program (v1).  Strip TYPE "
-                "blocks before parsing.",
-                line=tok.line, column=tok.column, lexeme=tok.lexeme,
-            )
+            user_types.extend(_parse_type_block(parser))
         elif kw == "CONFIGURATION":
             tok = parser._peek()
             raise StParseError(
@@ -1257,4 +1450,4 @@ def parse_program(src: str):
                 line=tok.line, column=tok.column, lexeme=tok.lexeme,
             )
 
-    return Program(subroutines=subroutines)
+    return Program(subroutines=subroutines, user_types=user_types)

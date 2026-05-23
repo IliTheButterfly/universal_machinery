@@ -314,18 +314,55 @@ END_PROGRAM
         parse_program(src)
 
 
-def test_type_block_raises_with_clear_message():
-    """v1 doesn't parse TYPE ... END_TYPE blocks."""
+def test_type_block_with_alias_round_trips():
+    """v3 parses TYPE blocks.  A simple ALIAS round-trips into
+    ``Program.user_types`` (no longer raises)."""
+    from universal_machinery.il.types import AliasType
     src = """\
 TYPE
-    Speed : INT;
+    Speed : REAL;
 END_TYPE
 
 PROGRAM Main
 END_PROGRAM
 """
-    with pytest.raises(StParseError, match="TYPE.*not yet supported"):
-        parse_program(src)
+    p_back = parse_program(src)
+    assert len(p_back.user_types) == 1
+    assert isinstance(p_back.user_types[0], AliasType)
+    assert p_back.user_types[0].name == "Speed"
+
+
+def test_type_block_with_all_five_variants_round_trips():
+    """All five IEC §2.3.3 UDT variants -- STRUCT / ARRAY /
+    ENUM / SUBRANGE / ALIAS -- emit and re-parse to equal
+    dataclasses.  Pin via direct ``==`` (frozen dataclasses)."""
+    from universal_machinery.builders import (
+        alias_type, array_type, enum_type, struct_type, subrange_type,
+    )
+    from universal_machinery.il.ast import Var, VarDirection
+    udts = [
+        struct_type("Point", [
+            Var(name="x", data_type=TagType.INT,
+                direction=VarDirection.LOCAL),
+            Var(name="y", data_type=TagType.INT,
+                direction=VarDirection.LOCAL),
+        ]),
+        array_type("Vec10", TagType.INT, [(0, 9)]),
+        array_type("Matrix3x3", TagType.REAL, [(0, 2), (0, 2)]),
+        enum_type("Color", ["RED", "GREEN", "BLUE"]),
+        subrange_type("Pct", TagType.INT, 0, 100),
+        subrange_type("SignedRange", TagType.INT, -100, 100),
+        alias_type("Speed", TagType.REAL),
+    ]
+    p = program(user_types=udts,
+                  subroutines=[prog("Main", main=True, st_body=[])])
+    p_back = parse_program(emit_program(p))
+    assert len(p_back.user_types) == len(udts)
+    for original, parsed in zip(udts, p_back.user_types):
+        assert original == parsed, (
+            f"{type(original).__name__} mismatch: "
+            f"emit/parse round-trip lost information"
+        )
 
 
 def test_configuration_block_raises_with_clear_message():
