@@ -129,6 +129,21 @@ def test_time_date_function_registered(name):
 
 
 # -----------------------------------------------------------------------------
+# §2.5.2.10 -- comparison functions (function-call form of >, >=, =, <=, <, <>)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["GT", "GE", "EQ", "LE", "LT", "NE"])
+def test_comparison_function_registered(name):
+    """IEC §2.5.2.10 table 33 -- the function-call form of the
+    comparison operators.  matiec compiles ``r := GT(a, b);``
+    cleanly, so the registry should recognise these names even
+    though the IL normally renders comparisons via ``Compare``
+    op (which produces the infix form)."""
+    assert is_iec_std_function(name), f"{name!r} missing from registry"
+
+
+# -----------------------------------------------------------------------------
 # Predicate
 # -----------------------------------------------------------------------------
 

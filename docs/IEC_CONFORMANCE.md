@@ -106,7 +106,7 @@ signed/unsigned classification of the underlying integer base.
 | §2.5.2.6 | Bit-string (SHL, SHR, ROR, ROL) | ✅ | `StdFunc(name="SHL", ...)` | |
 | §2.5.2.7 | Logical / bitwise (AND, OR, XOR, NOT) | ✅ | `StdFunc(name="AND", ...)` | Applies to BOOL or bit-string per IEC |
 | §2.5.2.8 | Selection (SEL, MAX, MIN, LIMIT, MUX) | ✅ | `StdFunc(name="SEL", ...)` | |
-| §2.5.2.8 | Comparison (GT, GE, EQ, LE, LT, NE) | ✅ | `Compare(op=">", ...)` | Dedicated op (returns a boolean for rung gating) |
+| §2.5.2.8 | Comparison (GT, GE, EQ, LE, LT, NE) | ✅ | `Compare(op=">", ...)` plus function-call form via `StdFunc(name="GT", ...)` | The IL renders comparisons via the dedicated `Compare` op (returns a boolean for rung gating, emits the infix form).  Per IEC §2.5.2.10 table 33 the names are also registered in `STD_FUNCTION_NAMES` for parser / validator recognition of the function-call form (`r := GT(a, b);`), which matiec compiles cleanly |
 | §2.5.2.9 | Character-string (LEN, LEFT, RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND) | ✅ | `StdFunc(name="LEN", ...)` | All 9 names from IEC §2.5.2.9 table 28 registered.  Backend STRING runtime support varies by target -- that's a vendor-capability axis tracked separately |
 | §2.5.2.10 | Time / date (ADD_TIME / SUB_TIME / ADD_DT_TIME / ..., DT_TO_DATE / DT_TO_TOD / ..., CONCAT_DATE_TOD) | ✅ | `StdFunc(name="ADD_DT_TIME", ...)` | Full IEC §2.5.2.10 table 30: TIME arithmetic (ADD/SUB/MUL/DIV_TIME, MULTIME/DIVTIME), TOD/DT + TIME composition (ADD/SUB_TOD_TIME, ADD/SUB_DT_TIME), same-type subtractions yielding TIME (SUB_DATE_DATE, SUB_TOD_TOD, SUB_DT_DT), composition (CONCAT_DATE_TOD), extraction (DT_TO_DATE, DT_TO_TOD, DT_TO_TIME) |
 
@@ -323,4 +323,4 @@ verification path for any conformance claim.
 [`docs/CONFORMANCE_TEST_PLAN.md`](CONFORMANCE_TEST_PLAN.md) maps
 each row above to a concrete test fixture under `tests/` and
 tracks what the corpus does + doesn't yet cover.  Updated as
-slices land; the current pass count is 1305.
+slices land; the current pass count is 1312.
