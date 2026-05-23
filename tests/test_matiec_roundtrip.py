@@ -1252,6 +1252,89 @@ def test_string_functions_parse_in_matiec():
     assert rc == 0, f"matiec rejected string-fn program:\n{err}"
 
 
+def test_string_substring_family_parses_in_matiec():
+    """The remaining IEC §2.5.2.9 table 28 string functions:
+    ``LEFT`` / ``RIGHT`` / ``MID`` / ``INSERT`` / ``DELETE`` /
+    ``REPLACE`` / ``FIND``.  ``CONCAT`` + ``LEN`` are covered by
+    ``test_string_functions_parse_in_matiec``; this fills out the
+    family.  All seven use IEC named parameters (``IN := s,
+    L := count, P := position``)."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("s", TagType.STRING),
+                 var("r", TagType.STRING),
+                 var("n", TagType.INT),
+             ],
+             st_body=[
+                 assign("r", fcall_expr("LEFT",
+                                          IN="s", L=3)),
+                 assign("r", fcall_expr("RIGHT",
+                                          IN="s", L=3)),
+                 assign("r", fcall_expr("MID",
+                                          IN="s", L=3, P=1)),
+                 assign("r", fcall_expr("INSERT",
+                                          IN1="s", IN2="s", P=2)),
+                 assign("r", fcall_expr("DELETE",
+                                          IN="s", L=2, P=1)),
+                 assign("r", fcall_expr("REPLACE",
+                                          IN1="s", IN2="s",
+                                          L=1, P=1)),
+                 assign("n", fcall_expr("FIND",
+                                          IN1="s", IN2="s")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected string-substring program:\n{err}"
+
+
+def test_time_arithmetic_functions_parse_in_matiec():
+    """IEC §2.5.2.10 time arithmetic on the matiec-supported
+    subset: ``ADD_TIME`` / ``SUB_TIME`` (TIME × TIME → TIME) and
+    ``SUB_DATE_DATE`` (DATE - DATE → TIME).  TOD / DT-based
+    functions (``ADD_TOD_TIME``, ``ADD_DT_TIME``, etc.) are
+    rejected by this matiec build at the variable-declaration
+    level (it doesn't accept ``TIME_OF_DAY`` / ``DATE_AND_TIME``
+    type names), so those rows stay registry-only until a matiec
+    build that handles 2nd-edition full time types is available."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("t1", TagType.TIME),
+                 var("t2", TagType.TIME),
+                 var("tr", TagType.TIME),
+                 var("d", TagType.DATE),
+             ],
+             st_body=[
+                 assign("tr", fcall_expr("ADD_TIME", "t1", "t2")),
+                 assign("tr", fcall_expr("SUB_TIME", "t1", "t2")),
+                 assign("tr", fcall_expr("SUB_DATE_DATE", "d", "d")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected time-arithmetic program:\n{err}"
+
+
+def test_trunc_generic_parses_in_matiec():
+    """IEC §2.5.2.1 ``TRUNC`` (REAL/LREAL → DINT).  The typed
+    variants (``REAL_TRUNC_INT``, ``LREAL_TRUNC_LINT``, etc.)
+    aren't accepted by this matiec build -- the matiec parser
+    only recognises the polymorphic ``TRUNC`` name -- so those
+    stay registry-only."""
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 var("r", TagType.REAL),
+                 var("di", TagType.DINT),
+             ],
+             st_body=[
+                 assign("di", fcall_expr("TRUNC", "r")),
+             ]),
+    ])
+    rc, _out, err = _run_matiec(emit_program(p))
+    assert rc == 0, f"matiec rejected TRUNC program:\n{err}"
+
+
 def test_numerical_functions_parse_in_matiec():
     """IEC §2.5.2.4 table 22 -- the full numerical-function family
     on REAL: ``SQRT`` / ``LN`` / ``LOG`` / ``EXP`` plus the six
