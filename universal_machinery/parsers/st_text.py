@@ -145,6 +145,7 @@ class TokKind(Enum):
     REAL       = "REAL"
     STRING     = "STRING"
     TYPED_LIT  = "TYPED_LIT"    # e.g. T#100ms, DT#2026-05-20-..., 16#FF
+    DIRECT_REP = "DIRECT_REP"   # IEC §2.4.1.1 ``%IX0.0``, ``%QW1``, ``%MD2.3``
     # Punctuation
     LPAREN     = "("
     RPAREN     = ")"
@@ -329,6 +330,34 @@ def _tokenize(src: str) -> list[Token]:
         if c in single:
             tokens.append(Token(single[c], c, line, _col(i))); i += 1
             continue
+
+        # IEC §2.4.1.1 direct representation: ``%I*`` / ``%Q*`` /
+        # ``%M*``.  Grammar: ``%`` + memory class letter (I/Q/M) +
+        # optional size letter (X/B/W/D/L) + dotted decimal indices.
+        # Consume as a single ``DIRECT_REP`` token so the
+        # var-declaration parser can handle ``name AT %IX0.0 : BOOL;``
+        # without dancing through three separate tokens.
+        if c == "%":
+            start = i
+            i += 1
+            # Memory class letter.
+            if i < n and src[i] in "IQMiqm":
+                i += 1
+                # Optional size letter.
+                if i < n and src[i] in "XBWDLxbwdl":
+                    i += 1
+                # Dotted decimal indices.
+                while i < n and (src[i].isdigit() or src[i] == "."):
+                    i += 1
+                tokens.append(Token(TokKind.DIRECT_REP,
+                                     src[start:i], line, _col(start)))
+                continue
+            # Bare ``%`` with nothing recognisable after it.
+            raise StParseError(
+                "unexpected '%' (expected IEC direct rep like "
+                "%IX0.0 / %QW1 / %MD2.3)",
+                line=line, column=_col(start),
+            )
 
         # String literal: single or double quote
         if c in "'\"":
@@ -892,13 +921,21 @@ def _elementary_typemap():
     return {t.name: t for t in il.TagType}
 
 
-# Direction strings <-> VarDirection.  Direction strings other
-# than these raise an "out of scope" error at parse time.
+# Direction strings <-> VarDirection.  All seven IEC §2.4.3 VAR_*
+# variants supported as of v2.  Each maps to a ``VarDirection``
+# enum name on the Subroutine; the parser routes them to the
+# right field (``inputs`` / ``outputs`` / ``local_vars`` / ...).
 _VAR_DIRECTION_KEYWORDS = {
-    "VAR_INPUT":   "INPUT",
-    "VAR_OUTPUT":  "OUTPUT",
-    "VAR_IN_OUT":  "IN_OUT",
-    "VAR":         "LOCAL",
+    "VAR_INPUT":    "INPUT",
+    "VAR_OUTPUT":   "OUTPUT",
+    "VAR_IN_OUT":   "IN_OUT",
+    "VAR":          "LOCAL",
+    "VAR_EXTERNAL": "EXTERNAL",
+    "VAR_TEMP":     "TEMP",
+    "VAR_GLOBAL":   "LOCAL",  # global block stores LOCAL-direction
+                              # Vars; the *block* type signals the
+                              # POU-scope-global routing, not the
+                              # per-Var direction enum.
 }
 
 
@@ -942,25 +979,28 @@ def _parse_data_type(parser: _Parser):
 
 
 def _parse_var_decl(parser: _Parser, direction: str):
-    """One ``name : TYPE [:= init] ; [(* comment *)]`` line."""
-    from ..il.ast import Var, VarDirection
+    """One ``name [AT %loc] : TYPE [:= init] ; [(* comment *)]`` line."""
+    from ..il.ast import Address, Var, VarDirection
     name_tok = parser._consume(
         TokKind.IDENT,
         "expected a variable name inside VAR block"
     )
 
-    # AT clauses (``name AT %IX0.0 : BOOL;``) are out of scope in
-    # v1 -- surface a clear error rather than misparse.
+    # Optional IEC §2.4.1.1 AT clause: ``name AT %IX0.0 : BOOL;``.
+    # Only IEC direct rep (``%``-prefixed) is supported here;
+    # vendor-style addresses (CLICK ``X001``, ``Y002``) appear in
+    # the ST emit as ``(* AT ... *)`` trailing comments, not
+    # inline AT clauses, so they don't reach this code path.
+    address = None
     if (parser._peek().kind is TokKind.IDENT
             and parser._peek().lexeme.upper() == "AT"):
-        tok = parser._peek()
-        raise StParseError(
-            "AT direct-rep clauses are not yet supported by "
-            "parse_program (v1).  Strip the AT clause before "
-            "parsing, or wait for the follow-up that wires "
-            "Address-aware var-decl parsing.",
-            line=tok.line, column=tok.column, lexeme=tok.lexeme,
+        parser._advance()  # consume AT
+        addr_tok = parser._consume(
+            TokKind.DIRECT_REP,
+            "expected an IEC direct-rep address (%IX0.0 / %QW1 / "
+            "%MD2.3) after AT keyword"
         )
+        address = Address(addr_tok.lexeme)
 
     parser._consume(TokKind.COLON, "expected ':' after variable name")
     data_type = _parse_data_type(parser)
@@ -1002,24 +1042,31 @@ def _parse_var_decl(parser: _Parser, direction: str):
         data_type=data_type,
         direction=VarDirection[direction],
         initial_value=initial_value,
+        address=address,
     )
 
 
 def _parse_var_block(parser: _Parser) -> tuple[str, list]:
     """One ``VAR* ... END_VAR`` block.
 
-    Returns ``(direction_string, list_of_Var)``.  Caller routes
-    the list to the right Subroutine field.
+    Returns ``(block_keyword, list_of_Var)`` where ``block_keyword``
+    is the original ``VAR_INPUT`` / ``VAR_OUTPUT`` / ``VAR_IN_OUT``
+    / ``VAR`` / ``VAR_EXTERNAL`` / ``VAR_TEMP`` / ``VAR_GLOBAL``
+    string.  Caller routes the list to the right Subroutine
+    field; the per-``Var`` direction enum is filled in by
+    ``_parse_var_decl`` from the
+    ``_VAR_DIRECTION_KEYWORDS`` table.
     """
-    kw = _peek_identifier_keyword(parser)
-    if kw not in _VAR_DIRECTION_KEYWORDS:
+    block_kw = _peek_identifier_keyword(parser)
+    if block_kw not in _VAR_DIRECTION_KEYWORDS:
         tok = parser._peek()
         raise StParseError(
-            f"expected VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR; "
+            f"expected VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR / "
+            f"VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL; "
             f"got {tok.lexeme!r}",
             line=tok.line, column=tok.column, lexeme=tok.lexeme,
         )
-    direction = _VAR_DIRECTION_KEYWORDS[kw]
+    direction = _VAR_DIRECTION_KEYWORDS[block_kw]
     parser._advance()  # consume VAR*
     vars_: list = []
     while True:
@@ -1034,7 +1081,7 @@ def _parse_var_block(parser: _Parser) -> tuple[str, list]:
                 line=tok.line, column=tok.column, lexeme=tok.lexeme,
             )
         vars_.append(_parse_var_decl(parser, direction))
-    return direction, vars_
+    return block_kw, vars_
 
 
 def _parse_pou(parser: _Parser):
@@ -1084,32 +1131,29 @@ def _parse_pou(parser: _Parser):
     outputs: list = []
     in_outs: list = []
     local_vars: list = []
+    external_vars: list = []
+    temp_vars: list = []
+    global_vars: list = []
 
-    # Zero or more VAR* blocks.  Any VAR_* keyword we don't yet
-    # parse (VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL) raises a
-    # focused error -- otherwise we'd fall into body parsing and
-    # surface a confusing statement-parser error instead.
-    _unsupported_var_keywords = (
-        "VAR_EXTERNAL", "VAR_TEMP", "VAR_GLOBAL",
-    )
+    # Zero or more VAR* blocks.  All seven IEC §2.4.3 VAR_*
+    # variants are accepted as of v2 -- each routes to the right
+    # Subroutine field by *block keyword*, not by per-Var
+    # direction (because VAR_GLOBAL stores LOCAL-direction Vars
+    # but routes to ``global_vars``).
+    _block_routing = {
+        "VAR_INPUT":    inputs,
+        "VAR_OUTPUT":   outputs,
+        "VAR_IN_OUT":   in_outs,
+        "VAR":          local_vars,
+        "VAR_EXTERNAL": external_vars,
+        "VAR_TEMP":     temp_vars,
+        "VAR_GLOBAL":   global_vars,
+    }
     while True:
         nxt = _peek_identifier_keyword(parser)
         if nxt in _VAR_DIRECTION_KEYWORDS:
-            direction, items = _parse_var_block(parser)
-            {
-                "INPUT":   inputs,
-                "OUTPUT":  outputs,
-                "IN_OUT":  in_outs,
-                "LOCAL":   local_vars,
-            }[direction].extend(items)
-        elif nxt in _unsupported_var_keywords:
-            tok = parser._peek()
-            raise StParseError(
-                f"{tok.lexeme} blocks are not yet supported by "
-                f"parse_program (v1).  Accepted today: "
-                f"VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR.",
-                line=tok.line, column=tok.column, lexeme=tok.lexeme,
-            )
+            block_kw, items = _parse_var_block(parser)
+            _block_routing[block_kw].extend(items)
         else:
             break
 
@@ -1136,6 +1180,9 @@ def _parse_pou(parser: _Parser):
         outputs=outputs,
         in_outs=in_outs,
         local_vars=local_vars,
+        external_vars=external_vars,
+        temp_vars=temp_vars,
+        global_vars=global_vars,
         return_type=return_type,
         st_body=body_stmts,
     )
@@ -1145,27 +1192,30 @@ def parse_program(src: str):
     """Parse ST source text into an IL ``Program``.
 
     Closes the read(.st) gap for ``openplc_backend`` /
-    ``rusty_backend``.  Scope (v1):
+    ``rusty_backend``.  Scope (v2):
 
-      - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs with their
-        VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR (local) blocks
+      - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs
+      - All seven IEC §2.4.3 VAR_* directions: VAR_INPUT /
+        VAR_OUTPUT / VAR_IN_OUT / VAR / VAR_EXTERNAL /
+        VAR_TEMP / VAR_GLOBAL
+      - IEC §2.4.1.1 AT clauses on variables:
+        ``name AT %IX0.0 : BOOL;`` (``%I`` / ``%Q`` / ``%M``
+        prefixes; X/B/W/D/L size letters; dotted indices)
       - Body via the existing statement parser
       - Multiple POUs in one source
 
     Not yet supported (raise ``StParseError``):
 
-      - VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL
-      - AT clauses on variables (``name AT %IX0.0 : BOOL;``)
       - TYPE ... END_TYPE blocks (UDT declarations)
       - CONFIGURATION / RESOURCE / TASK
       - METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT
       - SFC text representation
+      - Vendor-style AT clauses (``name AT X001 : BOOL;`` --
+        these appear as trailing ``(* AT X001 *)`` comments on
+        the emit side, not inline AT, so this scope is honest)
 
-    These omissions reflect what the v1 round-trip needs to be
-    useful for the common case (a single PROGRAM POU with
-    elementary-typed locals and an ST body).  Each is a follow-up
-    slice; the StParseError message points to which scope item
-    you've hit.
+    Each remaining gap is a follow-up slice; the StParseError
+    message points to which scope item you've hit.
     """
     from ..il.ast import Program
 

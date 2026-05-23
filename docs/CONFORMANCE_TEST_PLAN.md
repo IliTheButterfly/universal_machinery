@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1288 tests**.
+counts are snapshotted; the current passing total is **1291 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
@@ -321,4 +321,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1288 / 1288 passing**.
+status: **1291 / 1291 passing**.

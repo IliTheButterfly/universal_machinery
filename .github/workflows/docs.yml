@@ -31,8 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        # Docs build doesn't need submodule contents (mkdocstrings
+        # autodoc reads the pip-installed packages, not the
+        # submodule source).  Skipping submodule fetching keeps
+        # the docs CI green even when a submodule URL needs the
+        # SSH-only credential path the runner doesn't have.
 
       - name: Set up Python
         uses: actions/setup-python@v5

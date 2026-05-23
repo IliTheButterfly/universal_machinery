@@ -268,33 +268,39 @@ def test_var_with_initial_value_preserves_textual_init():
 # -----------------------------------------------------------------------------
 
 
-def test_at_clause_with_iec_direct_rep_currently_rejected():
-    """v1 doesn't parse ``name AT %IX0.0 : BOOL;`` -- the
-    ``%``-prefixed direct-rep token isn't tokenized today, so
-    the rejection comes from the tokenizer.  Either way the
-    user sees an explicit StParseError rather than a misparse.
+def test_at_clause_with_iec_direct_rep_round_trips():
+    """v2 parses IEC §2.4.1.1 ``name AT %IX0.0 : BOOL;`` -- the
+    ``%``-prefixed direct-rep token is tokenized as a
+    ``DIRECT_REP`` and the parser builds an ``Address`` from
+    it.  Round-trip pinned."""
+    from universal_machinery.il.ast import Address, Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             local_vars=[
+                 Var(name="in1", data_type=TagType.BOOL,
+                     direction=VarDirection.LOCAL,
+                     address=Address("%IX0.0")),
+                 Var(name="out1", data_type=TagType.BOOL,
+                     direction=VarDirection.LOCAL,
+                     address=Address("%QX0.0")),
+             ],
+             st_body=[]),
+    ])
+    p_back = parse_program(emit_program(p))
+    s = p_back.subroutines[0]
+    addrs = {v.name: v.address for v in s.local_vars}
+    assert addrs["in1"] == Address("%IX0.0")
+    assert addrs["out1"] == Address("%QX0.0")
 
-    The parser-side check at ``_parse_var_decl`` would catch the
-    AT keyword if the tokenizer ever learns about ``%`` (a
-    follow-up); this test pins that the failure mode stays an
-    explicit error, not silent misbehaviour."""
-    src = """\
-PROGRAM Main
-VAR
-    in1 AT %IX0.0 : BOOL;
-END_VAR
-END_PROGRAM
-"""
-    with pytest.raises(StParseError):
-        parse_program(src)
 
-
-def test_at_clause_with_vendor_address_rejected_with_clear_message():
-    """For non-``%``-prefixed addresses (CLICK ``X001`` etc.) the
-    tokenizer sees a normal IDENT, and my parser-side check at
-    ``_parse_var_decl`` catches the AT keyword -- pinning that
-    the diagnostic message routes through that branch with the
-    AT-direct-rep pointer."""
+def test_at_clause_with_vendor_address_unchanged_no_AT_keyword():
+    """Vendor-style addresses (CLICK ``X001`` etc.) aren't IEC
+    direct rep -- the ST emitter renders them as trailing
+    ``(* AT X001 *)`` comments, never as inline ``AT X001``.
+    A literal inline ``AT X001`` doesn't appear in real emit
+    output, so parser rejection of that hypothetical shape is
+    fine and stays an error -- it would mean the user
+    hand-authored a non-IEC AT clause."""
     src = """\
 PROGRAM Main
 VAR
@@ -302,7 +308,9 @@ VAR
 END_VAR
 END_PROGRAM
 """
-    with pytest.raises(StParseError, match="AT direct-rep"):
+    # Without ``%``, the tokenizer reads ``X001`` as an IDENT;
+    # the parser expects DIRECT_REP after AT and raises.
+    with pytest.raises(StParseError, match="DIRECT_REP|direct-rep"):
         parse_program(src)
 
 
@@ -333,19 +341,95 @@ END_CONFIGURATION
         parse_program(src)
 
 
-def test_var_external_raises_with_clear_message():
-    """v1 only accepts VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR
-    (LOCAL).  VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL aren't yet
-    handled."""
-    src = """\
-PROGRAM Main
-VAR_EXTERNAL
-    LED : BOOL;
-END_VAR
-END_PROGRAM
-"""
-    with pytest.raises(StParseError, match="VAR_INPUT.*VAR"):
-        parse_program(src)
+def test_var_external_block_round_trips():
+    """v2 parses VAR_EXTERNAL blocks -- vars go into
+    ``Subroutine.external_vars`` and carry
+    ``VarDirection.EXTERNAL``."""
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             external_vars=[
+                 Var(name="LED", data_type=TagType.BOOL,
+                     direction=VarDirection.EXTERNAL),
+             ],
+             st_body=[]),
+    ])
+    p_back = parse_program(emit_program(p))
+    s = p_back.subroutines[0]
+    assert [v.name for v in s.external_vars] == ["LED"]
+    assert s.external_vars[0].direction is VarDirection.EXTERNAL
+
+
+def test_var_temp_block_round_trips():
+    """v2 parses VAR_TEMP blocks."""
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             temp_vars=[
+                 Var(name="tmp", data_type=TagType.REAL,
+                     direction=VarDirection.TEMP),
+             ],
+             st_body=[]),
+    ])
+    p_back = parse_program(emit_program(p))
+    s = p_back.subroutines[0]
+    assert [v.name for v in s.temp_vars] == ["tmp"]
+    assert s.temp_vars[0].direction is VarDirection.TEMP
+
+
+def test_var_global_block_round_trips():
+    """v2 parses POU-scope VAR_GLOBAL blocks (rare in practice
+    but legal IEC -- emitted from
+    ``Subroutine.global_vars``)."""
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             global_vars=[
+                 Var(name="SETPOINT", data_type=TagType.INT,
+                     direction=VarDirection.LOCAL),
+             ],
+             st_body=[]),
+    ])
+    p_back = parse_program(emit_program(p))
+    s = p_back.subroutines[0]
+    assert [v.name for v in s.global_vars] == ["SETPOINT"]
+
+
+def test_full_seven_var_directions_round_trip():
+    """All seven IEC §2.4.3 VAR_* blocks in one POU.  Pins that
+    they all route to the right Subroutine field and don't
+    interact (e.g. ``LED`` in VAR_EXTERNAL doesn't leak into
+    ``local_vars``)."""
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(subroutines=[
+        prog("Main", main=True,
+             inputs=[var_in("a", TagType.INT)],
+             outputs=[var_out("b", TagType.INT)],
+             in_outs=[var_inout("c", TagType.INT)],
+             local_vars=[var("d", TagType.BOOL)],
+             external_vars=[
+                 Var(name="LED", data_type=TagType.BOOL,
+                     direction=VarDirection.EXTERNAL),
+             ],
+             temp_vars=[
+                 Var(name="scratch", data_type=TagType.INT,
+                     direction=VarDirection.TEMP),
+             ],
+             global_vars=[
+                 Var(name="STATE", data_type=TagType.INT,
+                     direction=VarDirection.LOCAL),
+             ],
+             st_body=[]),
+    ])
+    p_back = parse_program(emit_program(p))
+    s = p_back.subroutines[0]
+    assert [v.name for v in s.inputs]         == ["a"]
+    assert [v.name for v in s.outputs]        == ["b"]
+    assert [v.name for v in s.in_outs]        == ["c"]
+    assert [v.name for v in s.local_vars]     == ["d"]
+    assert [v.name for v in s.external_vars]  == ["LED"]
+    assert [v.name for v in s.temp_vars]      == ["scratch"]
+    assert [v.name for v in s.global_vars]    == ["STATE"]
 
 
 def test_empty_input_returns_empty_program():
