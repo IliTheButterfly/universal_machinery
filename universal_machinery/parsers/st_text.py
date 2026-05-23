@@ -954,6 +954,338 @@ def _peek_identifier_keyword(parser: _Parser) -> Optional[str]:
     return tok.lexeme.upper()
 
 
+def _consume_dotted_path(parser: _Parser) -> str:
+    """Consume ``ident (. ident)*`` and return the joined dotted
+    string.  Used for VAR_ACCESS / VAR_CONFIG instance paths and
+    the ``alias`` half of an access-var declaration.
+    """
+    parts = [parser._consume(
+        TokKind.IDENT, "expected identifier in dotted path"
+    ).lexeme]
+    while parser._peek().kind is TokKind.DOT:
+        parser._advance()
+        parts.append(parser._consume(
+            TokKind.IDENT, "expected identifier after '.' in dotted path"
+        ).lexeme)
+    return ".".join(parts)
+
+
+def _parse_access_var_decl(parser: _Parser):
+    """One ``alias : instance_path : type [READ_ONLY|READ_WRITE];``."""
+    from ..il.configuration import AccessVar
+    alias_tok = parser._consume(
+        TokKind.IDENT, "expected access-var alias"
+    )
+    parser._consume(
+        TokKind.COLON, "expected ':' after access-var alias"
+    )
+    instance_path = _consume_dotted_path(parser)
+    parser._consume(
+        TokKind.COLON, "expected ':' after access-var instance path"
+    )
+    data_type = _parse_data_type_after_colon_already_consumed(parser)
+    # Optional direction keyword.
+    direction = "READ_WRITE"
+    kw = _peek_identifier_keyword(parser)
+    if kw in ("READ_ONLY", "READ_WRITE"):
+        direction = kw
+        parser._advance()
+    parser._consume(
+        TokKind.SEMI, "expected ';' after access-var declaration"
+    )
+    return AccessVar(
+        alias=alias_tok.lexeme,
+        instance_path=instance_path,
+        data_type=data_type,
+        direction=direction,
+    )
+
+
+def _parse_config_var_decl(parser: _Parser):
+    """One ``instance_path : type := init_value;`` line."""
+    from ..il.configuration import ConfigVar
+    instance_path = _consume_dotted_path(parser)
+    parser._consume(
+        TokKind.COLON, "expected ':' after config-var instance path"
+    )
+    data_type = _parse_data_type_after_colon_already_consumed(parser)
+    initial_value = ""
+    if parser._peek().kind is TokKind.ASSIGN:
+        parser._advance()
+        # Slurp until SEMI (same shape as regular var init).
+        start = parser.pos
+        while True:
+            tok = parser._peek()
+            if tok.kind is TokKind.EOF:
+                raise StParseError(
+                    "unterminated config-var initial value",
+                    line=tok.line, column=tok.column, lexeme=tok.lexeme,
+                )
+            if tok.kind is TokKind.SEMI:
+                break
+            parser._advance()
+        initial_value = " ".join(
+            t.lexeme for t in parser.tokens[start:parser.pos]
+        )
+    parser._consume(
+        TokKind.SEMI, "expected ';' after config-var declaration"
+    )
+    return ConfigVar(
+        instance_path=instance_path,
+        data_type=data_type,
+        initial_value=initial_value,
+    )
+
+
+def _parse_data_type_after_colon_already_consumed(parser: _Parser):
+    """Like ``_parse_data_type`` but assumes the ``:`` has been
+    consumed already (used inside VAR_ACCESS / VAR_CONFIG
+    declarations where two ``:`` appear)."""
+    from ..il import NamedType
+    type_tok = parser._consume(
+        TokKind.IDENT, "expected a type name"
+    )
+    elementary = _elementary_typemap()
+    name = type_tok.lexeme.upper()
+    return elementary[name] if name in elementary else NamedType(
+        type_tok.lexeme
+    )
+
+
+def _parse_task_spec(parser: _Parser):
+    """One ``TASK name(attr := val, ...);`` declaration inside a
+    RESOURCE block."""
+    from ..il.configuration import TaskSpec
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected task name after TASK keyword"
+    )
+    parser._consume(
+        TokKind.LPAREN, "expected '(' after task name"
+    )
+    attrs: dict[str, str] = {}
+    while True:
+        if parser._peek().kind is TokKind.RPAREN:
+            break
+        key_tok = parser._consume(
+            TokKind.IDENT, "expected attribute name in TASK(...)"
+        )
+        parser._consume(
+            TokKind.ASSIGN, "expected ':=' in TASK attribute"
+        )
+        # Slurp the value tokens until comma or RPAREN.  Some
+        # attrs are typed literals (``T#100ms``), some are plain
+        # integers (``PRIORITY``), some are identifiers (event /
+        # interrupt names).
+        start = parser.pos
+        depth = 0
+        while True:
+            tok = parser._peek()
+            if depth == 0 and tok.kind in (
+                TokKind.COMMA, TokKind.RPAREN
+            ):
+                break
+            if tok.kind is TokKind.EOF:
+                raise StParseError(
+                    "unterminated TASK attribute value",
+                    line=tok.line, column=tok.column,
+                    lexeme=tok.lexeme,
+                )
+            if tok.kind is TokKind.LPAREN:
+                depth += 1
+            elif tok.kind is TokKind.RPAREN:
+                depth -= 1
+            parser._advance()
+        attrs[key_tok.lexeme.upper()] = " ".join(
+            t.lexeme for t in parser.tokens[start:parser.pos]
+        )
+        if parser._peek().kind is TokKind.COMMA:
+            parser._advance()
+            continue
+        break
+    parser._consume(TokKind.RPAREN, "expected ')' after TASK attributes")
+    parser._consume(TokKind.SEMI, "expected ';' after TASK declaration")
+
+    priority = int(attrs.get("PRIORITY", "1"))
+    interval = attrs.get("INTERVAL")
+    single = attrs.get("SINGLE")
+    interrupt = attrs.get("INTERRUPT")
+    return TaskSpec(
+        name=name_tok.lexeme,
+        priority=priority,
+        interval=interval,
+        single=single,
+        interrupt=interrupt,
+    )
+
+
+def _parse_pou_instance_decl(parser: _Parser):
+    """One ``PROGRAM <inst> [WITH <task>] : <type>;`` line inside
+    a RESOURCE block.  Distinct from a top-level POU declaration
+    (which has VAR blocks + body) -- here it's just a binding."""
+    from ..il.configuration import PouInstance
+    # ``PROGRAM`` already consumed by caller (it dispatched on
+    # the keyword).
+    inst_name = parser._consume(
+        TokKind.IDENT, "expected POU-instance name after PROGRAM"
+    )
+    task = None
+    kw = _peek_identifier_keyword(parser)
+    if kw == "WITH":
+        parser._advance()
+        task = parser._consume(
+            TokKind.IDENT, "expected task name after WITH"
+        ).lexeme
+    parser._consume(
+        TokKind.COLON, "expected ':' before POU type name"
+    )
+    type_tok = parser._consume(
+        TokKind.IDENT, "expected POU type name"
+    )
+    parser._consume(
+        TokKind.SEMI, "expected ';' after POU-instance binding"
+    )
+    return PouInstance(
+        name=inst_name.lexeme,
+        type_name=type_tok.lexeme,
+        task=task,
+    )
+
+
+def _parse_resource_block(parser: _Parser):
+    """One ``RESOURCE name ON PLC ... END_RESOURCE`` block."""
+    from ..il.configuration import Resource
+    parser._advance()  # consume RESOURCE
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected resource name after RESOURCE"
+    )
+    # ``ON PLC`` -- two bare identifiers.  IEC allows other
+    # resource-type names but ``PLC`` is the conventional one.
+    on_kw = _peek_identifier_keyword(parser)
+    if on_kw != "ON":
+        tok = parser._peek()
+        raise StParseError(
+            f"expected 'ON' after resource name; got {tok.lexeme!r}",
+            line=tok.line, column=tok.column, lexeme=tok.lexeme,
+        )
+    parser._advance()  # consume ON
+    parser._consume(
+        TokKind.IDENT, "expected resource type (e.g. PLC) after ON"
+    )
+
+    global_vars: list = []
+    tasks: list = []
+    pou_instances: list = []
+    while True:
+        kw = _peek_identifier_keyword(parser)
+        if kw == "END_RESOURCE":
+            parser._advance()
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                "unterminated RESOURCE (missing END_RESOURCE)",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        if kw == "VAR_GLOBAL":
+            _, items = _parse_var_block(parser)
+            global_vars.extend(items)
+        elif kw == "TASK":
+            parser._advance()  # consume TASK
+            tasks.append(_parse_task_spec(parser))
+        elif kw == "PROGRAM":
+            parser._advance()  # consume PROGRAM (binding, not POU)
+            pou_instances.append(_parse_pou_instance_decl(parser))
+        else:
+            tok = parser._peek()
+            raise StParseError(
+                f"unexpected token inside RESOURCE: {tok.lexeme!r}.  "
+                f"Expected VAR_GLOBAL / TASK / PROGRAM / END_RESOURCE.",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+    return Resource(
+        name=name_tok.lexeme,
+        tasks=tasks,
+        pou_instances=pou_instances,
+        global_vars=global_vars,
+    )
+
+
+def _parse_configuration_block(parser: _Parser):
+    """One ``CONFIGURATION name ... END_CONFIGURATION`` block."""
+    from ..il.configuration import Configuration
+    parser._advance()  # consume CONFIGURATION
+    name_tok = parser._consume(
+        TokKind.IDENT, "expected configuration name"
+    )
+
+    global_vars: list = []
+    access_vars: list = []
+    config_vars: list = []
+    resources: list = []
+    while True:
+        kw = _peek_identifier_keyword(parser)
+        if kw == "END_CONFIGURATION":
+            parser._advance()
+            break
+        if parser._peek().kind is TokKind.EOF:
+            tok = parser._peek()
+            raise StParseError(
+                "unterminated CONFIGURATION (missing END_CONFIGURATION)",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+        if kw == "VAR_GLOBAL":
+            _, items = _parse_var_block(parser)
+            global_vars.extend(items)
+        elif kw == "VAR_ACCESS":
+            parser._advance()  # consume VAR_ACCESS
+            while True:
+                inner_kw = _peek_identifier_keyword(parser)
+                if inner_kw == "END_VAR":
+                    parser._advance()
+                    break
+                if parser._peek().kind is TokKind.EOF:
+                    tok = parser._peek()
+                    raise StParseError(
+                        "unterminated VAR_ACCESS block",
+                        line=tok.line, column=tok.column,
+                        lexeme=tok.lexeme,
+                    )
+                access_vars.append(_parse_access_var_decl(parser))
+        elif kw == "VAR_CONFIG":
+            parser._advance()  # consume VAR_CONFIG
+            while True:
+                inner_kw = _peek_identifier_keyword(parser)
+                if inner_kw == "END_VAR":
+                    parser._advance()
+                    break
+                if parser._peek().kind is TokKind.EOF:
+                    tok = parser._peek()
+                    raise StParseError(
+                        "unterminated VAR_CONFIG block",
+                        line=tok.line, column=tok.column,
+                        lexeme=tok.lexeme,
+                    )
+                config_vars.append(_parse_config_var_decl(parser))
+        elif kw == "RESOURCE":
+            resources.append(_parse_resource_block(parser))
+        else:
+            tok = parser._peek()
+            raise StParseError(
+                f"unexpected token inside CONFIGURATION: "
+                f"{tok.lexeme!r}.  Expected VAR_GLOBAL / "
+                f"VAR_ACCESS / VAR_CONFIG / RESOURCE / "
+                f"END_CONFIGURATION.",
+                line=tok.line, column=tok.column, lexeme=tok.lexeme,
+            )
+    return Configuration(
+        name=name_tok.lexeme,
+        resources=resources,
+        global_vars=global_vars,
+        access_vars=access_vars,
+        config_vars=config_vars,
+    )
+
+
 def _parse_signed_int(parser: _Parser) -> int:
     """Consume an optionally-signed integer literal.
 
@@ -1422,12 +1754,15 @@ def parse_program(src: str):
 
     subroutines: list = []
     user_types: list = []
+    configurations: list = []
     while not parser._match(TokKind.EOF):
         kw = _peek_identifier_keyword(parser)
         if kw in _POU_KEYWORDS:
             subroutines.append(_parse_pou(parser))
         elif kw == "TYPE":
             user_types.extend(_parse_type_block(parser))
+        elif kw == "CONFIGURATION":
+            configurations.append(_parse_configuration_block(parser))
         elif kw == "CONFIGURATION":
             tok = parser._peek()
             raise StParseError(
@@ -1450,4 +1785,8 @@ def parse_program(src: str):
                 line=tok.line, column=tok.column, lexeme=tok.lexeme,
             )
 
-    return Program(subroutines=subroutines, user_types=user_types)
+    return Program(
+        subroutines=subroutines,
+        user_types=user_types,
+        configurations=configurations,
+    )
