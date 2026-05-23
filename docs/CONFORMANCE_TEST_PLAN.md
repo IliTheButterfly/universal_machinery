@@ -8,7 +8,7 @@ work (PLCopen-tool round-trip, hardware-in-the-loop) can build on.
 
 Every row links to either a passing test file under `tests/` or a
 follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
-counts are snapshotted; the current passing total is **1298 tests**.
+counts are snapshotted; the current passing total is **1303 tests**.
 
 The plan is self-auditing:
 [`tests/test_conformance_plan_pointers.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/tests/test_conformance_plan_pointers.py)
@@ -150,7 +150,7 @@ Status legend:
 | LD control-flow ops (Jump / Label / Return via `<jump label=...>` / `<label label=...>` / `<return>`) | ✅ | tests/emitters/test_plcopen_xml_ld.py — IEC §6.6.4 jump/label/return primitives round-trip via the XSD's commonObjects group; Label rungs are picked up by the reader's "orphan element" second pass.  `End` is the only IL op still using ST-text fallback (no XSD element for "end of main program") |
 | FBD (Function Block Diagram) | ✅ | tests/emitters/test_plcopen_xml_fbd.py, tests/parsers/test_plcopen_xml_reader_fbd.py, tests/lowering/test_fbd_to_st.py |
 | ST (Structured Text) | ✅ | tests/il/test_st_ast.py, tests/parsers/test_st_text_parser.py — emit + parse round-trip |
-| SFC | ✅ | tests/emitters/test_plcopen_xml_sfc.py |
+| SFC | ✅ | tests/emitters/test_plcopen_xml_sfc.py + tests/parsers/test_st_program_parser.py::test_sfc_body_* — IEC §6.7 SFC text representation (INITIAL_STEP / STEP / END_STEP, TRANSITION FROM ... TO ... ASSIGN ... END_TRANSITION, ACTION / END_ACTION inline bodies) round-trips through the full-program ST parser, with AND/OR/NOT condition lowering and `(a, b)` step lists for simultaneous div / conv |
 | IL (Instruction List, deprecated) | ❌ | Out of scope -- deprecated in IEC 3rd ed. |
 
 ## §2.7 Configuration / Resource / Task
@@ -321,4 +321,4 @@ CI integration (GitHub Annotations, jq pipelines, error counters).
 Coverage: `tests/test_cli.py::test_lint_*`.
 
 The full test suite is run by `pytest` from the repo root.  Current
-status: **1298 / 1298 passing**.
+status: **1303 / 1303 passing**.
