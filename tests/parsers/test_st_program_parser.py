@@ -537,6 +537,158 @@ def test_full_seven_var_directions_round_trip():
     assert [v.name for v in s.global_vars]    == ["STATE"]
 
 
+def test_interface_block_round_trips():
+    """v5 parses INTERFACE blocks -- methods land on
+    ``Program.interfaces`` and every method is abstract per
+    IEC 3rd-edition rules."""
+    from universal_machinery.il.oop import AccessSpec, Interface, Method
+    from universal_machinery.il.ast import Var, VarDirection
+    p = program(
+        subroutines=[],
+        interfaces=[
+            Interface(
+                name="IMotor",
+                methods=[
+                    Method(
+                        name="Start",
+                        abstract=True,
+                        access=AccessSpec.PUBLIC,
+                        inputs=[Var(name="speed",
+                                       data_type=TagType.INT,
+                                       direction=VarDirection.INPUT)],
+                    ),
+                    Method(
+                        name="Stop",
+                        abstract=True,
+                        access=AccessSpec.PUBLIC,
+                    ),
+                ],
+            ),
+        ],
+    )
+    p_back = parse_program(emit_program(p))
+    assert [i.name for i in p_back.interfaces] == ["IMotor"]
+    methods = p_back.interfaces[0].methods
+    assert [m.name for m in methods] == ["Start", "Stop"]
+    assert all(m.abstract for m in methods)
+    assert [v.name for v in methods[0].inputs] == ["speed"]
+
+
+def test_function_block_with_methods_round_trips():
+    """v5 parses METHOD blocks inside FUNCTION_BLOCK -- methods
+    land on ``Subroutine.methods`` with access spec, abstract
+    flag, optional return type and body."""
+    from universal_machinery.il.oop import AccessSpec, Method
+    from universal_machinery.il.ast import Subroutine, Var, VarDirection
+
+    fb_sub = Subroutine(
+        name="Counter",
+        kind=PouKind.FUNCTION_BLOCK,
+        local_vars=[Var(name="n", data_type=TagType.INT,
+                          direction=VarDirection.LOCAL)],
+        methods=[
+            Method(
+                name="Inc",
+                access=AccessSpec.PUBLIC,
+                st_body=[assign("n", "1")],
+            ),
+            Method(
+                name="Get",
+                access=AccessSpec.PROTECTED,
+                return_type=TagType.INT,
+                st_body=[assign("Get", "n")],
+            ),
+        ],
+    )
+    p = program(subroutines=[fb_sub])
+    p_back = parse_program(emit_program(p))
+    s = p_back.subroutines[0]
+    assert s.name == "Counter"
+    assert s.kind is PouKind.FUNCTION_BLOCK
+    assert [m.name for m in s.methods] == ["Inc", "Get"]
+    assert s.methods[0].access is AccessSpec.PUBLIC
+    assert s.methods[1].access is AccessSpec.PROTECTED
+    assert s.methods[1].return_type is TagType.INT
+
+
+def test_function_block_extends_implements_round_trips():
+    """v5 parses FB EXTENDS / IMPLEMENTS / ABSTRACT modifiers --
+    populates ``Subroutine.extends`` / ``.implements`` /
+    ``.abstract``."""
+    from universal_machinery.il.oop import AccessSpec, Interface, Method
+    from universal_machinery.il.ast import Subroutine, Var, VarDirection
+
+    base = Subroutine(
+        name="BaseMotor",
+        kind=PouKind.FUNCTION_BLOCK,
+        abstract=True,
+        local_vars=[Var(name="rpm", data_type=TagType.INT,
+                          direction=VarDirection.LOCAL)],
+        methods=[
+            Method(name="Cycle",
+                     abstract=True,
+                     access=AccessSpec.PROTECTED,
+                     return_type=TagType.INT),
+        ],
+    )
+    derived = Subroutine(
+        name="DcMotor",
+        kind=PouKind.FUNCTION_BLOCK,
+        extends="BaseMotor",
+        implements=["IMotor"],
+        inputs=[Var(name="enable", data_type=TagType.BOOL,
+                      direction=VarDirection.INPUT)],
+    )
+    p = program(
+        subroutines=[base, derived],
+        interfaces=[Interface(name="IMotor", methods=[
+            Method(name="Start", abstract=True,
+                     access=AccessSpec.PUBLIC),
+        ])],
+    )
+    p_back = parse_program(emit_program(p))
+    by_name = {s.name: s for s in p_back.subroutines}
+    assert by_name["BaseMotor"].abstract is True
+    assert by_name["BaseMotor"].extends is None
+    assert by_name["BaseMotor"].implements == []
+    assert by_name["DcMotor"].abstract is False
+    assert by_name["DcMotor"].extends == "BaseMotor"
+    assert by_name["DcMotor"].implements == ["IMotor"]
+
+
+def test_method_with_override_round_trips():
+    """v5 parses METHOD OVERRIDE on a derived FB."""
+    from universal_machinery.il.oop import AccessSpec, Method
+    from universal_machinery.il.ast import Subroutine
+
+    derived = Subroutine(
+        name="DcMotor",
+        kind=PouKind.FUNCTION_BLOCK,
+        extends="BaseMotor",
+        methods=[
+            Method(
+                name="Cycle",
+                access=AccessSpec.PUBLIC,
+                override=True,
+                return_type=TagType.INT,
+                st_body=[assign("Cycle", "0")],
+            ),
+        ],
+    )
+    p_back = parse_program(emit_program(program(subroutines=[derived])))
+    m = p_back.subroutines[0].methods[0]
+    assert m.name == "Cycle"
+    assert m.override is True
+    assert m.return_type is TagType.INT
+
+
+def test_class_at_top_level_still_out_of_scope():
+    """v5 accepts FB-level OOP but class-level CLASS / EXTENDS
+    are still out of scope -- they should raise StParseError."""
+    with pytest.raises(StParseError, match="expected POU keyword"):
+        parse_program("CLASS Foo\nEND_CLASS\n")
+
+
 def test_empty_input_returns_empty_program():
     """Empty source / whitespace-only is valid -- returns a
     ``Program`` with no subroutines.  Symmetric with
