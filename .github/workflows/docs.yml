@@ -49,11 +49,12 @@ jobs:
           pip install -e ".[docs]"
 
       - name: Build site
-        # Not --strict; the existing docs contain source-tree links
-        # (``../universal_machinery/il/sfc.py``) that mkdocs warns
-        # on but aren't errors.  A future doc PR can route those
-        # through GitHub URLs to make --strict feasible.
-        run: mkdocs build
+        # --strict turns every warning into an error.  Source-tree
+        # links in existing docs were rewritten to GitHub blob
+        # URLs in a follow-up PR to make this feasible -- any new
+        # broken link / unresolved cross-reference / undefined nav
+        # entry now fails CI on the spot.
+        run: mkdocs build --strict
 
       - name: Upload artifact
         if: github.event_name == 'push'

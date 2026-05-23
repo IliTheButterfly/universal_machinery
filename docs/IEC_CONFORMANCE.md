@@ -88,7 +88,7 @@ All 16 IEC elementary types are present in `TagType`:
 
 User-defined types are now first-class: `StructType`, `ArrayType`,
 `EnumType`, `SubrangeType`, and `AliasType` live in
-[`universal_machinery/il/types.py`](../universal_machinery/il/types.py).
+[`universal_machinery/il/types.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/types.py).
 `Program.user_types` is the declaration table; both the ST emitter
 (emits `TYPE ... END_TYPE` blocks) and the PLCopen XML emitter
 (emits `<dataTypes><dataType><baseType>...` per the TC6 schema)
@@ -128,15 +128,15 @@ signed/unsigned classification of the underlying integer base.
 | --- | --- | --- |
 | LD (Ladder Diagram) | ✅ | Modeled via `Rung` + LD-flavoured ops (Contact/Coil/Compare/etc.).  PLCopen XML emits native `<body><LD>` for pure-LD rungs (contacts + coils + parallel groups): one `<leftPowerRail>` → contact(s) / ParallelGroup(s) → coil → `<rightPowerRail>` chain per rung, wired sink-side.  All four contact kinds are native -- NO / NC (`negated="true"` attr) plus rising / falling edge contacts (XSD `edge="rising"` / `edge="falling"` attr) -- and round-trip exactly.  `ParallelGroup` (OR branches) lowers to multi-incoming wires at the join point; the reader BFS-walks each branch forward to a common join node whose `connectionPointIn` exactly matches the branch tails, then reconstructs the `ParallelGroup` IL value (branches can have differing lengths and mix contact kinds).  Rungs containing math / call / stdlib ops still fall back to ST translation pending the mixed LD+FBD-block slice |
 | SFC (Sequential Function Chart) | ✅ | `SfcNetwork`, `Step`, `Transition`, `Action` -- see `il/sfc.py`.  PLCopen XML emits native `<SFC><step localId= name= initialStep=>` + `<transition>` with sink-side connection graph reconstructing `from_steps` / `to_steps`; conditions embed inline ST via `<condition><inline name="cond"><ST><xhtml:pre>...`.  Reader picks up the same shape (including PLCopen `<reference>` and `<inline>` condition forms) and lowers AND / NOT / OR / paren chains over bare variable refs into structured LD ops (`ContactNO` / `ContactNC` / `ParallelGroup`) via the ST expression parser, so round-trip is AST-equal for the common condition shapes.  Action blocks per IEC §2.6.4.4 round-trip natively (`<actionBlock>` wired back to a step's `OUT_ACTION` pin; one `<action qualifier= duration=>` child per IL `Action`; all 12 qualifiers N/R/S/L/D/P/P0/P1/DS/DL/SD/SL XSD-valid; IEC TIME literals parse back to ms; inline action bodies via `<action><inline><ST>...</ST></inline></action>` carry embedded ST AST through ``Action.inline_body: tuple[Statement, ...]``, parsed back via the ST text parser on read).  Branching per IEC §2.6.3 emits explicit `<simultaneousDivergence>` / `<simultaneousConvergence>` / `<selectionDivergence>` / `<selectionConvergence>` markers between steps and transitions; the reader dissolves marker nodes (tracing through chained refs) when reconstructing the IL graph, so multi-from / multi-to transitions and steps with multiple incoming / outgoing transitions all round-trip cleanly.  Back-edge transitions (loop-back targeting an earlier step) auto-promote to `<jumpStep targetName=...>` on emit; reader resolves `targetName` back into `Transition.to_steps`, including jumpSteps wired downstream of a marker.  Hierarchical SFC per IEC §2.6.5 round-trips via `Step.macro: Optional[SfcNetwork]` — emit wraps the inner network in `<macroStep><body><SFC>...</SFC></body></macroStep>` (with per-body localId scope, arbitrary nesting depth), reader recurses; macro inner bodies that aren't `<SFC>` (the XSD also accepts `<LD>` / `<FBD>` / `<ST>` inside a macroStep body) silently leave `macro=None` rather than failing |
-| ST (Structured Text) | ✅ | First-class AST in [`il/st.py`](../universal_machinery/il/st.py): expressions (Literal, VarRef, FieldAccess, IndexAccess, UnaryExpr, BinaryExpr, FunctionCallExpr), statements (Assignment, IF/CASE/FOR/WHILE/REPEAT, RETURN/EXIT/CONTINUE, function-call statement).  `Subroutine.st_body` / `Method.st_body` carry ST programs; ST emitter renders the AST directly with IEC §3.3.1 operator precedence and parenthesisation |
+| ST (Structured Text) | ✅ | First-class AST in [`il/st.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/st.py): expressions (Literal, VarRef, FieldAccess, IndexAccess, UnaryExpr, BinaryExpr, FunctionCallExpr), statements (Assignment, IF/CASE/FOR/WHILE/REPEAT, RETURN/EXIT/CONTINUE, function-call statement).  `Subroutine.st_body` / `Method.st_body` carry ST programs; ST emitter renders the AST directly with IEC §3.3.1 operator precedence and parenthesisation |
 | IL (Instruction List, aka STL) | ❌ | Deprecated in IEC 3rd ed. but still common in older systems |
-| FBD (Function Block Diagram) | ✅ | First-class AST in [`il/fbd.py`](../universal_machinery/il/fbd.py): ``FbdNetwork`` containing ``FbBlock`` (function/FB call sites), ``InVariable``/``OutVariable``/``InOutVariable`` (variable connectors), ``FbdJump``/``FbdLabel``/``FbdReturn`` (control flow).  Wires stored sink-side as ``Connection(source_id, source_pin)`` matching PLCopen's connection model.  ``Subroutine.fbd_body`` / ``Method.fbd_body`` carry FBD bodies; PLCopen XML emits ``<FBD>`` with auto-layout positions, XSD-validated.  ST emission lowers via [`lowering/fbd_to_st.py`](../universal_machinery/lowering/fbd_to_st.py): topological sort + producer-expression resolution; stateless 2-input blocks (``ADD``/``MUL``/``AND``/``GT``/...) inline as ``BinaryExpr``, FB calls emit ``Inst(IN := src);`` + ``Inst.OUT`` dot-access, other functions route through temp vars.  ``FbdJump``/``FbdLabel``/``FbdReturn`` lower to real IEC §3.3.2.5 ``GotoStatement``/``LabelStatement``/``ReturnStatement`` |
+| FBD (Function Block Diagram) | ✅ | First-class AST in [`il/fbd.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/fbd.py): ``FbdNetwork`` containing ``FbBlock`` (function/FB call sites), ``InVariable``/``OutVariable``/``InOutVariable`` (variable connectors), ``FbdJump``/``FbdLabel``/``FbdReturn`` (control flow).  Wires stored sink-side as ``Connection(source_id, source_pin)`` matching PLCopen's connection model.  ``Subroutine.fbd_body`` / ``Method.fbd_body`` carry FBD bodies; PLCopen XML emits ``<FBD>`` with auto-layout positions, XSD-validated.  ST emission lowers via [`lowering/fbd_to_st.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/lowering/fbd_to_st.py): topological sort + producer-expression resolution; stateless 2-input blocks (``ADD``/``MUL``/``AND``/``GT``/...) inline as ``BinaryExpr``, FB calls emit ``Inst(IN := src);`` + ``Inst.OUT`` dot-access, other functions route through temp vars.  ``FbdJump``/``FbdLabel``/``FbdReturn`` lower to real IEC §3.3.2.5 ``GotoStatement``/``LabelStatement``/``ReturnStatement`` |
 
 ## §2.7  Configuration / Resource / Task
 
 | Section | Construct | Status | Notes |
 | --- | --- | --- | --- |
-| §2.7.1 | CONFIGURATION | ✅ | ``Configuration`` in [`il/configuration.py`](../universal_machinery/il/configuration.py); ST emits ``CONFIGURATION ... END_CONFIGURATION``; PLCopen XML emits ``<instances><configurations><configuration>`` with XSD validation |
+| §2.7.1 | CONFIGURATION | ✅ | ``Configuration`` in [`il/configuration.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/configuration.py); ST emits ``CONFIGURATION ... END_CONFIGURATION``; PLCopen XML emits ``<instances><configurations><configuration>`` with XSD validation |
 | §2.7.1 | RESOURCE | ✅ | ``Resource`` -- one PLC CPU; multi-PLC = multi-resource within one Configuration |
 | §2.7.2 | TASK | ✅ | ``TaskSpec`` with cyclic/single-shot/interrupt triggering + priority; PLCopen XML nests bound POU instances under their task element per the schema |
 | §2.7.1 | VAR_ACCESS / accessVariable | ✅ | ``Configuration.access_vars: list[AccessVar]``; XML emits ``<accessVariable alias="..." instancePathAndName="..." direction="readOnly|readWrite">`` per the TC6 schema |
@@ -177,7 +177,7 @@ Concrete slices to close the larger conformance gaps, in priority order:
    resolved on variable interfaces via ``<derived name=>`` →
    ``NamedType``.  ST bodies are parsed back into structured AST
    via
-   [`parsers.st_text`](../universal_machinery/parsers/st_text.py)
+   [`parsers.st_text`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/parsers/st_text.py)
    (hand-rolled recursive-descent + Pratt expression parser per
    IEC §3.3.1 precedence): assignments, IF/ELSIF/ELSE, CASE with
    multi-label clauses + ELSE, FOR/BY, WHILE, REPEAT/UNTIL,
@@ -214,7 +214,7 @@ Concrete slices to close the larger conformance gaps, in priority order:
        is necessary but not sufficient for full cert.
 
 2. ✅ ~~**ST AST**.~~ *Done.*  First-class ST body in
-   [`il/st.py`](../universal_machinery/il/st.py).  ``Subroutine``
+   [`il/st.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/st.py).  ``Subroutine``
    and ``Method`` gain a ``st_body: Optional[list[Statement]]``
    field alongside ``rungs`` and ``sfc`` -- the three are mutually
    exclusive, enforced by the validator.  The AST covers IEC §3
@@ -269,7 +269,7 @@ Concrete slices to close the larger conformance gaps, in priority order:
    is now closed via rusty.
 
 5. ✅ ~~**CONFIGURATION / RESOURCE / TASK**.~~ *Done.*  IEC §2.7 system-
-   organisation model lives in [`il/configuration.py`](../universal_machinery/il/configuration.py).
+   organisation model lives in [`il/configuration.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/universal_machinery/il/configuration.py).
    ST emits ``CONFIGURATION ... END_CONFIGURATION``; PLCopen XML
    emits ``<instances><configurations>`` with task-bound POU
    instances nested under ``<task>`` per the schema.  XSD-validated.

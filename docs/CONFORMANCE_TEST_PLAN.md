@@ -11,7 +11,7 @@ follow-up that's tracked in `docs/IEC_CONFORMANCE.md`.  Test
 counts are snapshotted; the current passing total is **1291 tests**.
 
 The plan is self-auditing:
-[`tests/test_conformance_plan_pointers.py`](../tests/test_conformance_plan_pointers.py)
+[`tests/test_conformance_plan_pointers.py`](https://github.com/IliTheButterfly/universal_machinery/blob/main/tests/test_conformance_plan_pointers.py)
 parses every `tests/foo.py(::test_bar)?` pointer below and fails
 CI if any of them resolve to a missing file or a missing test
 function.  Wildcard pointers (`::test_prefix_*`) require at
