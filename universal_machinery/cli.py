@@ -515,11 +515,13 @@ def convert(
 
     Routes the input through the IL and re-emits in the requested
     output format.  ``.json`` and ``.xml`` round-trip losslessly;
-    ``.st`` is read at v1 scope (PROGRAM / FUNCTION /
-    FUNCTION_BLOCK with VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR
-    (LOCAL) blocks + body -- VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL,
-    AT clauses, TYPE blocks, CONFIGURATION, OOP, SFC text raise
-    ``StParseError`` and exit 2).
+    ``.st`` is read at v6 scope (PROGRAM / FUNCTION /
+    FUNCTION_BLOCK with all seven IEC §2.4.3 VAR_* directions +
+    IEC §2.4.1.1 AT clauses + IEC §2.3.3 TYPE blocks + IEC §2.7
+    CONFIGURATION / RESOURCE / TASK + IEC 3rd-edition OOP
+    (METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT) +
+    IEC §6.7 SFC text + body).  Only CLASS / class-level OOP
+    remains out of scope and raises ``StParseError`` (exit 2).
 
     Examples::
 

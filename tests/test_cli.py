@@ -475,10 +475,10 @@ def test_convert_xml_to_st_chains_parse_and_emit(tmp_path):
 
 
 def test_convert_st_read_round_trips_via_parse_program(tmp_path):
-    """``um convert prog.st prog.json`` now routes through the
-    parent's ``parse_program`` (v1, PR #84) and produces canonical
-    IL JSON.  Round-trip pinned: write JSON, convert to ST,
-    convert back to JSON, parse, structural equality."""
+    """``um convert prog.st prog.json`` routes through the
+    parent's ``parse_program`` (currently v6) and produces
+    canonical IL JSON.  Round-trip pinned: write JSON, convert to
+    ST, convert back to JSON, parse, structural equality."""
     p = program(subroutines=[prog("Main", main=True,
         rungs=[rung(no("X1"), coil("Y1"))])])
     src_st = tmp_path / "src.st"

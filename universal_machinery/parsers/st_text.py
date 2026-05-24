@@ -881,7 +881,7 @@ def parse_st_expression(src: str) -> Expression:
 
 
 # -----------------------------------------------------------------------------
-# Full-program parser (v1)
+# Full-program parser (v6)
 # -----------------------------------------------------------------------------
 #
 # Closes the read(.st) gap that ``openplc_backend`` / ``rusty_backend``
@@ -892,22 +892,35 @@ def parse_st_expression(src: str) -> Expression:
 #                                          v
 #     IL Program <- parse_program(src) <- ST source
 #
-# Scope (v1):
+# Scope (v6):
 #   - PROGRAM / FUNCTION / FUNCTION_BLOCK POUs
-#   - VAR_INPUT / VAR_OUTPUT / VAR_IN_OUT / VAR (local) blocks
+#   - All 7 IEC §2.4.3 VAR_* directions (VAR_INPUT / VAR_OUTPUT /
+#     VAR_IN_OUT / VAR / VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL)
 #   - Variable declarations: ``name : TYPE;``, optional ``:= init``,
-#     optional trailing ``(* comment *)`` -- elementary types AND
-#     NamedType (FB instance / UDT reference) both supported
-#   - Body: every shape ``parse_body`` already covers
+#     optional ``AT %IX0.0`` direct-rep address, optional trailing
+#     ``(* comment *)``.  Elementary types AND NamedType (FB instance
+#     / UDT reference) both supported.
+#   - IEC §2.3.3 TYPE ... END_TYPE blocks: STRUCT / ARRAY / ENUM /
+#     SUBRANGE / ALIAS variants.
+#   - IEC §2.7 CONFIGURATION / RESOURCE / TASK with VAR_GLOBAL,
+#     VAR_ACCESS, VAR_CONFIG, PROGRAM-WITH bindings, and TASK specs.
+#   - IEC 3rd-edition OOP: METHOD inside FUNCTION_BLOCK (PUBLIC /
+#     PRIVATE / PROTECTED / INTERNAL access, ABSTRACT / OVERRIDE,
+#     optional return type), INTERFACE blocks, EXTENDS / IMPLEMENTS
+#     / ABSTRACT modifiers on FUNCTION_BLOCK.
+#   - IEC §6.7 SFC text: INITIAL_STEP / STEP / END_STEP +
+#     TRANSITION FROM ... TO ... ASSIGN ...; END_TRANSITION +
+#     ACTION / END_ACTION inline bodies; conditions lower to
+#     ContactNO / ContactNC / ParallelGroup ops.
+#   - Body: every shape ``parse_body`` already covers (for non-SFC POUs)
 #
-# Out of scope (v1; raise StParseError):
-#   - VAR_EXTERNAL / VAR_TEMP / VAR_GLOBAL
-#   - AT clauses (``name AT %IX0.0 : BOOL;``)
-#   - TYPE ... END_TYPE blocks (UDTs)
-#   - CONFIGURATION / RESOURCE / TASK
-#   - METHOD / INTERFACE / EXTENDS / IMPLEMENTS / ABSTRACT
-#   - SFC text representation
+# Out of scope (still raise StParseError):
+#   - CLASS / class-level OOP (3rd-edition CLASS as a top-level POU
+#     keyword; FUNCTION_BLOCK + OOP modifiers handle the common
+#     OOP shape already)
 #   - LD body parsing (no IEC ST equivalent; round-trip LD via XML)
+#   - Vendor-style AT clauses (``name AT X001 : BOOL;``) -- these
+#     emit as trailing ``(* AT X001 *)`` comments, not inline AT
 
 
 # Names of the elementary IEC types we recognise verbatim.  Maps
@@ -1489,10 +1502,12 @@ def _parse_data_type(parser: _Parser):
 
     Elementary type names (``BOOL`` / ``INT`` / ...) resolve to
     ``TagType``; anything else becomes a ``NamedType`` reference
-    (FB instance, UDT, etc.).  TYPE-block declarations aren't
-    parsed in v1, so the NamedType won't have its definition
-    attached -- callers that need the definition must pre-populate
-    ``Program.user_types`` and/or rely on a separate parser pass.
+    (FB instance, UDT, etc.).  TYPE-block declarations *are*
+    parsed (since v3) and populate ``Program.user_types``, but
+    this helper only resolves the *reference* -- the NamedType
+    carries the name only and the resolver pass walks
+    ``Program.user_types`` to attach the definition where
+    needed.
     """
     from ..il.types import NamedType
     type_tok = parser._consume(
