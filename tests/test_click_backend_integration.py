@@ -92,16 +92,29 @@ def test_click_backend_write_scaffold_raises_not_implemented(tmp_path):
         ClickBackend().write(p, str(out))
 
 
-def test_click_backend_read_scaffold_raises_not_implemented(tmp_path):
-    """Scaffold contract: ``read()`` raises ``NotImplementedError``
-    until the ``CkpProject`` → IL bridge lands.  ``click_plc.
-    decode_ckp(bytes)`` still works for byte-level CKP introspection
-    (vendor-native ``CkpProject`` AST)."""
+def test_click_backend_read_dispatches_through_ckp_to_il(tmp_path):
+    """``ClickBackend.read`` decodes the bytes via ``decode_ckp``
+    and translates the vendor-native ``CkpProject`` through
+    ``ckp_to_il`` into an IL ``Program``.
+
+    This is a parent-side integration check that the wiring
+    survives across the submodule boundary; the byte-level
+    decoder and the adapter itself have their own dedicated
+    tests in the ``click_plc`` submodule.  Mocking the two halves
+    at their source modules keeps this test fixture-free."""
+    from unittest.mock import patch
     from click_plc import ClickBackend
+    from universal_machinery.builders import prog, program
     out = tmp_path / "prog.ckp"
-    out.write_bytes(b"")
-    with pytest.raises(NotImplementedError, match="CkpProject"):
-        ClickBackend().read(str(out))
+    out.write_bytes(b"any-bytes")
+    expected = program(subroutines=[prog("Main", main=True)])
+    with patch("click_plc.ckp_decoder.decode_ckp",
+                 return_value="CkpProject-sentinel"), \
+         patch("click_plc.ckp_to_il.ckp_to_il",
+                 return_value=expected) as adapter:
+        result = ClickBackend().read(str(out))
+    adapter.assert_called_once_with("CkpProject-sentinel")
+    assert result is expected
 
 
 def test_three_backends_registered_after_imports():
